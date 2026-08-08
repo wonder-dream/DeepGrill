@@ -157,6 +157,42 @@ def test_d16_cap_stops_generation(db):
     assert len(count) == 36
 
 
+def test_d16_cap_truncates_overshoot(db):
+    """D16 严格截断：源产出超过剩余额度时只入库额度内的题。"""
+    s1 = add_source(db, cleaned="一面：\n问了 HashMap。")
+    s2 = add_source(db, cleaned="一面：\n问了 Redis。")
+    big = [
+        {"type": "knowledge", "stem": f"题{j}", "tags": [], "difficulty": 1,
+         "good_criteria": [], "bad_criteria": []}
+        for j in range(4)
+    ]
+    llm = FakeLLM([big])
+    report = run_daily(make_config({"max_new_questions": 3}), [FakeSource("a", [s1, s2])], llm, EMBEDDER)
+
+    assert report["new_questions"] == 3  # 4 题只入库 3 题
+    count = db.scalars(select(Question)).all()
+    assert len(count) == 3
+
+
+def test_d16_cap_never_exceeds_limit(db):
+    """多源累计入库始终 ≤ 上限（严格截断后）。"""
+    sources = [add_source(db, cleaned=f"一面：\n源{i} 问题。") for i in range(5)]
+    batches = [
+        [
+            {"type": "knowledge", "stem": f"src{i}q{j}", "tags": [], "difficulty": 1,
+             "good_criteria": [], "bad_criteria": []}
+            for j in range(10)
+        ]
+        for i in range(5)
+    ]
+    llm = FakeLLM(batches)
+    report = run_daily(make_config({"max_new_questions": 7}), [FakeSource("a", sources)], llm, EMBEDDER)
+
+    assert report["new_questions"] <= 7
+    count = db.scalars(select(Question)).all()
+    assert len(count) <= 7
+
+
 def test_today_questions_respected_quota_types(db):
     s = add_source(db)
     payload = [

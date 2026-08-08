@@ -136,6 +136,7 @@ def _generate_phase(config: AppConfig, llm, collected: list, report: dict, embed
             else:
                 generated = generate_from_source(source, pool, llm)
             kept = dedup(generated, pool, embedder)
+            kept = kept[: max_new - accepted]  # D16 严格截断：累计入库不超过上限
         except Exception as e:
             report["errors"].append(f"generate source#{source.id}: {e}")
             logger.warning("generate failed for source %s: %s", source.id, e)

@@ -18,6 +18,8 @@
 
 ```bash
 uv pip install -r requirements.txt
+# GPU torch（cu124，lock 已 pin 该版本；CPU 版 embedding 会慢 10 倍+）：
+uv pip install torch --index-url https://download.pytorch.org/whl/cu124
 cp config.yaml 配置到你的实际值（可选）
 # 密钥写入 .env（不落 git）：
 # LLM_API_KEY=sk-xxx

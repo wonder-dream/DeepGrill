@@ -8,7 +8,7 @@ nowcoder:
   request_interval: 1.5           # 秒
   retries: 3
 daily:
-  max_new_questions: 36           # 每日新入库不重复问题上限(D16)
+  max_new_questions: 36           # 每日新入库不重复问题上限(D16，严格截断)；清历史积压时可临时调大跑几轮再改回
   knowledge_limit: 5              # 当日待做: 知识型 3-5
   design_limit: 2                 # 当日待做: 场景题 1-2
   project_limit: 1                # 当日待做: 项目深挖 0-1
