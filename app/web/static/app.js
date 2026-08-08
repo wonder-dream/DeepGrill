@@ -662,6 +662,33 @@ document.querySelectorAll("nav button[data-view]").forEach((btn) => {
   });
 });
 $("#daily-run").addEventListener("click", runDaily);
+
+// 上传题目（面经文本 / Q: 直接入库）
+$("#upload-btn").addEventListener("click", () => $("#upload-file").click());
+$("#upload-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  if (!/\.(md|txt)$/i.test(file.name)) {
+    alert("仅支持 .md/.txt 文件");
+    return;
+  }
+  const content = await file.text();
+  try {
+    const resp = await api("/api/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, content }),
+    });
+    if (resp.mode === "direct") {
+      alert(`已入库 ${resp.count} 题，可在题库查看`);
+    } else {
+      alert("已提交，后台生成中…（完成后可在题库查看）");
+    }
+  } catch (err) {
+    alert(err.message);
+  }
+});
 $("#answer-submit").addEventListener("click", submitAnswer);
 function goBack() {
   if (state.returnTo === "review") {

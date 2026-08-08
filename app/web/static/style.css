@@ -96,7 +96,7 @@ body {
   gap: 6px;
 }
 
-.sidebar nav button, .sidebar-daily {
+.sidebar nav button, .sidebar-daily, .sidebar-upload {
   border: 1px solid transparent;
   background: transparent;
   color: var(--ink);
@@ -125,6 +125,14 @@ body {
   font-weight: 600;
 }
 .sidebar-daily:hover { opacity: 0.88; color: #fff; background: var(--ink); }
+
+.sidebar-upload {
+  margin-top: 8px;
+  border: 1px solid var(--line-dark);
+  text-align: center;
+  font-weight: 500;
+}
+.sidebar-upload:hover { border-color: var(--red); color: var(--red); }
 
 /* 收起态 */
 .sidebar.collapsed { width: 48px; }

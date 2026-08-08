@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 data/interview.db
 data/repos/
+data/uploads/

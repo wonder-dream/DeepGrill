@@ -539,6 +539,87 @@ def test_bank_done_flag(db):
     assert undone["done"] is False
 
 
+# --- 用户上传题目 ---
+
+
+def test_upload_direct_mode_inserts_questions(db):
+    content = "Q: 讲一下 HashMap 底层原理\n- 缓存穿透怎么解决？\n\nQ: Redis 分布式锁"
+    client = make_client(db, FakeLLM([]))
+    resp = client.post("/api/upload", json={"filename": "题.md", "content": content})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "direct"
+    assert body["count"] == 3
+    with db:
+        from sqlalchemy import text as _t
+        n = db.exec(_t("SELECT COUNT(*) FROM questions WHERE source_id = :i"),
+                    params={"i": body["source_id"]}).one()[0]
+        assert n == 3
+        stems = [r[0] for r in db.exec(_t(
+            "SELECT stem FROM questions WHERE source_id = :i ORDER BY id"),
+            params={"i": body["source_id"]}).all()]
+        assert stems == ["讲一下 HashMap 底层原理", "缓存穿透怎么解决？", "Redis 分布式锁"]
+        assert db.exec(_t(
+            "SELECT difficulty FROM questions WHERE source_id = :i ORDER BY id LIMIT 1"),
+            params={"i": body["source_id"]}).one()[0] == 1
+
+
+def test_upload_direct_mode_tags_llm(db):
+    import json as _json
+
+    content = "Q: 讲一下 HashMap 底层原理\nQ: Redis 分布式锁"
+    llm = FakeLLM([
+        {"items": [
+            {"stem": "讲一下 HashMap 底层原理", "tags": ["Java", "词表外", "数据结构"]},
+            {"stem": "Redis 分布式锁", "tags": ["缓存"]},
+        ]}
+    ])
+    client = make_client(db, llm)
+    body = client.post("/api/upload", json={"filename": "题.md", "content": content}).json()
+    with db:
+        from sqlalchemy import text as _t
+        tags1 = _json.loads(db.exec(_t("SELECT tags FROM questions WHERE stem = :s"),
+                                    params={"s": "讲一下 HashMap 底层原理"}).one()[0])
+        tags2 = _json.loads(db.exec(_t("SELECT tags FROM questions WHERE stem = :s"),
+                                    params={"s": "Redis 分布式锁"}).one()[0])
+        assert "词表外" not in tags1 and "Java" in tags1 and "数据结构" in tags1
+        assert "缓存" in tags2
+
+
+def test_upload_facejing_mode_generates(db):
+    content = "一面：\n面试官：缓存穿透怎么解决？"
+    llm = FakeLLM([Q1_FACEJING])
+    client = make_client(db, llm)
+    resp = client.post("/api/upload", json={"filename": "面经.md", "content": content})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "facejing"
+    with db:
+        from sqlalchemy import text as _t
+        n = db.exec(_t("SELECT COUNT(*) FROM questions WHERE source_id = :i"),
+                    params={"i": body["source_id"]}).one()[0]
+        assert n == 1
+
+
+Q1_FACEJING = [
+    {
+        "type": "knowledge",
+        "stem": "缓存穿透怎么解决？",
+        "tags": ["缓存"],
+        "difficulty": 2,
+        "good_criteria": ["说清布隆过滤器"],
+        "bad_criteria": ["说不清"],
+    }
+]
+
+
+def test_upload_validation(db):
+    client = make_client(db, FakeLLM([]))
+    assert client.post("/api/upload", json={"filename": "题.json", "content": "x"}).status_code == 400
+    assert client.post("/api/upload", json={"filename": "题.md", "content": ""}).status_code == 400
+    assert client.post("/api/upload", json={"filename": "题.md", "content": "x" * (2 * 1024 * 1024 + 1)}).status_code == 400
+
+
 # --- edge ---
 
 

@@ -155,6 +155,38 @@ def _generate_phase(config: AppConfig, llm, collected: list, report: dict, embed
             break
 
 
+def generate_source_immediately(source_id: int, llm, embedder) -> int:
+    """用户上传后单源立即生成（不受每日 36 上限）：生成 → 去重 → 入库，返回入库数。
+
+    非阻塞拿运行锁，拿不到返回 -1（由调用方提示稍后「立即更新」）。
+    """
+    if not _run_lock.acquire(blocking=False):
+        logger.warning("daily pipeline running, deferred source %s", source_id)
+        return -1
+    try:
+        with get_session() as session:
+            source = session.get(Source, source_id)
+            pool = list(session.scalars(select(Question)))
+        if source is None:
+            logger.warning("source %s not found", source_id)
+            return 0
+        if source.type == SourceType.resume:
+            generated = generate_project_questions(
+                source, 5, llm
+            )
+        else:
+            generated = generate_from_source(source, pool, llm)
+        kept = dedup(generated, pool, embedder)
+        if not kept:
+            return 0
+        with get_session() as session:
+            session.add_all(kept)
+            commit(session)
+        return len(kept)
+    finally:
+        _run_lock.release()
+
+
 def _pick_phase(config: AppConfig, report: dict) -> None:
     """D8 配额选题：knowledge > design > project，不足配额取实际可选数。"""
     daily = config.daily

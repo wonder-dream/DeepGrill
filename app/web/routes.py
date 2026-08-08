@@ -4,7 +4,9 @@
 - 并发作答同一会话 → 409（in-flight 集合）
 - 判分失败：结果接口返回 status="failed"，可再次作答重试
 """
+import hashlib
 import logging
+import re
 import threading
 from collections import Counter
 from datetime import datetime
@@ -21,7 +23,17 @@ from ..embed import Embedder
 from ..errors import AppError
 from ..judge.chain import ChainSession, resume
 from ..judge.judge import STATUS_FAILED, judge
-from ..models import Attempt, Judgment, Question, Session, SessionKind, SessionStatus
+from ..models import (
+    Attempt,
+    Judgment,
+    Question,
+    QuestionType,
+    Session,
+    SessionKind,
+    SessionStatus,
+    Source,
+    SourceType,
+)
 from ..tags import TAG_CATEGORIES, TAG_VOCABULARY
 from . import static_dir
 
@@ -455,6 +467,28 @@ def create_app(
             items.sort(key=lambda i: (i["done"], -i["id"]))  # 未做优先，组内新题在前
             return items
 
+    # --- 用户上传题目（格式：面经文本 / Q: 直接入库） ---
+
+    @app.post("/api/upload")
+    def upload_questions(body: dict, background: BackgroundTasks):
+        filename = str(body.get("filename", ""))
+        content = str(body.get("content", ""))
+        if not filename.lower().endswith((".md", ".txt")):
+            raise HTTPException(status_code=400, detail="仅支持 .md/.txt 文件")
+        if len(content.encode("utf-8")) > 2 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="文件超过 2MB 限制")
+        if not content.strip():
+            raise HTTPException(status_code=400, detail="文件内容为空")
+        if _is_direct_format(content):
+            source, count = _insert_direct_questions(content)
+            background.add_task(_tag_direct_questions, source.id, llm_factory)
+            return {"mode": "direct", "count": count, "source_id": source.id}
+        source = _import_facejing(content, filename)
+        background.add_task(
+            _generate_uploaded_source, source.id, llm_factory, embedder_factory
+        )
+        return {"mode": "facejing", "source_id": source.id}
+
     # --- 手动触发流水线 ---
 
     @app.post("/api/daily/run")
@@ -584,6 +618,136 @@ def _default_llm_factory(config: AppConfig):
         )
 
     return factory
+
+
+def _is_direct_format(content: str) -> bool:
+    """格式识别：全部非空行匹配 Q:/列表行且每行 <120 字符 → 直接入库模式。"""
+    lines = [l.strip() for l in content.splitlines() if l.strip()]
+    if not lines or not all(len(l) < 120 for l in lines):
+        return False
+    for l in lines:
+        if re.match(r"^Q[:：]", l) or re.match(r"^[-*]\s", l):
+            continue
+        return False
+    return True
+
+
+def _parse_direct_questions(content: str) -> list[str]:
+    """Q:/列表行 → 题干列表（去前缀、空行跳过）。"""
+    stems = []
+    for l in content.splitlines():
+        l = l.strip()
+        if not l:
+            continue
+        m = re.match(r"^Q[:：]\s*", l)
+        if m:
+            l = l[m.end():]
+        else:
+            l = re.sub(r"^[-*]\s*", "", l)
+        if l:
+            stems.append(l)
+    return stems
+
+
+def _insert_direct_questions(content: str) -> tuple[Source, int]:
+    """直接模式入库：建 manual source + knowledge 题（难度 1、默认 criteria）。"""
+    from ..pipeline.generate import DEFAULT_BAD_CRITERIA, DEFAULT_GOOD_CRITERIA
+
+    stems = _parse_direct_questions(content)
+    with db.get_session() as session:
+        source = Source(
+            type=SourceType.manual,
+            title="用户上传",
+            raw_text=content,
+            cleaned_text=content,
+            source_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        )
+        session.add(source)
+        db.commit(session)
+        session.refresh(source)
+        for stem in stems:
+            session.add(
+                Question(
+                    source_id=source.id,
+                    type=QuestionType.knowledge,
+                    stem=stem,
+                    difficulty=1,
+                    good_criteria=list(DEFAULT_GOOD_CRITERIA),
+                    bad_criteria=list(DEFAULT_BAD_CRITERIA),
+                )
+            )
+        db.commit(session)
+    return source, len(stems)
+
+
+def _tag_direct_questions(source_id: int, llm_factory) -> None:
+    """直接模式后台补标签（≤20 题一次调用，词表过滤；失败留空）。"""
+    try:
+        from ..tags import MAX_TAGS, TAG_VOCABULARY, tag_vocab_text
+
+        with db.get_session() as session:
+            questions = list(
+                session.scalars(
+                    select(Question)
+                    .where(Question.source_id == source_id)
+                    .order_by(Question.id)
+                )
+            )
+        if not questions or len(questions) > 20:
+            return
+        stems = [q.stem for q in questions]
+        numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(stems))
+        prompt = (
+            "为以下题目各选 1-{max_tags} 个最相关的标签，必须从词表中选择：\n{vocab}\n\n"
+            "题目列表：\n{numbered}\n\n"
+            '只输出 JSON：{{"items": [{{"stem": "题干原文", "tags": [标签]}}]}}'
+        ).format(max_tags=MAX_TAGS, vocab=tag_vocab_text(), numbered=numbered)
+        parsed = llm_factory("generate").complete(
+            [{"role": "user", "content": prompt}], json_schema={}
+        )
+        items = parsed.get("items", []) if isinstance(parsed, dict) else []
+        by_stem = {}
+        for item in items:
+            if isinstance(item, dict):
+                s = item.get("stem")
+                tags = item.get("tags", [])
+                if isinstance(s, str) and isinstance(tags, list):
+                    by_stem[s] = [
+                        t for t in tags if isinstance(t, str) and t in TAG_VOCABULARY
+                    ][:MAX_TAGS]
+        if by_stem:
+            with db.get_session() as session:
+                for q in questions:
+                    if q.stem in by_stem:
+                        row = session.get(Question, q.id)
+                        row.tags = by_stem[q.stem]
+                db.commit(session)
+    except Exception as e:
+        logger.warning("tag direct questions failed (留空): %s", e)
+
+
+def _import_facejing(content: str, filename: str) -> Source:
+    """面经模式：内容写入 data/uploads/ 并作为 manual 源导入。"""
+    from ..crawler.importer import import_file
+
+    uploads = Path("data/uploads")
+    uploads.mkdir(parents=True, exist_ok=True)
+    path = uploads / f"{hashlib.sha256(content.encode('utf-8')).hexdigest()[:12]}.md"
+    path.write_text(content, encoding="utf-8")
+    return import_file(path, "manual")
+
+
+def _generate_uploaded_source(source_id: int, llm_factory, embedder_factory) -> None:
+    """面经模式后台生成该源（单源，不受 36 上限）。"""
+    try:
+        from ..pipeline.daily import generate_source_immediately
+
+        n = generate_source_immediately(
+            source_id, llm_factory("generate"), embedder_factory()
+        )
+        logger.info("uploaded source %s generated %d questions", source_id, n)
+    except Exception as e:
+        logger.warning("uploaded source %s generate failed: %s", source_id, e)
 
 
 def _run_daily_pipeline(config: AppConfig, llm_factory):

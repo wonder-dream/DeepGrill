@@ -26,6 +26,7 @@ FastAPI 路由层：今日题目、答题（单轮/追问轮）、判分结果�
 | GET | `/api/review?tag=` | 薄弱点复习（Phase 2 v1）：按词表 tag 检索同类题，未做优先；tag 须在共享词表内否则 400 |
 | GET | `/api/review/tags` | 全部词表标签 + 薄弱点计数（weak_tags 聚合，有计数在前；复习入口页用，2026-08-08） |
 | GET | `/api/tags` | 标签分类结构（6 大类，前端筛选联动用，2026-08-08） |
+| POST | `/api/upload` | 用户上传题目（JSON {filename, content}）：Q:/列表行直接入库（后台 LLM 补标签）；面经文本入库 source 后台立即生成（单源不受 36 上限）；2026-08-09 |
 | POST | `/api/daily/run` | 手动触发流水线，返回 DailyReport |
 
 ## 3. 关键决策
