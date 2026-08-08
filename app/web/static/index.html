@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>面试助手</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <h1>面试助手</h1>
+      <button id="sidebar-toggle" title="收起/展开侧边栏">◀</button>
+    </div>
+    <nav>
+      <button data-view="today">今日题目</button>
+      <button data-view="history">历史记录</button>
+      <button data-view="review">复习</button>
+    </nav>
+    <button id="daily-run" class="sidebar-daily">立即更新</button>
+  </aside>
+
+  <main>
+    <section id="view-today" class="view">
+      <div class="card summary-card">
+        <div class="summary-num" id="today-summary"></div>
+        <div class="summary-sub">面试档案 · 每日一练</div>
+      </div>
+      <div class="card filter-bar">
+        <label>题型
+          <select id="filter-today-type">
+            <option value="all">全部</option>
+            <option value="knowledge">知识题</option>
+            <option value="design">设计题</option>
+            <option value="project">项目题</option>
+          </select>
+        </label>
+        <label>分类
+          <select id="filter-today-category">
+            <option value="all">全部</option>
+          </select>
+        </label>
+      </div>
+      <div id="today-list" class="card-list"></div>
+    </section>
+
+    <section id="view-answer" class="view hidden">
+      <div class="card">
+        <button id="answer-back">← 返回</button>
+        <p class="meta" id="answer-meta"></p>
+        <h2 id="answer-stem"></h2>
+        <div id="answer-chat"></div>
+        <details>
+          <summary>判分标准提示</summary>
+          <p><b>高分标准：</b></p>
+          <ul id="answer-good"></ul>
+          <p><b>扣分特征：</b></p>
+          <ul id="answer-bad"></ul>
+        </details>
+        <textarea id="answer-input" rows="6" placeholder="输入你的回答…"></textarea>
+        <button id="answer-submit" class="primary">提交回答</button>
+        <p id="answer-status"></p>
+      </div>
+    </section>
+
+    <section id="view-result" class="view hidden">
+      <div class="card">
+        <h2 id="result-title"></h2>
+        <div id="result-scores" class="scores"></div>
+        <p id="result-review"></p>
+        <details>
+          <summary>参考答案</summary>
+          <p id="result-reference"></p>
+        </details>
+        <p class="meta" id="result-tags"></p>
+        <p class="meta" id="result-ref"></p>
+        <button id="result-retry" class="hidden">判分失败，点击重试</button>
+        <button id="result-back">返回今日题目</button>
+      </div>
+    </section>
+
+    <section id="view-history" class="view hidden">
+      <div class="card filter-bar">
+        <label>状态
+          <select id="filter-done">
+            <option value="all">全部</option>
+            <option value="done">做过</option>
+            <option value="undone">未做</option>
+          </select>
+        </label>
+        <label>日期
+          <select id="filter-date">
+            <option value="all">全部</option>
+          </select>
+        </label>
+        <label>分数
+          <select id="filter-score" disabled>
+            <option value="all">全部</option>
+            <option value="high">高分 ≥80</option>
+            <option value="low">低分 &lt;80</option>
+          </select>
+        </label>
+        <label>题型
+          <select id="filter-type">
+            <option value="all">全部</option>
+            <option value="knowledge">知识题</option>
+            <option value="design">设计题</option>
+            <option value="project">项目题</option>
+          </select>
+        </label>
+        <label>分类
+          <select id="filter-category">
+            <option value="all">全部</option>
+          </select>
+        </label>
+      </div>
+      <div class="card-list" id="history-list"></div>
+    </section>
+
+    <section id="view-review" class="view hidden">
+      <div class="card">
+        <h2 id="review-title"></h2>
+        <button id="review-back">返回</button>
+      </div>
+      <div id="review-entry"></div>
+      <div class="card filter-bar hidden" id="review-filter">
+        <label>题型
+          <select id="filter-review-type">
+            <option value="all">全部</option>
+            <option value="knowledge">知识题</option>
+            <option value="design">设计题</option>
+            <option value="project">项目题</option>
+          </select>
+        </label>
+        <label>分类
+          <select id="filter-review-category">
+            <option value="all">全部</option>
+          </select>
+        </label>
+      </div>
+      <div class="card-list" id="review-list"></div>
+    </section>
+
+    <section id="view-detail" class="view hidden">
+      <div class="card">
+        <button id="detail-back">← 返回</button>
+        <div class="question-head">
+          <span class="badge" id="detail-type"></span>
+          <span class="badge" id="detail-difficulty"></span>
+        </div>
+        <h2 id="detail-stem"></h2>
+        <p class="meta" id="detail-meta"></p>
+        <div id="attempt-tabs" class="attempt-tabs"></div>
+        <div id="detail-chat"></div>
+        <div id="detail-scores" class="scores"></div>
+        <p id="detail-review"></p>
+        <details>
+          <summary>参考答案</summary>
+          <p id="detail-reference"></p>
+        </details>
+        <p class="meta" id="detail-tags"></p>
+        <button id="detail-delete">删除本次记录</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

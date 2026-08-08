@@ -1,0 +1,23 @@
+llm:
+  base_url: https://api.deepseek.com/v1
+  api_key_env: LLM_API_KEY        # 从 .env / 环境变量读, 不落盘
+  generate_model: deepseek-chat
+  judge_model: deepseek-reasoner  # 可配更强模型
+nowcoder:
+  cookie_env: NOWCODER_COOKIE     # 浏览器 DevTools 复制, gitignore 排除
+  request_interval: 1.5           # 秒
+  retries: 3
+daily:
+  max_new_questions: 36           # 每日新入库不重复问题上限(D16)
+  knowledge_limit: 5              # 当日待做: 知识型 3-5
+  design_limit: 2                 # 当日待做: 场景题 1-2
+  project_limit: 1                # 当日待做: 项目深挖 0-1
+  chain_max_rounds: 20            # 追问链轮数上限(D15)
+  schedule: "08:00"
+notification:
+  enabled: true
+sources:
+  github_repos:                # 面经仓库列表（可增删）
+    - Zchary1106/agent-interview-hub
+    - jingtian11/EasyOffer
+    - houchenll/origin-llm

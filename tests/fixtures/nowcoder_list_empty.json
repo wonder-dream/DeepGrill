@@ -1,0 +1,12 @@
+{
+ "success": true,
+ "code": 0,
+ "msg": "OK",
+ "data": {
+  "current": 1,
+  "size": 20,
+  "total": 0,
+  "totalPage": 0,
+  "records": []
+ }
+}
