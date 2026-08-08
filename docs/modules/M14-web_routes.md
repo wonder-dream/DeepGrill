@@ -12,6 +12,7 @@ FastAPI 路由层：今日题目、答题（单轮/追问轮）、判分结果�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/` | 静态页（SPA 骨架） |
+| GET | `/api/bank` | 题库分页浏览（id 倒序，20/页可配；type/category 筛选；含 done 标志；非法参数 400，2026-08-09） |
 | GET | `/api/today` | 今日题目列表（含待做红点） |
 | GET | `/api/questions/{id}` | 题目详情 |
 | GET | `/api/questions/{id}/history` | 历史详情：该题全部会话（倒序）+ 问答记录（transcript 含层级）+ 判分（2026-08-08，前端尝试按钮切换） |

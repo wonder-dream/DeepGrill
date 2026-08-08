@@ -80,14 +80,14 @@ def db(tmp_path):
         yield session
 
 
-def add_today_question(db, stem="讲一下 HashMap 底层原理", status_today=True, tags=None):
+def add_today_question(db, stem="讲一下 HashMap 底层原理", status_today=True, tags=None, qtype=QuestionType.knowledge):
     source = Source(type=SourceType.manual, source_hash=f"h-{stem}")
     db.add(source)
     commit(db)
     db.refresh(source)
     q = Question(
         source_id=source.id,
-        type=QuestionType.knowledge,
+        type=qtype,
         stem=stem,
         tags=tags or [],
         good_criteria=["完整、准确"],
@@ -479,6 +479,64 @@ def test_tag_categories_structure(db):
     flat = [t for c in cats for t in c["tags"]]
     assert flat == list(TAG_VOCABULARY)
     assert len(flat) == 58
+
+
+# --- 题库浏览 ---
+
+
+def test_bank_pagination(db):
+    for i in range(25):
+        add_today_question(db, stem=f"题库题{i}", status_today=False, tags=["Java"])
+    client = make_client(db, FakeLLM([]))
+
+    p1 = client.get("/api/bank", params={"page": 1, "page_size": 20}).json()
+    p2 = client.get("/api/bank", params={"page": 2, "page_size": 20}).json()
+    assert p1["total"] == 25
+    assert p1["total_pages"] == 2
+    assert len(p1["items"]) == 20
+    assert len(p2["items"]) == 5
+    ids1 = [i["id"] for i in p1["items"]]
+    ids2 = [i["id"] for i in p2["items"]]
+    assert not set(ids1) & set(ids2)  # 两页不重叠
+    assert ids1 == sorted(ids1, reverse=True)  # id 倒序（最新在前）
+
+
+def test_bank_filter_type_and_category(db):
+    add_today_question(db, stem="知识题", tags=["Java"], status_today=False)
+    add_today_question(db, stem="设计题", tags=["缓存"], status_today=False, qtype=QuestionType.design)
+    client = make_client(db, FakeLLM([]))
+
+    by_type = client.get("/api/bank", params={"type": "design"}).json()
+    assert by_type["total"] == 1
+    assert by_type["items"][0]["stem"] == "设计题"
+
+    by_cat = client.get("/api/bank", params={"category": "后端基础"}).json()
+    assert by_cat["total"] == 2  # Java/缓存 均在"后端基础"分类
+
+
+def test_bank_invalid_params(db):
+    client = make_client(db, FakeLLM([]))
+    assert client.get("/api/bank", params={"page": 0}).status_code == 400
+    assert client.get("/api/bank", params={"page_size": 999}).status_code == 400
+    assert client.get("/api/bank", params={"type": "essay"}).status_code == 400
+    assert client.get("/api/bank", params={"category": "不存在"}).status_code == 400
+    over = client.get("/api/bank", params={"page": 99}).json()
+    assert over["items"] == []  # 超页返回空
+
+
+def test_bank_done_flag(db):
+    q = add_today_question(db, stem="做过题", tags=["Java"], status_today=False)
+    add_today_question(db, stem="未做题", tags=["Java"], status_today=False)
+    llm = FakeLLM([JUDGMENT])
+    client = make_client(db, llm)
+    sid = client.post("/api/sessions", json={"question_id": q.id, "kind": "open"}).json()["session_id"]
+    client.post(f"/api/sessions/{sid}/answer", json={"answer": "回答"})
+
+    data = client.get("/api/bank", params={"page_size": 50}).json()
+    item = next(i for i in data["items"] if i["id"] == q.id)
+    assert item["done"] is True
+    undone = next(i for i in data["items"] if i["id"] != q.id)
+    assert undone["done"] is False
 
 
 # --- edge ---

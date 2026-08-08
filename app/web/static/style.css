@@ -206,6 +206,27 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
   font-family: var(--sans);
 }
 
+.bank-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin: 16px 0 8px;
+}
+.bank-pager button {
+  border: 1px solid var(--line-dark);
+  background: var(--card);
+  color: var(--ink);
+  padding: 6px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--sans);
+  transition: all 0.15s ease;
+}
+.bank-pager button:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+.bank-pager button:disabled { opacity: 0.4; cursor: not-allowed; }
+
 .question-card { cursor: pointer; }
 .question-card:hover {
   border-color: var(--red);

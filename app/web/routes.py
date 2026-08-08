@@ -337,6 +337,66 @@ def create_app(
                 for day in sorted(groups, reverse=True)
             ]
 
+    # --- 题库浏览（分页 + 筛选） ---
+
+    @app.get("/api/bank")
+    def bank_questions(
+        page: int = 1,
+        page_size: int = 20,
+        type: str | None = None,
+        category: str | None = None,
+    ):
+        """全部题目分页浏览（id 倒序）；type/category 筛选；每项带 done 标志。"""
+        from ..models import QuestionType as _QT
+
+        if page < 1 or not 1 <= page_size <= 50:
+            raise HTTPException(status_code=400, detail="invalid page or page_size")
+        qtype = None
+        if type is not None:
+            try:
+                qtype = _QT(type)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"invalid type: {type}")
+        if category is not None and category not in {name for name, _ in TAG_CATEGORIES}:
+            raise HTTPException(status_code=400, detail=f"invalid category: {category}")
+        cat_tags = None
+        if category is not None:
+            cat_tags = dict(TAG_CATEGORIES)[category]
+
+        with db.get_session() as session:
+            stmt = select(Question)
+            if qtype is not None:
+                stmt = stmt.where(Question.type == qtype)
+            questions = list(session.scalars(stmt))
+            if cat_tags is not None:
+                questions = [
+                    q for q in questions
+                    if any(t in cat_tags for t in (q.tags or []))
+                ]
+            questions.sort(key=lambda q: q.id, reverse=True)
+            total = len(questions)
+            total_pages = (total + page_size - 1) // page_size
+            page_items = questions[(page - 1) * page_size : page * page_size]
+            latest = _latest_judgment_by_question(session)
+            items = [
+                {
+                    "id": q.id,
+                    "stem": q.stem,
+                    "type": q.type.value,
+                    "difficulty": q.difficulty,
+                    "tags": q.tags,
+                    "done": q.id in latest,
+                }
+                for q in page_items
+            ]
+        return {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "items": items,
+        }
+
     # --- 薄弱点复习（Phase 2 v1：SQL 标签匹配） ---
 
     @app.get("/api/tags")

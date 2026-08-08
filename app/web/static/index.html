@@ -14,6 +14,7 @@
     </div>
     <nav>
       <button data-view="today">今日题目</button>
+      <button data-view="bank">题库</button>
       <button data-view="history">历史记录</button>
       <button data-view="review">复习</button>
     </nav>
@@ -21,6 +22,34 @@
   </aside>
 
   <main>
+    <section id="view-bank" class="view hidden">
+      <div class="card summary-card">
+        <div class="summary-num" id="bank-summary"></div>
+        <div class="summary-sub">面试档案 · 题库</div>
+      </div>
+      <div class="card filter-bar">
+        <label>题型
+          <select id="filter-bank-type">
+            <option value="all">全部</option>
+            <option value="knowledge">知识题</option>
+            <option value="design">设计题</option>
+            <option value="project">项目题</option>
+          </select>
+        </label>
+        <label>分类
+          <select id="filter-bank-category">
+            <option value="all">全部</option>
+          </select>
+        </label>
+      </div>
+      <div class="card-list" id="bank-list"></div>
+      <div class="bank-pager">
+        <button id="bank-prev">上一页</button>
+        <span id="bank-page-info" class="meta"></span>
+        <button id="bank-next">下一页</button>
+      </div>
+    </section>
+
     <section id="view-today" class="view">
       <div class="card summary-card">
         <div class="summary-num" id="today-summary"></div>

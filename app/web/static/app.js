@@ -13,6 +13,7 @@ const state = {
   detailSessionId: null,
   tagCategories: null,
   allTags: [],
+  bankPage: 1,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -25,6 +26,7 @@ function show(view) {
     btn.classList.toggle("nav-active", btn.dataset.view === view);
   });
   if (view === "today") loadToday();
+  if (view === "bank") loadBank();
   if (view === "history") loadHistory();
 }
 
@@ -68,8 +70,52 @@ async function loadTagCategories() {
   state.tagCategories = cats;
   state.allTags = cats.flatMap((c) => c.tags);
   fillCategoryOptions($("#filter-today-category"));
+  fillCategoryOptions($("#filter-bank-category"));
   fillCategoryOptions($("#filter-category"));
   fillCategoryOptions($("#filter-review-category"));
+}
+
+async function loadBank() {
+  const params = new URLSearchParams({
+    page: state.bankPage,
+    page_size: 20,
+  });
+  const typeFilter = $("#filter-bank-type").value;
+  const categoryFilter = $("#filter-bank-category").value;
+  if (typeFilter !== "all") params.set("type", typeFilter);
+  if (categoryFilter !== "all") params.set("category", categoryFilter);
+  const data = await api(`/api/bank?${params}`);
+  state.bankTotal = data.total;
+  state.bankTotalPages = data.total_pages;
+  $("#bank-summary").textContent = `共 ${data.total} 题`;
+  const list = $("#bank-list");
+  list.innerHTML = "";
+  if (!data.items.length) {
+    list.innerHTML = '<div class="card"><p class="meta">无符合条件的题目</p></div>';
+  }
+  for (const q of data.items) {
+    const card = document.createElement("div");
+    card.className = "card question-card";
+    const badge = q.done
+      ? '<span class="badge badge-done">已答</span>'
+      : '<span class="badge badge-todo">待做</span>';
+    card.innerHTML = `
+      <div class="question-head">
+        ${badge}
+        <span class="badge">${q.type}</span>
+        <span class="badge">难度 ${q.difficulty}</span>
+      </div>
+      <p>${escapeHtml(q.stem)}</p>`;
+    card.addEventListener("click", () => {
+      state.returnTo = "bank";
+      startAnswer(q);
+    });
+    list.appendChild(card);
+  }
+  const totalPages = Math.max(1, data.total_pages);
+  $("#bank-page-info").textContent = `第 ${data.page} / ${totalPages} 页`;
+  $("#bank-prev").disabled = data.page <= 1;
+  $("#bank-next").disabled = data.page >= totalPages;
 }
 
 async function loadToday() {
@@ -621,6 +667,9 @@ function goBack() {
   if (state.returnTo === "review") {
     show("review");
     loadReview(state.reviewTag);
+  } else if (state.returnTo === "bank") {
+    show("bank");
+    loadBank();
   } else {
     show("today");
   }
@@ -646,6 +695,26 @@ $("#filter-review-type").addEventListener("change", renderReviewItems);
 $("#filter-today-category").addEventListener("change", renderToday);
 $("#filter-category").addEventListener("change", applyFilters);
 $("#filter-review-category").addEventListener("change", renderReviewItems);
+$("#filter-bank-type").addEventListener("change", () => {
+  state.bankPage = 1;
+  loadBank();
+});
+$("#filter-bank-category").addEventListener("change", () => {
+  state.bankPage = 1;
+  loadBank();
+});
+$("#bank-prev").addEventListener("click", () => {
+  if (state.bankPage > 1) {
+    state.bankPage -= 1;
+    loadBank();
+  }
+});
+$("#bank-next").addEventListener("click", () => {
+  if (state.bankPage < state.bankTotalPages) {
+    state.bankPage += 1;
+    loadBank();
+  }
+});
 $("#detail-back").addEventListener("click", () => {
   show("history");
   applyFilters();
