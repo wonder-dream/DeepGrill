@@ -14,6 +14,14 @@ const state = {
   tagCategories: null,
   allTags: [],
   bankPage: 1,
+  rangeFrom: null,
+  rangeTo: null,
+  todayDate: null,
+  calendarMode: "today",
+  calViews: {},
+  calYear: null,
+  calMonth: null,
+  historyDates: new Set(),
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -25,7 +33,15 @@ function show(view) {
   document.querySelectorAll("nav button[data-view]").forEach((btn) => {
     btn.classList.toggle("nav-active", btn.dataset.view === view);
   });
-  if (view === "today") loadToday();
+  const panel = $("#calendar-panel");
+  if (view === "today" || view === "history") {
+    state.calendarMode = view;
+    panel.classList.remove("hidden");
+    renderCalendar();
+  } else {
+    panel.classList.add("hidden");
+  }
+  if (view === "today") loadToday(state.todayDate || undefined);
   if (view === "bank") loadBank();
   if (view === "history") loadHistory();
 }
@@ -55,10 +71,11 @@ function categoryTags(categoryFilter) {
   return ((state.tagCategories || []).find((c) => c.name === categoryFilter) || {}).tags || [];
 }
 
-function filterByTypeCategory(items, typeFilter, categoryFilter) {
+function filterByTypeCategory(items, typeFilter, categoryFilter, difficultyFilter) {
   const catTags = categoryTags(categoryFilter);
   return items.filter((i) => {
     if (typeFilter !== "all" && i.type !== typeFilter) return false;
+    if (difficultyFilter !== "all" && i.difficulty !== Number(difficultyFilter)) return false;
     if (catTags && !(i.tags || []).some((t) => catTags.includes(t))) return false;
     return true;
   });
@@ -82,8 +99,12 @@ async function loadBank() {
   });
   const typeFilter = $("#filter-bank-type").value;
   const categoryFilter = $("#filter-bank-category").value;
+  const difficultyFilter = $("#filter-bank-difficulty").value;
+  const keyword = $("#bank-search").value.trim();
   if (typeFilter !== "all") params.set("type", typeFilter);
+  if (difficultyFilter !== "all") params.set("difficulty", difficultyFilter);
   if (categoryFilter !== "all") params.set("category", categoryFilter);
+  if (keyword) params.set("q", keyword);
   const data = await api(`/api/bank?${params}`);
   state.bankTotal = data.total;
   state.bankTotalPages = data.total_pages;
@@ -103,7 +124,7 @@ async function loadBank() {
       <div class="question-head">
         ${badge}
         <span class="badge">${q.type}</span>
-        <span class="badge">难度 ${q.difficulty}</span>
+        <span class="badge">难度 ${difficultyStars(q.difficulty)}</span>
       </div>
       <p>${escapeHtml(q.stem)}</p>`;
     card.addEventListener("click", () => {
@@ -118,8 +139,11 @@ async function loadBank() {
   $("#bank-next").disabled = data.page >= totalPages;
 }
 
-async function loadToday() {
-  const items = await api("/api/today");
+async function loadToday(date) {
+  state.todayDate = date || null;
+  const items = state.todayDate
+    ? await api(`/api/today?date=${state.todayDate}`)
+    : await api("/api/today");
   state.todayItems = items;
   renderToday();
 }
@@ -128,18 +152,20 @@ function renderToday() {
   const items = filterByTypeCategory(
     state.todayItems || [],
     $("#filter-today-type").value,
-    $("#filter-today-category").value
+    $("#filter-today-category").value,
+    $("#filter-today-difficulty").value
   );
   const doneCount = items.filter((q) => q.done).length;
   const activeCount = items.filter((q) => !q.done && q.active_session_id).length;
-  $("#today-summary").textContent = `${items.length} 题待做 · 已完成 ${doneCount}`;
+  const prefix = state.todayDate ? `${state.todayDate} · ` : "";
+  $("#today-summary").textContent = `${prefix}${items.length} 题待做 · 已完成 ${doneCount}`;
   if (activeCount) {
     $("#today-summary").textContent += ` · ${activeCount} 题进行中`;
   }
   const list = $("#today-list");
   list.innerHTML = "";
   if (!items.length) {
-    list.innerHTML = '<div class="card"><p class="meta">无符合条件的题目</p></div>';
+    list.innerHTML = `<div class="card"><p class="meta">${state.todayDate ? "该日无题目" : "无符合条件的题目"}</p></div>`;
     return;
   }
   for (const q of items) {
@@ -154,7 +180,7 @@ function renderToday() {
       <div class="question-head">
         ${statusBadge}
         <span class="badge">${q.type}</span>
-        <span class="badge">难度 ${q.difficulty}</span>
+        <span class="badge">难度 ${difficultyStars(q.difficulty)}</span>
       </div>
       <p>${escapeHtml(q.stem)}</p>`;
     card.addEventListener("click", () => startAnswer(q));
@@ -199,7 +225,7 @@ async function startAnswer(q) {
 
 function renderAnswer() {
   const q = state.question;
-  $("#answer-meta").textContent = `题型：${q.type} · 难度 ${q.difficulty} · 标签：${(q.tags || []).join(", ") || "无"}`;
+  $("#answer-meta").textContent = `题型：${q.type} · 难度 ${difficultyStars(q.difficulty)} · 标签：${(q.tags || []).join(", ") || "无"}`;
   $("#answer-stem").textContent = q.stem;
   $("#answer-chat").innerHTML = "";
   $("#answer-good").innerHTML = q.good_criteria.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
@@ -340,7 +366,6 @@ async function loadDetail(questionId) {
   $("#detail-type").textContent = data.type;
   $("#detail-stem").textContent = data.stem;
   $("#detail-meta").textContent = "标签：" + ((data.tags || []).join(", ") || "无");
-  $("#detail-difficulty").textContent = "";
   const tabs = $("#attempt-tabs");
   tabs.innerHTML = "";
   if (!data.attempts.length) {
@@ -486,7 +511,8 @@ function renderReviewItems() {
   const items = filterByTypeCategory(
     state.reviewItems || [],
     $("#filter-review-type").value,
-    $("#filter-review-category").value
+    $("#filter-review-category").value,
+    $("#filter-review-difficulty").value
   );
   const list = $("#review-list");
   list.innerHTML = "";
@@ -504,7 +530,7 @@ function renderReviewItems() {
       <div class="question-head">
         ${badge}
         <span class="badge">${q.type}</span>
-        <span class="badge">难度 ${q.difficulty}</span>
+        <span class="badge">难度 ${difficultyStars(q.difficulty)}</span>
       </div>
       <p>${escapeHtml(q.stem)}</p>`;
     card.addEventListener("click", () => {
@@ -519,30 +545,23 @@ function renderReviewItems() {
 async function loadHistory() {
   const groups = await api("/api/history");
   state.historyGroups = groups;
-  fillDateOptions(groups);
+  state.historyDates = new Set(groups.map((g) => g.date));
+  renderCalendar();
   applyFilters();
-}
-
-function fillDateOptions(groups) {
-  const sel = $("#filter-date");
-  sel.innerHTML = '<option value="all">全部</option>';
-  for (const g of groups) {
-    const opt = document.createElement("option");
-    opt.value = g.date;
-    opt.textContent = g.date;
-    sel.appendChild(opt);
-  }
 }
 
 function applyFilters() {
   const doneFilter = $("#filter-done").value;
-  const dateFilter = $("#filter-date").value;
   const scoreFilter = $("#filter-score").value;
   const typeFilter = $("#filter-type").value;
+  const difficultyFilter = $("#filter-difficulty").value;
   const categoryFilter = $("#filter-category").value;
+  const from = state.rangeFrom;
+  const to = state.rangeTo;
   const groups = [];
   for (const g of state.historyGroups || []) {
-    if (dateFilter !== "all" && g.date !== dateFilter) continue;
+    if (from && g.date < from) continue;
+    if (to && g.date > to) continue;
     let items = g.items;
     if (doneFilter !== "all") {
       items = items.filter((i) => i.done === (doneFilter === "done"));
@@ -552,7 +571,7 @@ function applyFilters() {
         scoreFilter === "high" ? i.total_score >= 80 : (i.total_score ?? 0) < 80
       );
     }
-    items = filterByTypeCategory(items, typeFilter, categoryFilter);
+    items = filterByTypeCategory(items, typeFilter, categoryFilter, difficultyFilter);
     if (items.length) groups.push({ date: g.date, items });
   }
   renderHistory(groups);
@@ -587,7 +606,7 @@ function renderHistory(groups) {
         <div class="question-head">
           ${badge}
           <span class="badge">${r.type}</span>
-          <span class="badge">难度 ${r.difficulty}</span>
+          <span class="badge">难度 ${difficultyStars(r.difficulty)}</span>
           <button class="history-delete" data-qid="${r.question_id}">删除</button>
         </div>
         <p>${escapeHtml(r.stem)}</p>`;
@@ -604,6 +623,111 @@ function renderHistory(groups) {
       applyFilters();
     });
   });
+}
+
+function padDate(n) {
+  return String(n).padStart(2, "0");
+}
+
+function difficultyStars(n) {
+  const c = Math.max(0, Math.min(5, Number(n) || 1));
+  return "★".repeat(c) + "☆".repeat(5 - c);
+}
+
+function fmtDate(y, m, d) {
+  return `${y}-${padDate(m)}-${padDate(d)}`;
+}
+
+function ensureCalMonth() {
+  const view = state.calViews[state.calendarMode];
+  if (view) {
+    state.calYear = view.year;
+    state.calMonth = view.month;
+    return;
+  }
+  const now = new Date();
+  setCalMonth(now.getFullYear(), now.getMonth());
+}
+
+function setCalMonth(year, month) {
+  state.calYear = year;
+  state.calMonth = month;
+  state.calViews[state.calendarMode] = { year, month };
+}
+
+function renderCalendar() {
+  ensureCalMonth();
+  const y = state.calYear;
+  const m = state.calMonth;
+  $("#calendar-title").textContent = `${y}年${m + 1}月`;
+  const grid = $("#calendar-grid");
+  grid.innerHTML = "";
+  const today = fmtDate(new Date().getFullYear(), new Date().getMonth() + 1, new Date().getDate());
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const mondayOffset = (new Date(y, m, 1).getDay() + 6) % 7;
+  const mode = state.calendarMode;
+  $("#calendar-clear").textContent = mode === "history" ? "清除范围" : "回到今日";
+  $("#calendar-hint").textContent =
+    mode === "history" ? "点击选择开始日期，再次点击选择结束日期" : "点击选择日期，查看该日题目";
+  for (let i = 0; i < mondayOffset; i++) {
+    const blank = document.createElement("span");
+    blank.className = "calendar-cell blank";
+    grid.appendChild(blank);
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    const date = fmtDate(y, m + 1, d);
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className = "calendar-cell";
+    cell.dataset.date = date;
+    cell.textContent = d;
+    if (date === today) cell.classList.add("today");
+    if (mode === "history") {
+      const from = state.rangeFrom;
+      const to = state.rangeTo;
+      if (from && to && date >= from && date <= to) cell.classList.add("in-range");
+      if (date === from) cell.classList.add("range-start");
+      if (date === to) cell.classList.add("range-end");
+    } else if (state.todayDate === date) {
+      cell.classList.add("range-start");
+    }
+    if (state.historyDates.has(date)) cell.classList.add("has-history");
+    grid.appendChild(cell);
+  }
+}
+
+function setRange(from, to) {
+  state.rangeFrom = from;
+  state.rangeTo = to;
+  $("#filter-date-from").value = from || "";
+  $("#filter-date-to").value = to || "";
+  renderCalendar();
+  applyFilters();
+}
+
+function renderYearPick() {
+  $("#pick-year").textContent = state.calYear;
+  const months = $("#pick-months");
+  months.innerHTML = "";
+  for (let i = 0; i < 12; i++) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "pick-month";
+    btn.dataset.month = i;
+    btn.textContent = `${i + 1}月`;
+    if (i === state.calMonth) btn.classList.add("pick-current");
+    months.appendChild(btn);
+  }
+}
+
+function toggleYearPick() {
+  const pick = $("#calendar-pick");
+  if (pick.classList.contains("hidden")) {
+    renderYearPick();
+    pick.classList.remove("hidden");
+  } else {
+    pick.classList.add("hidden");
+  }
 }
 
 async function runDaily() {
@@ -714,11 +838,104 @@ $("#filter-done").addEventListener("change", (e) => {
   if (e.target.value !== "done") $("#filter-score").value = "all";
   applyFilters();
 });
-$("#filter-date").addEventListener("change", applyFilters);
+$("#filter-date-from").addEventListener("change", (e) => {
+  const from = e.target.value || null;
+  if (from && state.rangeTo && from > state.rangeTo) {
+    setRange(from, null);
+    return;
+  }
+  state.rangeFrom = from;
+  renderCalendar();
+  applyFilters();
+});
+$("#filter-date-to").addEventListener("change", (e) => {
+  const to = e.target.value || null;
+  if (to && state.rangeFrom && to < state.rangeFrom) {
+    setRange(to, null);
+    return;
+  }
+  state.rangeTo = to;
+  renderCalendar();
+  applyFilters();
+});
+$("#calendar-prev").addEventListener("click", () => {
+  ensureCalMonth();
+  let y = state.calYear;
+  let m = state.calMonth - 1;
+  if (m < 0) {
+    m = 11;
+    y -= 1;
+  }
+  setCalMonth(y, m);
+  renderCalendar();
+});
+$("#calendar-next").addEventListener("click", () => {
+  ensureCalMonth();
+  let y = state.calYear;
+  let m = state.calMonth + 1;
+  if (m > 11) {
+    m = 0;
+    y += 1;
+  }
+  setCalMonth(y, m);
+  renderCalendar();
+});
+$("#calendar-clear").addEventListener("click", () => {
+  const now = new Date();
+  if (state.calendarMode === "history") {
+    setRange(null, null);
+  } else {
+    loadToday();
+  }
+  setCalMonth(now.getFullYear(), now.getMonth());
+  renderCalendar();
+});
+$("#calendar-grid").addEventListener("click", (e) => {
+  const cell = e.target.closest(".calendar-cell");
+  if (!cell || !cell.dataset.date) return;
+  const date = cell.dataset.date;
+  if (state.calendarMode === "today") {
+    loadToday(date);
+    renderCalendar();
+    return;
+  }
+  if (!state.rangeFrom || state.rangeTo) {
+    setRange(date, null);
+  } else {
+    const from = state.rangeFrom < date ? state.rangeFrom : date;
+    const to = state.rangeFrom < date ? date : state.rangeFrom;
+    setRange(from, to);
+  }
+});
+$("#calendar-title").addEventListener("click", toggleYearPick);
+$("#pick-year-prev").addEventListener("click", () => {
+  setCalMonth(state.calYear - 1, state.calMonth);
+  renderYearPick();
+});
+$("#pick-year-next").addEventListener("click", () => {
+  setCalMonth(state.calYear + 1, state.calMonth);
+  renderYearPick();
+});
+$("#pick-months").addEventListener("click", (e) => {
+  const btn = e.target.closest(".pick-month");
+  if (!btn) return;
+  setCalMonth(state.calYear, Number(btn.dataset.month));
+  $("#calendar-pick").classList.add("hidden");
+  renderCalendar();
+});
+document.addEventListener("click", (e) => {
+  const pick = $("#calendar-pick");
+  if (!pick.classList.contains("hidden") && !e.target.closest("#calendar-panel")) {
+    pick.classList.add("hidden");
+  }
+});
 $("#filter-score").addEventListener("change", applyFilters);
 $("#filter-type").addEventListener("change", applyFilters);
+$("#filter-difficulty").addEventListener("change", applyFilters);
 $("#filter-today-type").addEventListener("change", renderToday);
+$("#filter-today-difficulty").addEventListener("change", renderToday);
 $("#filter-review-type").addEventListener("change", renderReviewItems);
+$("#filter-review-difficulty").addEventListener("change", renderReviewItems);
 $("#filter-today-category").addEventListener("change", renderToday);
 $("#filter-category").addEventListener("change", applyFilters);
 $("#filter-review-category").addEventListener("change", renderReviewItems);
@@ -726,7 +943,15 @@ $("#filter-bank-type").addEventListener("change", () => {
   state.bankPage = 1;
   loadBank();
 });
+$("#filter-bank-difficulty").addEventListener("change", () => {
+  state.bankPage = 1;
+  loadBank();
+});
 $("#filter-bank-category").addEventListener("change", () => {
+  state.bankPage = 1;
+  loadBank();
+});
+$("#bank-search").addEventListener("input", () => {
   state.bankPage = 1;
   loadBank();
 });
@@ -749,6 +974,7 @@ $("#detail-back").addEventListener("click", () => {
 $("#detail-delete").addEventListener("click", deleteCurrentAttempt);
 
 loadTagCategories();
+renderCalendar();
 show("today");
 
 // 侧边栏收起/展开（localStorage 记忆）

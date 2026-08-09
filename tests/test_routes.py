@@ -1,6 +1,6 @@
 import math
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi.testclient import TestClient
 
 from app.config import (
@@ -239,6 +239,36 @@ def test_history_excludes_never_selected_questions(db):
 def test_today_empty_list(db):
     client = make_client(db, FakeLLM([]))
     assert client.get("/api/today").json() == []
+
+
+def test_today_excludes_yesterday(db):
+    """回归：昨日被选为今日的题不再出现在今日列表（今日 = 今天选中的题）。"""
+    add_today_question(db, stem="今天的题")
+    yesterday = add_today_question(db, stem="昨天的题")
+    yesterday.selected_at = datetime.now() - timedelta(days=1)
+    commit(db)
+
+    client = make_client(db, FakeLLM([]))
+    items = client.get("/api/today").json()
+    assert [i["stem"] for i in items] == ["今天的题"]
+
+
+def test_today_date_param_selects_day(db):
+    """日历单选：date=YYYY-MM-DD 返回被选为当日题目的题（不限 status）。"""
+    add_today_question(db, stem="今天的题")
+    old = add_today_question(db, stem="昨天的题")
+    old.selected_at = datetime.now() - timedelta(days=1)
+    commit(db)
+    client = make_client(db, FakeLLM([]))
+
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y-%m-%d")
+    by_day = client.get("/api/today", params={"date": yesterday}).json()
+    assert [i["stem"] for i in by_day] == ["昨天的题"]
+    today_items = client.get("/api/today", params={"date": today}).json()
+    assert [i["stem"] for i in today_items] == ["今天的题"]
+    assert client.get("/api/today", params={"date": "2026-13-99"}).status_code == 400
+    assert client.get("/api/today", params={"date": "not-a-date"}).status_code == 400
 
 
 def test_create_session_resumes_existing_active(db):
@@ -524,6 +554,53 @@ def test_bank_invalid_params(db):
     assert over["items"] == []  # 超页返回空
 
 
+def test_bank_search_stem_and_type(db):
+    add_today_question(db, stem="Redis 缓存一致性", tags=["Java"], status_today=False)
+    add_today_question(db, stem="MySQL 索引优化", tags=["Java"], status_today=False)
+    add_today_question(
+        db, stem="缓存设计", tags=["Redis"], status_today=False,
+        qtype=QuestionType.design,
+    )
+    client = make_client(db, FakeLLM([]))
+
+    hit = client.get("/api/bank", params={"q": "redis"}).json()
+    assert hit["total"] == 2  # 题干命中（大小写不敏感）+ 标签命中（题干不含关键词）
+    assert {i["stem"] for i in hit["items"]} == {"Redis 缓存一致性", "缓存设计"}
+
+    combo = client.get("/api/bank", params={"q": "redis", "type": "design"}).json()
+    assert combo["total"] == 1
+    assert combo["items"][0]["stem"] == "缓存设计"
+
+    missed = client.get("/api/bank", params={"q": "不存在的词"}).json()
+    assert missed["total"] == 0
+    assert missed["items"] == []
+
+    blank = client.get("/api/bank", params={"q": "   "}).json()
+    assert blank["total"] == 3  # 空白 q 视为无过滤
+
+
+def test_bank_filter_difficulty(db):
+    add_today_question(db, stem="入门题", tags=["Java"], status_today=False, qtype=QuestionType.knowledge)
+    add_today_question(db, stem="深度题", tags=["Java"], status_today=False, qtype=QuestionType.knowledge)
+    with db:
+        from sqlalchemy import text as _t
+        db.exec(_t("UPDATE questions SET difficulty = 5 WHERE stem = :s"),
+                params={"s": "深度题"})
+        commit(db)
+    client = make_client(db, FakeLLM([]))
+
+    by_diff = client.get("/api/bank", params={"difficulty": 5}).json()
+    assert by_diff["total"] == 1
+    assert by_diff["items"][0]["stem"] == "深度题"
+
+    combo = client.get("/api/bank", params={"difficulty": 1, "type": "knowledge"}).json()
+    assert combo["total"] == 1
+    assert combo["items"][0]["stem"] == "入门题"
+
+    assert client.get("/api/bank", params={"difficulty": 9}).status_code == 400
+    assert client.get("/api/bank", params={"difficulty": 0}).status_code == 400
+
+
 def test_bank_done_flag(db):
     q = add_today_question(db, stem="做过题", tags=["Java"], status_today=False)
     add_today_question(db, stem="未做题", tags=["Java"], status_today=False)
@@ -570,8 +647,8 @@ def test_upload_direct_mode_tags_llm(db):
     content = "Q: 讲一下 HashMap 底层原理\nQ: Redis 分布式锁"
     llm = FakeLLM([
         {"items": [
-            {"stem": "讲一下 HashMap 底层原理", "tags": ["Java", "词表外", "数据结构"]},
-            {"stem": "Redis 分布式锁", "tags": ["缓存"]},
+            {"stem": "讲一下 HashMap 底层原理", "tags": ["Java", "词表外", "数据结构"], "difficulty": 4},
+            {"stem": "Redis 分布式锁", "tags": ["缓存"], "difficulty": 9},
         ]}
     ])
     client = make_client(db, llm)
@@ -584,6 +661,12 @@ def test_upload_direct_mode_tags_llm(db):
                                     params={"s": "Redis 分布式锁"}).one()[0])
         assert "词表外" not in tags1 and "Java" in tags1 and "数据结构" in tags1
         assert "缓存" in tags2
+        diff1 = db.exec(_t("SELECT difficulty FROM questions WHERE stem = :s"),
+                        params={"s": "讲一下 HashMap 底层原理"}).one()[0]
+        diff2 = db.exec(_t("SELECT difficulty FROM questions WHERE stem = :s"),
+                        params={"s": "Redis 分布式锁"}).one()[0]
+        assert diff1 == 4  # LLM 标注难度回写
+        assert diff2 == 5  # 9 钳制到 5
 
 
 def test_upload_facejing_mode_generates(db):
@@ -632,7 +715,20 @@ def test_resume_unfinished_session(db):
 
     body = client.get(f"/api/sessions/{session_id}/resume").json()
     assert body["rounds_done"] == 1
-    assert body["max_rounds"] == 20
+    assert body["max_rounds"] == 6  # 难度 1 → 3+1*3=6
+
+
+def test_resume_max_rounds_scales_with_difficulty(db):
+    q = add_today_question(db)
+    q.difficulty = 5
+    commit(db)
+    llm = FakeLLM([CONTINUE, JUDGMENT])
+    client = make_client(db, llm)
+    session_id = client.post("/api/sessions", json={"question_id": q.id, "kind": "chain"}).json()["session_id"]
+    client.post(f"/api/sessions/{session_id}/answer", json={"answer": "第一轮"})
+
+    body = client.get(f"/api/sessions/{session_id}/resume").json()
+    assert body["max_rounds"] == 18  # 难度 5 → 3+5*3=18
 
 
 def test_resume_finished_session_409(db):

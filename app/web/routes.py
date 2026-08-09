@@ -19,10 +19,12 @@ from sqlalchemy import cast, select, String
 
 from .. import db
 from ..config import AppConfig, secret_value
+from ..difficulty import max_rounds_for, target_level_for
 from ..embed import Embedder
 from ..errors import AppError
-from ..judge.chain import ChainSession, resume
+from ..judge.chain import resume
 from ..judge.judge import STATUS_FAILED, judge
+from ..pipeline.generate import _clamp_difficulty
 from ..models import (
     Attempt,
     Judgment,
@@ -91,9 +93,16 @@ def create_app(
     # --- 今日题目与题目详情 ---
 
     @app.get("/api/today")
-    def today_questions():
+    def today_questions(date: str | None = None):
+        """今日题目列表；date=YYYY-MM-DD 时返回被选为当日题目的题（不限 status，供日历单选回看）。"""
         with db.get_session() as session:
-            questions = db.list_today_questions(session)
+            if date is not None:
+                try:
+                    questions = db.list_questions_by_date(session, date)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"invalid date: {date}")
+            else:
+                questions = db.list_today_questions(session)
             payload = []
             for q in questions:
                 done = _has_finished_session(session, q.id)
@@ -292,15 +301,17 @@ def create_app(
             question = session.get(Question, row.question_id)
             if question is None:
                 raise HTTPException(status_code=404, detail="question not found")
+            max_rounds = max_rounds_for(question.difficulty, config.daily.chain_max_rounds)
             chain = resume(session_id, question, llm_factory("judge"),
                            judge_model=config.llm.judge_model,
-                           max_rounds=config.daily.chain_max_rounds)
+                           max_rounds=max_rounds,
+                           target_level=target_level_for(question.difficulty))
             return {
                 "session_id": row.id,
                 "question_id": row.question_id,
                 "stem": question.stem,
                 "rounds_done": chain.rounds_done,
-                "max_rounds": config.daily.chain_max_rounds,
+                "max_rounds": max_rounds,
             }
 
     # --- 历史（按被选为今日题目的日期分组，未作答也展示） ---
@@ -357,8 +368,10 @@ def create_app(
         page_size: int = 20,
         type: str | None = None,
         category: str | None = None,
+        q: str | None = None,
+        difficulty: int | None = None,
     ):
-        """全部题目分页浏览（id 倒序）；type/category 筛选；每项带 done 标志。"""
+        """全部题目分页浏览（id 倒序）；type/category/difficulty 筛选；q 关键词搜题干+标签；每项带 done 标志。"""
         from ..models import QuestionType as _QT
 
         if page < 1 or not 1 <= page_size <= 50:
@@ -369,17 +382,28 @@ def create_app(
                 qtype = _QT(type)
             except ValueError:
                 raise HTTPException(status_code=400, detail=f"invalid type: {type}")
+        if difficulty is not None and not 1 <= difficulty <= 5:
+            raise HTTPException(status_code=400, detail=f"invalid difficulty: {difficulty}")
         if category is not None and category not in {name for name, _ in TAG_CATEGORIES}:
             raise HTTPException(status_code=400, detail=f"invalid category: {category}")
         cat_tags = None
         if category is not None:
             cat_tags = dict(TAG_CATEGORIES)[category]
+        keyword = q.strip().lower() if q else ""
 
         with db.get_session() as session:
             stmt = select(Question)
             if qtype is not None:
                 stmt = stmt.where(Question.type == qtype)
+            if difficulty is not None:
+                stmt = stmt.where(Question.difficulty == difficulty)
             questions = list(session.scalars(stmt))
+            if keyword:
+                questions = [
+                    x for x in questions
+                    if keyword in (x.stem or "").lower()
+                    or any(keyword in t.lower() for t in (x.tags or []))
+                ]
             if cat_tags is not None:
                 questions = [
                     q for q in questions
@@ -523,12 +547,14 @@ def _run_answer_job(
                 session.add(judgment)
                 db.commit(session)
         elif row.kind == SessionKind.chain:
+            max_rounds = max_rounds_for(question.difficulty, config.daily.chain_max_rounds)
             chain = resume(
                 session_id,
                 question,
                 judge_llm,
                 judge_model=config.llm.judge_model,
-                max_rounds=config.daily.chain_max_rounds,
+                max_rounds=max_rounds,
+                target_level=target_level_for(question.difficulty),
             )
             result = chain.next_round(answer)
             if result["finished"]:
@@ -681,8 +707,9 @@ def _insert_direct_questions(content: str) -> tuple[Source, int]:
 
 
 def _tag_direct_questions(source_id: int, llm_factory) -> None:
-    """直接模式后台补标签（≤20 题一次调用，词表过滤；失败留空）。"""
+    """直接模式后台补标签 + 难度（≤20 题一次调用，词表过滤；失败留空）。"""
     try:
+        from ..difficulty import DIFFICULTY_SCALE_TEXT
         from ..tags import MAX_TAGS, TAG_VOCABULARY, tag_vocab_text
 
         with db.get_session() as session:
@@ -698,10 +725,16 @@ def _tag_direct_questions(source_id: int, llm_factory) -> None:
         stems = [q.stem for q in questions]
         numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(stems))
         prompt = (
-            "为以下题目各选 1-{max_tags} 个最相关的标签，必须从词表中选择：\n{vocab}\n\n"
+            "为以下题目各选 1-{max_tags} 个最相关的标签（必须从词表中选）并按难度分级标准标注难度：\n{vocab}\n\n"
+            "难度分级标准：\n{difficulty_scale}\n\n"
             "题目列表：\n{numbered}\n\n"
-            '只输出 JSON：{{"items": [{{"stem": "题干原文", "tags": [标签]}}]}}'
-        ).format(max_tags=MAX_TAGS, vocab=tag_vocab_text(), numbered=numbered)
+            '只输出 JSON：{{"items": [{{"stem": "题干原文", "tags": [标签], "difficulty": 1-5 整数}}]}}'
+        ).format(
+            max_tags=MAX_TAGS,
+            vocab=tag_vocab_text(),
+            difficulty_scale=DIFFICULTY_SCALE_TEXT,
+            numbered=numbered,
+        )
         parsed = llm_factory("generate").complete(
             [{"role": "user", "content": prompt}], json_schema={}
         )
@@ -712,15 +745,19 @@ def _tag_direct_questions(source_id: int, llm_factory) -> None:
                 s = item.get("stem")
                 tags = item.get("tags", [])
                 if isinstance(s, str) and isinstance(tags, list):
-                    by_stem[s] = [
-                        t for t in tags if isinstance(t, str) and t in TAG_VOCABULARY
-                    ][:MAX_TAGS]
+                    by_stem[s] = {
+                        "tags": [
+                            t for t in tags if isinstance(t, str) and t in TAG_VOCABULARY
+                        ][:MAX_TAGS],
+                        "difficulty": _clamp_difficulty(item.get("difficulty")),
+                    }
         if by_stem:
             with db.get_session() as session:
                 for q in questions:
                     if q.stem in by_stem:
                         row = session.get(Question, q.id)
-                        row.tags = by_stem[q.stem]
+                        row.tags = by_stem[q.stem]["tags"]
+                        row.difficulty = by_stem[q.stem]["difficulty"]
                 db.commit(session)
     except Exception as e:
         logger.warning("tag direct questions failed (留空): %s", e)

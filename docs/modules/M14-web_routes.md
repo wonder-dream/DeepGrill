@@ -12,8 +12,8 @@ FastAPI 路由层：今日题目、答题（单轮/追问轮）、判分结果�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/` | 静态页（SPA 骨架） |
-| GET | `/api/bank` | 题库分页浏览（id 倒序，20/页可配；type/category 筛选；含 done 标志；非法参数 400，2026-08-09） |
-| GET | `/api/today` | 今日题目列表（含待做红点） |
+| GET | `/api/bank` | 题库分页浏览（id 倒序，20/页可配；type/category 筛选；q 关键词搜题干+标签（LIKE 子串，2026-08-09）；含 done 标志；非法参数 400） |
+| GET | `/api/today` | 今日题目列表（含待做红点）；`?date=YYYY-MM-DD` 返回被选为当日题目的题（不限 status，日历单选回看，2026-08-09） |
 | GET | `/api/questions/{id}` | 题目详情 |
 | GET | `/api/questions/{id}/history` | 历史详情：该题全部会话（倒序）+ 问答记录（transcript 含层级）+ 判分（2026-08-08，前端尝试按钮切换） |
 | DELETE | `/api/sessions/{id}` | 删单次作答（级联删 attempts/judgments；判分中 409；题目保留） |
@@ -26,7 +26,7 @@ FastAPI 路由层：今日题目、答题（单轮/追问轮）、判分结果�
 | GET | `/api/review?tag=` | 薄弱点复习（Phase 2 v1）：按词表 tag 检索同类题，未做优先；tag 须在共享词表内否则 400 |
 | GET | `/api/review/tags` | 全部词表标签 + 薄弱点计数（weak_tags 聚合，有计数在前；复习入口页用，2026-08-08） |
 | GET | `/api/tags` | 标签分类结构（6 大类，前端筛选联动用，2026-08-08） |
-| POST | `/api/upload` | 用户上传题目（JSON {filename, content}）：Q:/列表行直接入库（后台 LLM 补标签）；面经文本入库 source 后台立即生成（单源不受 36 上限）；2026-08-09 |
+| POST | `/api/upload` | 用户上传题目（JSON {filename, content}）：Q:/列表行直接入库（后台 LLM 补标签 + 难度 1-5）；面经文本入库 source 后台立即生成（单源不受 36 上限）；2026-08-09 |
 | POST | `/api/daily/run` | 手动触发流水线，返回 DailyReport |
 
 ## 3. 关键决策

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>面试助手</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -38,10 +39,23 @@
             <option value="project">项目题</option>
           </select>
         </label>
+        <label>难度
+          <select id="filter-bank-difficulty">
+            <option value="all">全部</option>
+            <option value="1">★</option>
+            <option value="2">★★</option>
+            <option value="3">★★★</option>
+            <option value="4">★★★★</option>
+            <option value="5">★★★★★</option>
+          </select>
+        </label>
         <label>分类
           <select id="filter-bank-category">
             <option value="all">全部</option>
           </select>
+        </label>
+        <label>搜索
+          <input type="search" id="bank-search" placeholder="关键词…">
         </label>
       </div>
       <div class="card-list" id="bank-list"></div>
@@ -64,6 +78,16 @@
             <option value="knowledge">知识题</option>
             <option value="design">设计题</option>
             <option value="project">项目题</option>
+          </select>
+        </label>
+        <label>难度
+          <select id="filter-today-difficulty">
+            <option value="all">全部</option>
+            <option value="1">★</option>
+            <option value="2">★★</option>
+            <option value="3">★★★</option>
+            <option value="4">★★★★</option>
+            <option value="5">★★★★★</option>
           </select>
         </label>
         <label>分类
@@ -120,9 +144,9 @@
           </select>
         </label>
         <label>日期
-          <select id="filter-date">
-            <option value="all">全部</option>
-          </select>
+          <input type="date" id="filter-date-from">
+          ~
+          <input type="date" id="filter-date-to">
         </label>
         <label>分数
           <select id="filter-score" disabled>
@@ -137,6 +161,16 @@
             <option value="knowledge">知识题</option>
             <option value="design">设计题</option>
             <option value="project">项目题</option>
+          </select>
+        </label>
+        <label>难度
+          <select id="filter-difficulty">
+            <option value="all">全部</option>
+            <option value="1">★</option>
+            <option value="2">★★</option>
+            <option value="3">★★★</option>
+            <option value="4">★★★★</option>
+            <option value="5">★★★★★</option>
           </select>
         </label>
         <label>分类
@@ -163,6 +197,16 @@
             <option value="project">项目题</option>
           </select>
         </label>
+        <label>难度
+          <select id="filter-review-difficulty">
+            <option value="all">全部</option>
+            <option value="1">★</option>
+            <option value="2">★★</option>
+            <option value="3">★★★</option>
+            <option value="4">★★★★</option>
+            <option value="5">★★★★★</option>
+          </select>
+        </label>
         <label>分类
           <select id="filter-review-category">
             <option value="all">全部</option>
@@ -177,7 +221,6 @@
         <button id="detail-back">← 返回</button>
         <div class="question-head">
           <span class="badge" id="detail-type"></span>
-          <span class="badge" id="detail-difficulty"></span>
         </div>
         <h2 id="detail-stem"></h2>
         <p class="meta" id="detail-meta"></p>
@@ -194,6 +237,30 @@
       </div>
     </section>
   </main>
+
+  <aside id="calendar-panel">
+    <div class="calendar-head">
+      <button id="calendar-prev" title="上一月">◀</button>
+      <span id="calendar-title" title="选择年月"></span>
+      <button id="calendar-next" title="下一月">▶</button>
+    </div>
+    <div class="calendar-clear-row">
+      <button id="calendar-clear">清除范围</button>
+    </div>
+    <div class="calendar-week">
+      <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+    </div>
+    <div id="calendar-grid" class="calendar-grid"></div>
+    <div id="calendar-pick" class="calendar-pick hidden">
+      <div class="pick-head">
+        <button id="pick-year-prev" title="上一年">◀</button>
+        <span id="pick-year"></span>
+        <button id="pick-year-next" title="下一年">▶</button>
+      </div>
+      <div id="pick-months" class="pick-months"></div>
+    </div>
+    <p class="meta calendar-hint" id="calendar-hint"></p>
+  </aside>
 
   <script src="/static/app.js"></script>
 </body>
