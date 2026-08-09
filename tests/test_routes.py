@@ -1078,3 +1078,110 @@ def test_upload_binary_resume(monkeypatch, db):
             _upload_tasks.pop(token, None)
             if cand_token:
                 _resume_candidates.pop(cand_token, None)
+
+
+# --- 数据备份：导出/导入 ---
+
+
+def test_export_backup_zip(db):
+    """导出：zip 含 interview.db + meta.json，可解压且库可读。"""
+    import io
+    import sqlite3
+    import zipfile
+
+    add_today_question(db, stem="备份测试题", tags=["Java"])
+    client = make_client(db, FakeLLM([]))
+    resp = client.get("/api/export")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    zf = zipfile.ZipFile(io.BytesIO(resp.content))
+    assert "interview.db" in zf.namelist()
+    assert "meta.json" in zf.namelist()
+    db_bytes = zf.read("interview.db")
+    with sqlite3.connect(":memory:") as conn:
+        conn.execute("ATTACH DATABASE ':memory:' AS x")
+        tmp = conn.execute
+        # 直接用内存库读字节：写临时文件验证
+        import tempfile
+        from pathlib import Path
+
+        p = Path(tempfile.mkdtemp()) / "check.db"
+        p.write_bytes(db_bytes)
+        with sqlite3.connect(str(p)) as c:
+            n = c.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
+        assert n == 1
+
+
+def test_import_backup_restores(tmp_path):
+    """导入：备份 zip 恢复后题数变化；当前库先备份到 data/backup/。
+
+    用独立引擎生命周期（不共享 db fixture 的 session 连接，避免 Windows 文件锁）。
+    """
+    import base64
+    import io
+    import sqlite3
+    import zipfile
+
+    from app.db import close as _close
+    from app.db import get_session as _gs
+    from app.db import init_db as _init
+    from app.models import Source, SourceType
+
+    real_db = tmp_path / "real.db"
+    other_db = tmp_path / "other.db"
+    _init(f"sqlite:///{real_db}")
+    try:
+        with _gs() as s:
+            src = Source(type=SourceType.manual, source_hash="pre", cleaned_text="x")
+            s.add(src)
+            commit(s)
+            s.refresh(src)
+            s.add(Question(source_id=src.id, type=QuestionType.knowledge,
+                           stem="导入前题", tags=[], good_criteria=[], bad_criteria=[]))
+            commit(s)
+        _close()
+        _init(f"sqlite:///{other_db}")
+        with _gs() as s:
+            src = Source(type=SourceType.manual, source_hash="bh", cleaned_text="x")
+            s.add(src)
+            commit(s)
+            s.refresh(src)
+            s.add(Question(source_id=src.id, type=QuestionType.knowledge,
+                           stem="恢复出来的题", tags=[], good_criteria=[], bad_criteria=[]))
+            commit(s)
+        _close()
+        _init(f"sqlite:///{real_db}")
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(other_db, "interview.db")
+        payload = base64.b64encode(buf.getvalue()).decode()
+
+        client = make_client(None, FakeLLM([]))
+        resp = client.post("/api/import", json={"content_base64": payload})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["restored"] is True
+        assert body["questions"] == 1
+        with _gs() as s:
+            from sqlalchemy import select as _sel
+
+            stems = [q.stem for q in s.scalars(_sel(Question))]
+            assert stems == ["恢复出来的题"]
+    finally:
+        _close()
+
+
+def test_import_backup_invalid(db):
+    client = make_client(db, FakeLLM([]))
+    assert client.post("/api/import", json={"content_base64": "###"}).status_code == 400
+    import base64
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("其他文件.txt", "x")
+    assert client.post("/api/import", json={
+        "content_base64": base64.b64encode(buf.getvalue()).decode(),
+    }).status_code == 400

@@ -1,4 +1,5 @@
 import re
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -16,11 +17,19 @@ from .models import Question, QuestionStatus, QuestionType, Session, SessionStat
 
 _engine: Engine | None = None
 _factory: sessionmaker | None = None
+_db_url: str | None = None
+_import_lock = threading.Lock()
 
 
 def init_db(db_url: str) -> None:
-    """连接 SQLite 并建表；任何 sqlite 异常包装为 StorageError。"""
-    global _engine, _factory
+    """连接 SQLite 并建表；任何 sqlite 异常包装为 StorageError。
+
+    重建时先 dispose 旧引擎（防止旧连接句柄锁住数据库文件，Windows 上替换文件会失败）。
+    """
+    global _engine, _factory, _db_url
+    if _engine is not None:
+        _engine.dispose()
+    _db_url = db_url
     connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
     try:
         _engine = create_engine(db_url, connect_args=connect_args)
@@ -36,6 +45,27 @@ def init_db(db_url: str) -> None:
     except SQLAlchemyError as e:
         raise StorageError(f"cannot init database {db_url}: {e}") from e
     _factory = sessionmaker(bind=_engine, class_=DBSession, expire_on_commit=False)
+
+
+def close() -> None:
+    """释放引擎连接（导入恢复时用）；init_db 可重建。"""
+    global _engine, _factory
+    if _engine is not None:
+        _engine.dispose()
+    _engine = None
+    _factory = None
+
+
+def db_url() -> str:
+    """当前数据库 URL（init_db 记录；未初始化返回默认 sqlite 路径）。"""
+    return _db_url or "sqlite:///data/interview.db"
+
+
+def engine() -> Engine:
+    """当前引擎（未初始化时惰性 init）。"""
+    if _engine is None:
+        init_db(db_url())
+    return _engine
 
 
 def _migrate_selected_at(engine: Engine) -> None:

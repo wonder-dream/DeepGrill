@@ -707,3 +707,9 @@ details summary:hover { color: var(--red); }
 }
 .candidate-stem:focus { border-color: var(--red); }
 #candidate-confirm { margin-top: 10px; }
+
+.export-link {
+  text-decoration: none;
+  display: inline-block;
+  text-align: center;
+}

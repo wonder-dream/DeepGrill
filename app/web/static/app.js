@@ -1011,6 +1011,38 @@ $("#candidate-confirm").addEventListener("click", async () => {
     setUploadStatus(err.message, true);
   }
 });
+
+// 数据备份：导入（导出为 <a download> 直链）
+$("#import-pick").addEventListener("click", () => $("#import-file").click());
+$("#import-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  if (!/\.zip$/i.test(file.name)) {
+    alert("仅支持 .zip 备份文件");
+    return;
+  }
+  $("#import-filename").textContent = file.name;
+  if (!confirm("导入将覆盖当前全部数据（导入前会自动备份当前库）。确认继续？")) return;
+  const buf = await file.arrayBuffer();
+  let bin = "";
+  const bytes = new Uint8Array(buf);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  try {
+    const resp = await api("/api/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content_base64: btoa(bin) }),
+    });
+    alert(`恢复成功：题库 ${resp.questions} 题，页面即将刷新`);
+    location.reload();
+  } catch (err) {
+    alert(`导入失败：${err.message}`);
+  }
+});
 $("#answer-submit").addEventListener("click", submitAnswer);
 function goBack() {
   if (state.returnTo === "review") {

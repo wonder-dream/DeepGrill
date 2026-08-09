@@ -15,9 +15,9 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import cast, select, String
+from sqlalchemy import cast, func, select, String
 
 from .. import db
 from ..config import AppConfig, secret_value
@@ -568,6 +568,129 @@ def create_app(
         with _review_paper_lock:
             _review_paper_cache[tag] = payload
         return payload
+
+    # --- 数据备份：导出/导入（sqlite 整库备份 zip） ---
+
+    @app.get("/api/export")
+    def export_backup():
+        """整库备份：sqlite3 backup API 复制当前库 → zip（interview.db + meta.json）下载。"""
+        import io
+        import json as _json
+        import sqlite3 as _sqlite3
+        import tempfile as _tempfile
+        import zipfile
+
+        with db.get_session() as session:
+            total = session.scalars(select(func.count(Question.id))).one()
+        tmp_db = Path(_tempfile.gettempdir()) / f"interview_backup_{secrets.token_hex(4)}.db"
+        dst = _sqlite3.connect(str(tmp_db))
+        try:
+            with db.engine().connect() as conn:
+                conn.connection.backup(dst)
+            dst.close()
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(tmp_db, "interview.db")
+                meta = {
+                    "app": "InterviewAssistant",
+                    "exported_at": datetime.now().isoformat(),
+                    "questions": total,
+                }
+                zf.writestr("meta.json", _json.dumps(meta, ensure_ascii=False, indent=1))
+            zip_buf.seek(0)
+            return Response(
+                content=zip_buf.getvalue(),
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": (
+                        f"attachment; filename=interview_backup_{datetime.now():%Y%m%d_%H%M%S}.zip"
+                    )
+                },
+            )
+        finally:
+            try:
+                dst.close()
+            except Exception:
+                pass
+            tmp_db.unlink(missing_ok=True)
+
+    @app.post("/api/import")
+    def import_backup(body: dict):
+        """从备份 zip 恢复：解压校验 → 当前库备份 → 原子替换 → 重建引擎。
+
+        替换运行中 SQLite 文件前先 dispose 引擎连接；恢复后调用方刷新页面。
+        """
+        import io
+        import sqlite3 as _sqlite3
+        import tempfile as _tempfile
+        import zipfile
+
+        from .. import db as _db
+        from ..db import db_url as _db_url_fn
+
+        content_base64 = str(body.get("content_base64", ""))
+        try:
+            data = base64.b64decode(content_base64)
+        except Exception:
+            raise HTTPException(status_code=400, detail="文件编码无效")
+        if len(data) > 200 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="备份文件超过 200MB 限制")
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(data))
+            names = zf.namelist()
+            if "interview.db" not in names:
+                raise HTTPException(status_code=400, detail="备份文件中缺少 interview.db")
+            db_bytes = zf.read("interview.db")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"备份文件无效：{e}")
+        if db_bytes[:16] != b"SQLite format 3\x00":
+            raise HTTPException(status_code=400, detail="interview.db 不是有效的 SQLite 文件")
+        tmp_check = Path(_tempfile.gettempdir()) / f"interview_restore_{secrets.token_hex(4)}.db"
+        tmp_check.write_bytes(db_bytes)
+        check_conn = _sqlite3.connect(str(tmp_check))
+        try:
+            tables = {
+                r[0]
+                for r in check_conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            required = {"questions", "sources", "sessions", "attempts", "judgments", "task_logs"}
+            if not required.issubset(tables):
+                raise HTTPException(status_code=400, detail="备份库缺少必要表，无法恢复")
+        finally:
+            check_conn.close()
+            tmp_check.unlink(missing_ok=True)
+
+        db_path = Path(_db_url_fn().removeprefix("sqlite:///"))
+        if not db_path.is_absolute():
+            db_path = Path.cwd() / db_path
+        backup_dir = Path("data/backup")
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        if db_path.exists():
+            pre = backup_dir / f"pre_import_{datetime.now():%Y%m%d_%H%M%S}.db"
+            pre.write_bytes(db_path.read_bytes())
+        with _db._import_lock:
+            _db.close()
+            tmp_swap = Path(str(db_path) + f".restore_{secrets.token_hex(4)}")
+            tmp_swap.write_bytes(db_bytes)
+            last_err = None
+            for _attempt in range(5):  # Windows 文件句柄释放有时序，重试
+                try:
+                    tmp_swap.replace(db_path)
+                    last_err = None
+                    break
+                except PermissionError as e:
+                    last_err = e
+                    import time as _time
+
+                    _time.sleep(0.4)
+            if last_err is not None:
+                raise HTTPException(status_code=500, detail=f"数据库文件被占用，恢复失败：{last_err}")
+            _db.init_db(_db_url_fn())
+        with db.get_session() as session:
+            total = session.scalars(select(func.count(Question.id))).one()
+        return {"restored": True, "questions": total}
 
     # --- 用户上传题目（格式：题目列表 / 面经文本 / 简历；支持 pdf/docx/doc 二进制） ---
 
