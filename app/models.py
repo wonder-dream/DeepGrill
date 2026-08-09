@@ -125,6 +125,7 @@ class Attempt(SQLModel, table=True):
     answer_text: str
     feedback_text: str = ""
     level: Optional[int] = None  # 深挖追问层级（L1-L5，M11 深挖协议）
+    quality: Optional[str] = None  # 本轮回答质量（correct|partial|wrong|unsure，供判分参考）
 
     session: Session = Relationship(back_populates="attempts")
 

@@ -101,22 +101,27 @@ class ChainSession:
         if self._finished:
             raise ChainStateError("chain session already finished")
         round_no = self.rounds_done
-        followup, action, level = self._ask_llm(answer)
+        prev_quality = self._last_quality()
+        followup, action, level, quality = self._ask_llm(answer)
         self._persist_attempt(
             round_no,
             is_followup=round_no > 0,
             answer=answer,
             feedback=followup,
             level=level,
+            quality=quality,
         )
         if level is not None:
             self._max_level = max(self._max_level, level)
-        if action == "finish" or round_no >= self._max_rounds - 1:
+        if self._should_finish(action, round_no, quality, prev_quality):
             self._finished = True
         return RoundResult(interviewer_message=followup, finished=self._finished)
 
     def finish(self, reference: str | None = None) -> Judgment:
-        """结束追问链：调用 M10 整轮判分（带最大追问层级 + 可选参考）并落库；会话标记 finished。"""
+        """结束追问链：调用 M10 整轮判分（带最大追问层级 + 质量轨迹 + 可选参考）并落库；会话标记 finished。"""
+        qualities = [
+            a.quality for a in self._attempts() if a.quality
+        ] or None
         judgment = judge(
             self._question,
             self._transcript(),
@@ -125,6 +130,7 @@ class ChainSession:
             session_id=self._session_id,
             reference=reference,
             max_level=self._max_level or None,
+            quality_trace=qualities,
         )
         with get_session() as session:
             session.add(judgment)
@@ -137,7 +143,33 @@ class ChainSession:
         self._finished = True
         return judgment
 
-    def _ask_llm(self, answer: str) -> tuple[str, str, int | None]:
+    def _should_finish(self, action: str, round_no: int, quality: str | None, prev_quality: str | None) -> bool:
+        """判定是否收尾：LLM 自觉 finish / 轮数上限 / 代码侧兜底校验。
+
+        兜底规则：LLM 返回连续 2 次 wrong/unsure 却仍 continue（违反 prompt 规则）
+        时强制收尾，避免用户被反复追问却答不出。prev_quality 须为本轮之前的上轮质量
+        （在 persist 前查询，否则会读到本轮自己）。
+        """
+        if action == "finish" or round_no >= self._max_rounds - 1:
+            return True
+        if quality in ("wrong", "unsure") and prev_quality in ("wrong", "unsure"):
+            logger.info(
+                "chain forced finish for session %s (two bad answers while llm said continue)",
+                self._session_id,
+            )
+            return True
+        return False
+
+    def _last_quality(self) -> str | None:
+        with get_session() as session:
+            return session.scalars(
+                select(Attempt.quality)
+                .where(Attempt.session_id == self._session_id)
+                .order_by(Attempt.round_no.desc())
+                .limit(1)
+            ).first()
+
+    def _ask_llm(self, answer: str) -> tuple[str, str, int | None, str | None]:
         messages = [{"role": "user", "content": self._build_prompt(answer)}]
         try:
             parsed = self._llm.complete(messages, json_schema={})
@@ -148,9 +180,9 @@ class ChainSession:
                 logger.warning(
                     "chain round degraded for session %s: %s", self._session_id, e
                 )
-                return DEGRADED_HINT, "continue", None
+                return DEGRADED_HINT, "continue", None, None
         if not isinstance(parsed, dict):
-            return DEGRADED_HINT, "continue", None
+            return DEGRADED_HINT, "continue", None, None
         action = parsed.get("action")
         followup = parsed.get("followup")
         if not isinstance(followup, str) or not followup.strip():
@@ -158,7 +190,10 @@ class ChainSession:
         level = parsed.get("level")
         if not isinstance(level, int) or not 1 <= level <= 5:
             level = None
-        return followup, action if action == "finish" else "continue", level
+        quality = parsed.get("quality")
+        if quality not in ("correct", "partial", "wrong", "unsure"):
+            quality = None
+        return followup, action if action == "finish" else "continue", level, quality
 
     def _build_prompt(self, answer: str) -> str:
         from ..difficulty import DIFFICULTY_NAMES
@@ -203,7 +238,7 @@ class ChainSession:
             )
 
     def _persist_attempt(
-        self, round_no: int, *, is_followup: bool, answer: str, feedback: str, level: int | None
+        self, round_no: int, *, is_followup: bool, answer: str, feedback: str, level: int | None, quality: str | None
     ) -> None:
         with get_session() as session:
             attempt = Attempt(
@@ -213,6 +248,7 @@ class ChainSession:
                 answer_text=answer,
                 feedback_text=feedback,
                 level=level,
+                quality=quality,
             )
             session.add(attempt)
             commit(session)

@@ -51,6 +51,7 @@ def init_db(db_url: str) -> None:
             _migrate_backfill_today_selected_at(_engine)
             _migrate_embedding(_engine)
             _migrate_attempt_level(_engine)
+            _migrate_attempt_quality(_engine)
             _migrate_cleanup_empty_sessions(_engine)
             _migrate_session_user(_engine)
     except SQLAlchemyError as e:
@@ -129,6 +130,15 @@ def _migrate_attempt_level(engine: Engine) -> None:
         if "level" in cols:
             return
         conn.execute(text("ALTER TABLE attempts ADD COLUMN level INTEGER"))
+
+
+def _migrate_attempt_quality(engine: Engine) -> None:
+    """轻量迁移：旧库 attempts 表补 quality 列（回答质量轨迹，旧数据为 NULL）。"""
+    with engine.begin() as conn:
+        cols = [row[1] for row in conn.execute(text("PRAGMA table_info(attempts)"))]
+        if "quality" in cols:
+            return
+        conn.execute(text("ALTER TABLE attempts ADD COLUMN quality VARCHAR"))
 
 
 def _migrate_cleanup_empty_sessions(engine: Engine) -> None:

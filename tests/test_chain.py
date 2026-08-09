@@ -148,6 +148,43 @@ def test_two_consecutive_bad_answers_finish(db):
     assert len(attempts(db, s.id)) == 3
 
 
+def test_code_forces_finish_when_llm_violates_rule(db):
+    """代码侧兜底：LLM 连续 2 次 wrong 仍返回 continue（违反 prompt 规则）→ 强制收尾。"""
+    s, q = add_session(db)
+    llm = FakeLLM([
+        round_l2(),
+        {"action": "continue", "followup": "再确认L2", "quality": "wrong", "level": 2},
+        {"action": "continue", "followup": "又答不出还追", "quality": "wrong", "level": 2},
+        VALID_JUDGMENT,
+    ])
+    chain = ChainSession(s.id, q, llm, judge_model="m", max_rounds=20)
+
+    assert chain.next_round("答1")["finished"] is False
+    assert chain.next_round("答2")["finished"] is False  # 第一次 wrong
+    r3 = chain.next_round("答3")
+    assert r3["finished"] is True  # 连续 2 次 wrong + LLM continue → 代码强制收尾
+
+    judgment = chain.finish()
+    assert judgment.status == STATUS_OK
+    assert len(attempts(db, s.id)) == 3
+
+
+def test_quality_persisted_and_passed_to_judge(db):
+    """quality 逐轮落库；finish 时质量轨迹注入判分 prompt。"""
+    s, q = add_session(db)
+    llm = FakeLLM([round_l2(), finish_l5(), VALID_JUDGMENT])
+    chain = ChainSession(s.id, q, llm, judge_model="m", max_rounds=20)
+    chain.next_round("答1")
+    chain.next_round("答2")
+
+    rows = attempts(db, s.id)
+    assert [a.quality for a in rows] == ["correct", "correct"]
+
+    chain.finish()
+    judge_content = "\n".join(m["content"] for m in llm.calls[-1])
+    assert "correct → correct" in judge_content  # 质量轨迹传入判分
+
+
 def test_single_bad_answer_not_finished(db):
     """单次差评后答好 → 继续深挖（不因偶发卡壳误收尾）。"""
     s, q = add_session(db)

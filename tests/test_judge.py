@@ -165,7 +165,23 @@ def test_out_of_vocab_weak_tags_filtered(db):
     payload = {**VALID, "weak_tags": ["深度不足", "RAG", "表达不清"]}
     llm = FakeLLM([payload])
     judgment = judge(make_question(), TRANSCRIPT, "m", llm)
-    assert judgment.weak_tags == ["RAG"]  # 能力词不在词表，被过滤
+    assert judgment.weak_tags == ["RAG"]  # 能力词不在词表且无词表包含关系，被丢弃
+
+
+def test_out_of_vocab_weak_tags_mapped_to_nearest(db):
+    """词表外但与词表词有包含关系的标签映射到词表词（复习入口不丢信息）。"""
+    payload = {**VALID, "weak_tags": ["Java 并发", "Agent 应用"]}
+    llm = FakeLLM([payload])
+    judgment = judge(make_question(), TRANSCRIPT, "m", llm)
+    assert judgment.weak_tags == ["Java", "Agent"]
+
+
+def test_weak_tags_mapped_deduped_and_capped(db):
+    """映射去重（多个外词映射同一词表词只留一个）且上限仍 3。"""
+    payload = {**VALID, "weak_tags": ["Java 基础", "Java 并发", "高并发场景", "RAG 检索"]}
+    llm = FakeLLM([payload])
+    judgment = judge(make_question(), TRANSCRIPT, "m", llm)
+    assert judgment.weak_tags == ["Java", "高并发", "RAG"]
 
 
 def test_weak_tags_capped_at_max(db):
@@ -218,7 +234,7 @@ def test_json_error_retry_then_failed(db):
 
 def test_prompt_version_frozen():
     """PROMPT_VERSION 变更需显式更新此测试与 fixture。"""
-    assert PROMPT_VERSION == "judge_v5"
+    assert PROMPT_VERSION == "judge_v6"
 
 
 def test_max_level_injected_into_prompt(db):
@@ -235,6 +251,27 @@ def test_no_max_level_no_depth_note(db):
     judge(make_question(), TRANSCRIPT, "m", llm)
     content = "\n".join(m["content"] for m in llm.calls[0])
     assert "追问深度" not in content
+
+
+def test_quality_trace_injected_into_prompt(db):
+    llm = FakeLLM([VALID])
+    judge(
+        make_question(),
+        TRANSCRIPT,
+        "m",
+        llm,
+        quality_trace=["correct", "partial", "wrong", "unsure"],
+    )
+    content = "\n".join(m["content"] for m in llm.calls[0])
+    assert "逐轮回答质量轨迹" in content
+    assert "correct → partial → wrong → unsure" in content
+
+
+def test_no_quality_trace_no_section(db):
+    llm = FakeLLM([VALID])
+    judge(make_question(), TRANSCRIPT, "m", llm)
+    content = "\n".join(m["content"] for m in llm.calls[0])
+    assert "逐轮回答质量轨迹" not in content
 
 
 def test_reference_injected_into_prompt(db):
