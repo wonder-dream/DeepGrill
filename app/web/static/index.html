@@ -8,6 +8,8 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <button id="sidebar-hamburger" class="hamburger" title="菜单">☰</button>
+  <button id="calendar-toggle" class="hamburger cal-toggle hidden" title="日历">日历</button>
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-head">
       <h1>面试助手</h1>
@@ -62,7 +64,6 @@
         <div class="upload-row">
           <button id="upload-pick" class="primary">选择文件</button>
           <span id="upload-filename" class="meta">未选择文件</span>
-          <input type="file" id="upload-file" accept=".md,.txt,.pdf,.doc,.docx" hidden>
         </div>
         <div class="upload-row hidden" id="upload-count-row">
           <label>生成题目数量
@@ -346,6 +347,7 @@
       <button id="calendar-prev" title="上一月">◀</button>
       <span id="calendar-title" title="选择年月"></span>
       <button id="calendar-next" title="下一月">▶</button>
+      <button id="calendar-close" class="calendar-close" title="关闭">✕</button>
     </div>
     <div class="calendar-clear-row">
       <button id="calendar-clear">清除范围</button>
@@ -364,6 +366,17 @@
     </div>
     <p class="meta calendar-hint" id="calendar-hint"></p>
   </aside>
+
+  <div id="ui-modal" class="modal hidden">
+    <div class="modal-card">
+      <p id="ui-modal-text"></p>
+      <div class="upload-row">
+        <button id="ui-modal-ok" class="primary">确定</button>
+        <button id="ui-modal-cancel">取消</button>
+      </div>
+    </div>
+  </div>
+  <div id="ui-toast" class="hidden"></div>
 
   <script src="/static/app.js"></script>
 </body>

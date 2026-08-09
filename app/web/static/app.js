@@ -32,6 +32,9 @@ const state = {
 
 const $ = (sel) => document.querySelector(sel);
 
+// 可刷新恢复的主视图（hash 路由）；answer/result/detail 为流程中间态不入 hash
+const HASHABLE = new Set(["today", "bank", "history", "review", "upload"]);
+
 function show(view) {
   state.view = view;
   document.querySelectorAll(".view").forEach((v) => v.classList.add("hidden"));
@@ -42,14 +45,56 @@ function show(view) {
   const panel = $("#calendar-panel");
   if (view === "today" || view === "history") {
     state.calendarMode = view;
-    panel.classList.remove("hidden");
-    renderCalendar();
+    panel.classList.toggle("hidden", window.innerWidth <= 768); // 移动端经「日历」按钮展开
+    if (!panel.classList.contains("hidden")) renderCalendar();
   } else {
     panel.classList.add("hidden");
   }
+  $("#calendar-toggle").classList.toggle("hidden", !(view === "today" || view === "history"));
   if (view === "today") loadToday(state.todayDate || undefined);
   if (view === "bank") loadBank();
   if (view === "history") loadHistory();
+  if (HASHABLE.has(view) && location.hash !== "#" + view) location.hash = view;
+}
+
+window.addEventListener("hashchange", () => {
+  const target = location.hash.slice(1);
+  if (!HASHABLE.has(target) || state.view === target) return;
+  if (target === "review") {
+    state.reviewTag = null;
+    show("review");
+    loadReviewHome();
+  } else {
+    show(target);
+  }
+});
+
+// 全局轻量提示 / 确认弹层（替代原生 alert/confirm，保持纸感 UI 一致）
+function uiToast(message, isError) {
+  const el = $("#ui-toast");
+  el.textContent = message;
+  el.classList.toggle("toast-error", !!isError);
+  el.classList.remove("hidden");
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.add("hidden"), 4000);
+}
+function uiConfirm(message) {
+  return new Promise((resolve) => {
+    $("#ui-modal-text").textContent = message;
+    $("#ui-modal").classList.remove("hidden");
+    const ok = $("#ui-modal-ok");
+    const cancel = $("#ui-modal-cancel");
+    const done = (val) => {
+      $("#ui-modal").classList.add("hidden");
+      ok.removeEventListener("click", onOk);
+      cancel.removeEventListener("click", onCancel);
+      resolve(val);
+    };
+    const onOk = () => done(true);
+    const onCancel = () => done(false);
+    ok.addEventListener("click", onOk);
+    cancel.addEventListener("click", onCancel);
+  });
 }
 
 async function api(path, options) {
@@ -123,7 +168,13 @@ async function loadBank() {
   if (difficultyFilter !== "all") params.set("difficulty", difficultyFilter);
   if (categoryFilter !== "all") params.set("category", categoryFilter);
   if (keyword) params.set("q", keyword);
-  const data = await api(`/api/bank?${params}`);
+  let data;
+  try {
+    data = await api(`/api/bank?${params}`);
+  } catch (err) {
+    uiToast(err.message, true);
+    return;
+  }
   state.bankTotal = data.total;
   state.bankTotalPages = data.total_pages;
   $("#bank-summary").textContent = `共 ${data.total} 题`;
@@ -159,12 +210,12 @@ async function loadBank() {
     list.appendChild(card);
   }
   list.querySelectorAll(".admin-btn").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
+    btn.addEventListener("click", async (e) => {
       e.stopPropagation();
       const id = Number(btn.dataset.id);
       if (btn.dataset.action === "edit") {
         openQuestionModal(id);
-      } else if (confirm("删除该题？将同时删除其全部作答记录。")) {
+      } else if (await uiConfirm("删除该题？将同时删除其全部作答记录。")) {
         api(`/api/admin/questions/${id}`, { method: "DELETE" }).then(() => loadBank());
       }
     });
@@ -177,11 +228,15 @@ async function loadBank() {
 
 async function loadToday(date) {
   state.todayDate = date || null;
-  const items = state.todayDate
-    ? await api(`/api/today?date=${state.todayDate}`)
-    : await api("/api/today");
-  state.todayItems = items;
-  renderToday();
+  try {
+    const items = state.todayDate
+      ? await api(`/api/today?date=${state.todayDate}`)
+      : await api("/api/today");
+    state.todayItems = items;
+    renderToday();
+  } catch (err) {
+    uiToast(err.message, true);
+  }
 }
 
 function renderToday() {
@@ -241,7 +296,7 @@ async function startAnswer(q) {
       state.sessionId = created.session_id;
       resumed = !!created.resumed;
     } catch (e) {
-      alert(e.message);
+      uiToast(e.message, true);
       return;
     }
   }
@@ -444,7 +499,7 @@ async function deleteCurrentAttempt() {
     (a) => a.session_id === state.detailSessionId
   );
   const nth = state.detailAttempts.length - idx;
-  if (!confirm(`删除第 ${nth} 次作答记录？此操作不可恢复。`)) return;
+  if (!(await uiConfirm(`删除第 ${nth} 次作答记录？此操作不可恢复。`))) return;
   await api(`/api/sessions/${state.detailSessionId}`, { method: "DELETE" });
   loadDetail(state.detailQuestionId);
 }
@@ -496,7 +551,13 @@ function renderAttempt(a) {
 }
 
 async function loadReviewHome() {
-  const tags = await api("/api/review/tags");
+  let tags;
+  try {
+    tags = await api("/api/review/tags");
+  } catch (err) {
+    uiToast(err.message, true);
+    return;
+  }
   const entry = $("#review-entry");
   const list = $("#review-list");
   list.innerHTML = "";
@@ -532,19 +593,23 @@ async function loadReviewHome() {
 
 async function loadReview(tag) {
   state.reviewTag = tag;
-  const items = await api(`/api/review?tag=${encodeURIComponent(tag)}`);
-  state.reviewItems = items;
-  const list = $("#review-list");
-  const entry = $("#review-entry");
-  entry.innerHTML = "";
-  $("#review-title").textContent = `薄弱点复习：${tag}`;
-  $("#review-back").classList.remove("hidden");
-  $("#review-filter").classList.remove("hidden");
-  $("#review-paper-card").classList.remove("hidden");
-  $("#review-paper").innerHTML = "";
-  $("#review-paper-btn").disabled = false;
-  $("#review-paper-btn").textContent = "生成复习卷";
-  renderReviewItems();
+  try {
+    const items = await api(`/api/review?tag=${encodeURIComponent(tag)}`);
+    state.reviewItems = items;
+    const list = $("#review-list");
+    const entry = $("#review-entry");
+    entry.innerHTML = "";
+    $("#review-title").textContent = `薄弱点复习：${tag}`;
+    $("#review-back").classList.remove("hidden");
+    $("#review-filter").classList.remove("hidden");
+    $("#review-paper-card").classList.remove("hidden");
+    $("#review-paper").innerHTML = "";
+    $("#review-paper-btn").disabled = false;
+    $("#review-paper-btn").textContent = "生成复习卷";
+    renderReviewItems();
+  } catch (err) {
+    uiToast(err.message, true);
+  }
 }
 
 async function loadReviewPaper() {
@@ -554,7 +619,10 @@ async function loadReviewPaper() {
   try {
     const data = await api(`/api/review/paper?tag=${encodeURIComponent(state.reviewTag)}`);
     const box = $("#review-paper");
-    if (!data.paper_html) {
+    if (data.error) {
+      box.innerHTML = `<p class="meta">${escapeHtml(data.error)}（下方题目仍可练习）</p>`;
+      state.reviewRecommended = new Set(data.recommended_ids || []);
+    } else if (!data.paper_html) {
       box.innerHTML = '<p class="meta">该标签暂无题目，无法生成复习卷</p>';
     } else {
       box.innerHTML = data.paper_html;
@@ -614,11 +682,15 @@ function renderReviewItems() {
 }
 
 async function loadHistory() {
-  const groups = await api("/api/history");
-  state.historyGroups = groups;
-  state.historyDates = new Set(groups.map((g) => g.date));
-  renderCalendar();
-  applyFilters();
+  try {
+    const groups = await api("/api/history");
+    state.historyGroups = groups;
+    state.historyDates = new Set(groups.map((g) => g.date));
+    renderCalendar();
+    applyFilters();
+  } catch (err) {
+    uiToast(err.message, true);
+  }
 }
 
 function applyFilters() {
@@ -689,7 +761,7 @@ function renderHistory(groups) {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
       const qid = Number(btn.dataset.qid);
-      if (!confirm("删除该题全部作答记录？题目将保留，可重新作答。")) return;
+      if (!(await uiConfirm("删除该题全部作答记录？题目将保留，可重新作答。"))) return;
       await api(`/api/questions/${qid}/history`, { method: "DELETE" });
       applyFilters();
     });
@@ -820,7 +892,7 @@ async function runDaily() {
     }
     await loadToday();
   } catch (e) {
-    alert(e.message);
+    uiToast(e.message, true);
   } finally {
     btn.disabled = false;
     btn.textContent = "立即更新";
@@ -847,6 +919,7 @@ function sleep(ms) {
 
 document.querySelectorAll("nav button[data-view]").forEach((btn) => {
   btn.addEventListener("click", () => {
+    document.body.classList.remove("sidebar-open");
     if (btn.dataset.view === "review") {
       state.reviewTag = null;
       show("review");
@@ -855,6 +928,19 @@ document.querySelectorAll("nav button[data-view]").forEach((btn) => {
       show(btn.dataset.view);
     }
   });
+});
+
+// 移动端：汉堡开合抽屉侧边栏；日历按钮切换日历面板
+$("#sidebar-hamburger").addEventListener("click", () => {
+  document.body.classList.toggle("sidebar-open");
+});
+$("#calendar-toggle").addEventListener("click", () => {
+  const panel = $("#calendar-panel");
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden")) renderCalendar();
+});
+$("#calendar-close").addEventListener("click", () => {
+  $("#calendar-panel").classList.add("hidden");
 });
 $("#daily-run").addEventListener("click", runDaily);
 
@@ -1106,11 +1192,11 @@ $("#import-file").addEventListener("change", async (e) => {
   e.target.value = "";
   if (!file) return;
   if (!/\.zip$/i.test(file.name)) {
-    alert("仅支持 .zip 备份文件");
+    uiToast("仅支持 .zip 备份文件", true);
     return;
   }
   $("#import-filename").textContent = file.name;
-  if (!confirm("导入将覆盖当前全部数据（导入前会自动备份当前库）。确认继续？")) return;
+  if (!(await uiConfirm("导入将覆盖当前全部数据（导入前会自动备份当前库）。确认继续？"))) return;
   const buf = await file.arrayBuffer();
   let bin = "";
   const bytes = new Uint8Array(buf);
@@ -1124,10 +1210,10 @@ $("#import-file").addEventListener("change", async (e) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content_base64: btoa(bin) }),
     });
-    alert(`恢复成功：题库 ${resp.questions} 题，页面即将刷新`);
-    location.reload();
+    uiToast(`恢复成功：题库 ${resp.questions} 题，页面即将刷新`);
+    setTimeout(() => location.reload(), 1200);
   } catch (err) {
-    alert(`导入失败：${err.message}`);
+    uiToast(`导入失败：${err.message}`, true);
   }
 });
 $("#answer-submit").addEventListener("click", submitAnswer);
@@ -1298,7 +1384,9 @@ function showAuth() {
   document.querySelectorAll(".view").forEach((v) => v.classList.add("hidden"));
   $("#view-auth").classList.remove("hidden");
   $("#calendar-panel").classList.add("hidden");
+  $("#calendar-toggle").classList.add("hidden");
   $("#auth-error").textContent = "";
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
 }
 let authMode = "login";
 $("#auth-tab-login").addEventListener("click", () => {
@@ -1367,7 +1455,13 @@ async function initAuth() {
     applyRoleUI();
     loadTagCategories();
     renderCalendar();
-    show("today");
+    const initial = location.hash.slice(1);
+    if (HASHABLE.has(initial)) {
+      show(initial);
+      if (initial === "review") loadReviewHome();
+    } else {
+      show("today");
+    }
   } catch (e) {
     showAuth();
   }

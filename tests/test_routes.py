@@ -539,6 +539,44 @@ def test_review_paper_cached(db):
         _review_paper_cache.clear()
 
 
+def test_review_paper_cache_expires(db):
+    """缓存 TTL 过期后重新生成（旧缓存不永久生效）。"""
+    from app.web.routes import _review_paper_cache
+    from app.web.routes import _review_paper_ttl
+    import time as _time
+
+    add_today_question(db, stem="RAG 题", tags=["RAG"])
+    llm = FakeLLM([
+        {"paper": "## 讲义 v1", "recommended_ids": []},
+        {"paper": "## 讲义 v2", "recommended_ids": []},
+    ])
+    client = make_client(db, llm)
+    client.get("/api/review/paper", params={"tag": "RAG"})
+    with db:
+        key = next(iter(_review_paper_cache))
+        _review_paper_cache[key]["ts"] = _time.time() - _review_paper_ttl - 1  # 强制过期
+    data = client.get("/api/review/paper", params={"tag": "RAG"}).json()
+    assert len(llm.calls) == 2  # 过期后重新生成
+    assert "讲义 v2" in data["paper_html"]
+    with db:
+        _review_paper_cache.clear()
+
+
+def test_review_paper_llm_failure_degraded(db):
+    """LLM 生成失败降级：返回空讲义 + error 提示（不 500）。"""
+    from app.errors import LLMError
+
+    add_today_question(db, stem="RAG 题", tags=["RAG"])
+    llm = FakeLLM([LLMError("llm down")])
+    client = make_client(db, llm)
+    resp = client.get("/api/review/paper", params={"tag": "RAG"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["paper_html"] == ""
+    assert data["recommended_ids"] == []
+    assert "失败" in data["error"]
+
+
 def test_review_paper_invalid_tag_400(db):
     client = make_client(db, FakeLLM([]))
     assert client.get("/api/review/paper", params={"tag": "不存在的标签"}).status_code == 400

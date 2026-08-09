@@ -10,6 +10,7 @@ import logging
 import re
 import secrets
 import threading
+import time
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -135,6 +136,7 @@ _upload_lock = threading.Lock()
 
 _review_paper_cache: dict[str, dict] = {}
 _review_paper_lock = threading.Lock()
+_review_paper_ttl = 3600  # 复习卷缓存有效期（秒），过期后重新生成（讲义按题库变化适度新鲜）
 
 REVIEW_PAPER_PROMPT = """你是面试复习讲师。针对薄弱主题「{tag}」，结合下面题库中该主题的同类题，生成一份针对性复习讲义。
 
@@ -713,15 +715,16 @@ def create_app(
     def review_paper(tag: str, user: User = Depends(require_user)):
         """薄弱点复习卷 v2：LLM 生成针对性复习讲义（markdown 转 HTML）+ 推荐练习题目。
 
-        同步生成（10-30s）；用户+标签级内存缓存（命中直接返回不重复生成）。
+        同步生成（10-30s）；用户+标签级内存缓存（1 小时 TTL）；LLM 失败降级返回
+        空讲义 + error 提示（不 500），可稍后重试。
         """
         if tag not in TAG_VOCABULARY:
             raise HTTPException(status_code=400, detail=f"invalid tag: {tag}")
         cache_key = f"{user.id}:{tag}"
         with _review_paper_lock:
             cached = _review_paper_cache.get(cache_key)
-        if cached is not None:
-            return cached
+            if cached is not None and time.time() - cached["ts"] < _review_paper_ttl:
+                return cached["payload"]
         with db.get_session() as session:
             questions = list(
                 session.scalars(
@@ -746,7 +749,11 @@ def create_app(
             )
         except Exception as e:
             logger.warning("review paper generate failed for %s: %s", tag, e)
-            raise HTTPException(status_code=500, detail=f"复习卷生成失败：{e}")
+            return {
+                "paper_html": "",
+                "recommended_ids": [],
+                "error": "复习卷生成失败，请稍后重试",
+            }
         paper = parsed.get("paper", "") if isinstance(parsed, dict) else ""
         recommended = (
             [int(i) for i in parsed.get("recommended_ids", [])]
@@ -760,7 +767,7 @@ def create_app(
         paper_html = _md(paper) if paper else ""
         payload = {"paper_html": paper_html, "recommended_ids": recommended}
         with _review_paper_lock:
-            _review_paper_cache[cache_key] = payload
+            _review_paper_cache[cache_key] = {"payload": payload, "ts": time.time()}
         return payload
 
     # --- 管理员题库管理（owner） ---
