@@ -5,3 +5,5 @@ __pycache__/
 data/interview.db
 data/repos/
 data/uploads/
+data/backup/
+data/logs/
