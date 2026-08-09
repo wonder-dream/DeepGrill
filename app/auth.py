@@ -16,7 +16,7 @@ from .models import User, UserToken
 
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**14, 8, 1
 
-MAX_USERS = 20  # 注册名额（不含 owner）
+MAX_USERS = int(os.environ.get("MAX_USERS", "20"))  # 注册名额（不含 owner）
 
 USERNAME_RE = re.compile(r"^[\w\u4e00-\u9fff]{3,20}$")
 PASSWORD_RE = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{8,}$")

@@ -17,6 +17,7 @@ MAX_TEXT_CHARS = 500_000  # 解析文本上限保护（防止超大文件撑爆�
 SOFFICE_CANDIDATES = (
     r"C:\Program Files\LibreOffice\program\soffice.exe",
     r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+    "/usr/bin/soffice",
 )
 
 
