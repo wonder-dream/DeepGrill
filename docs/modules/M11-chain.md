@@ -61,7 +61,8 @@ def resume(session_id: int, question: Question) -> ChainSession
 
 ## 7. 实现提示
 
-- 追问决策 prompt（`CHAIN_PROMPT_V2`）输出 `{action, followup, quality, level}`；level 非法（非 1-5 整数）降级为 None 不落层级
+- 追问决策 prompt（`CHAIN_PROMPT_V3`）输出 `{action, followup, quality, level}`；level 非法（非 1-5 整数）降级为 None 不落层级
+- 难度分级追问（2026-08-09）：`target_level_for(difficulty)`（min(5, difficulty+1)）注入目标深度、`max_rounds_for(difficulty, config_max)`（min(config_max, 3+difficulty*3)）收紧轮次；见 docs/深挖追问方案.md §1.5
 - quality 决策完全在 prompt 层（LLM 看对话历史判断"最近两轮"），代码只做结构校验
 - 轮数计数基于 attempts 表 `max(round_no)+1`（恢复安全）
 - FakeLLM 测试路径矩阵：全 finish / 全 continue / 混合 / 每轮异常

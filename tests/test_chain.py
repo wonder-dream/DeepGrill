@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db import commit
+from app.difficulty import target_level_for
 from app.errors import ChainStateError, LLMError
 from app.judge.chain import DEGRADED_HINT, ChainSession, resume
 from app.judge.judge import STATUS_FAILED, STATUS_OK
@@ -110,6 +111,23 @@ def test_good_answers_probed_to_l5_then_finish(db):
     assert judgment.total_score == 76  # 85*.3+70*.3+90*.2+60*.2
     judge_content = "\n".join(m["content"] for m in llm.calls[-1])
     assert "追问深度" in judge_content and "L5" in judge_content  # max_level 联动判分
+
+
+def test_prompt_injects_difficulty_and_target_level(db):
+    """难度分级追问：prompt 注入题目难度/档位名与目标深度，收尾条件按目标层级。"""
+    s, q = add_session(db)
+    q.difficulty = 2
+    commit(db)
+    llm = FakeLLM([FINISH, VALID_JUDGMENT])
+    chain = ChainSession(
+        s.id, q, llm, judge_model="m", target_level=target_level_for(q.difficulty)
+    )
+    chain.next_round("答")
+    content = "\n".join(m["content"] for m in llm.calls[0])
+    assert "题目难度：2/5（基础）" in content
+    assert "达到 L3" in content  # 目标深度注入
+    assert "已到目标深度 L3" in content  # 收尾条件按目标层级
+    assert "已到 L5" not in content
 
 
 def test_two_consecutive_bad_answers_finish(db):

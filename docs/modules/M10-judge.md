@@ -9,7 +9,7 @@
 ## 2. 接口
 
 ```python
-PROMPT_VERSION = "judge_v4"   # 判分 prompt 版本常量
+PROMPT_VERSION = "judge_v5"   # 判分 prompt 版本常量
 
 def judge(question: Question,
           transcript: list[dict],
@@ -46,7 +46,7 @@ def judge(question: Question,
 - **题型差异化 prompt**：knowledge 重准确性、design 重完整性与深度、project 重真实性与反思深度（prompt 内分派）
 - **分数钳制**：各维 0-100，越界钳制；缺失维度补 0
 - **失败降级**：LLM 失败重试 1 次 → `Judgment(status="failed")` 存库，Web 显示"判分失败可重试"；不影响其他题与后续会话
-- **prompt 版本化**：`PROMPT_VERSION` 变更需同步更新 fixture，防 prompt 漂移（v2：weak_tags 收敛共享词表；v3：注入库内同类高分回答参考段，空检索降级不注入；v4：注入深挖追问层级 max_level，depth 按"最终能答到的层级"校准，见 docs/参考检索方案.md、docs/深挖追问方案.md）
+- **prompt 版本化**：`PROMPT_VERSION` 变更需同步更新 fixture，防 prompt 漂移（v2：weak_tags 收敛共享词表；v3：注入库内同类高分回答参考段，空检索降级不注入；v4：注入深挖追问层级 max_level，depth 按"最终能答到的层级"校准；v5：难度细化 1-5 + 按难度校准判分期望（1-2 答全要点即高分、3 须权衡、4-5 须体现选型与取舍），难度档位定义见 `app/difficulty.py`）
 
 ## 4. 错误隔离
 

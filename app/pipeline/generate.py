@@ -4,6 +4,7 @@
 """
 import logging
 
+from ..difficulty import DIFFICULTY_SCALE_TEXT
 from ..errors import GenerationError, LLMError, LLMJsonError
 from ..models import Question, QuestionType, Source
 from ..tags import MAX_TAGS, TAG_VOCABULARY, tag_vocab_text
@@ -14,7 +15,7 @@ GENERATE_PROMPT_V2 = """你是面试题生成器。给定一篇真实面试经�
 
 要求：
 1. 只输出 JSON 数组，不要输出任何其他文字
-2. 每项为对象：{{"type": "knowledge" 或 "design", "stem": 完整题干, "tags": [1-5 个标签], "difficulty": 1-3 的整数, "good_criteria": [2-4 条高分答案标准], "bad_criteria": [2-4 条常见扣分特征]}}
+2. 每项为对象：{{"type": "knowledge" 或 "design", "stem": 完整题干, "tags": [1-5 个标签], "difficulty": 1-5 的整数, "good_criteria": [2-4 条高分答案标准], "bad_criteria": [2-4 条常见扣分特征]}}
 3. type 定义：knowledge = 明确的知识问答（如"讲一下 HashMap 底层原理"）；design = 场景设计题（如"设计一个短链接系统"）
 4. good_criteria / bad_criteria 必须与本题强相关，供判分引用
 5. 面试官寒暄、闲聊、追问"还有吗"、自我介绍等非技术内容不要生成题目
@@ -22,6 +23,8 @@ GENERATE_PROMPT_V2 = """你是面试题生成器。给定一篇真实面试经�
 {existing_stems}
 7. tags 必须从以下词表中选择 1-5 个，不得使用词表外的词：
 {vocab}
+8. difficulty 按以下分级标准标注：
+{difficulty_scale}
 
 面经文本：
 {content}"""
@@ -30,10 +33,12 @@ PROJECT_PROMPT_V2 = """你是面试题生成器。从候选人简历中提取项
 
 要求：
 1. 只输出 JSON 数组，最多 {limit} 项，不要输出任何其他文字
-2. 每项为对象：{{"type": "project", "stem": 基于该项目真实经历的深挖题（如"讲一下 XX 项目的技术难点和取舍"）, "tags": [1-5 个标签], "difficulty": 1-3 的整数, "good_criteria": [2-4 条高分答案标准], "bad_criteria": [2-4 条常见扣分特征]}}
+2. 每项为对象：{{"type": "project", "stem": 基于该项目真实经历的深挖题（如"讲一下 XX 项目的技术难点和取舍"）, "tags": [1-5 个标签], "difficulty": 1-5 的整数, "good_criteria": [2-4 条高分答案标准], "bad_criteria": [2-4 条常见扣分特征]}}
 3. 题目必须基于简历中的真实项目经历，可被追问验证；不要编造简历中没有的项目
 4. tags 必须从以下词表中选择 1-5 个，不得使用词表外的词：
 {vocab}
+5. difficulty 按以下分级标准标注：
+{difficulty_scale}
 
 简历文本：
 {content}"""
@@ -65,6 +70,7 @@ def generate_from_source(
                     content=_truncate(round_text["content"], MAX_INPUT_CHARS),
                     existing_stems=_existing_stems(existing_questions),
                     vocab=tag_vocab_text(),
+                    difficulty_scale=DIFFICULTY_SCALE_TEXT,
                 ),
             }
         ]
@@ -88,6 +94,7 @@ def generate_project_questions(
                 content=_truncate(resume_source.cleaned_text, MAX_INPUT_CHARS),
                 limit=limit,
                 vocab=tag_vocab_text(),
+                difficulty_scale=DIFFICULTY_SCALE_TEXT,
             ),
         }
     ]
@@ -112,7 +119,7 @@ def _complete_json(llm, messages: list[dict]) -> list:
 def _validate_questions(
     parsed: list, source_id: int, allowed_types: tuple[QuestionType, ...]
 ) -> list[Question]:
-    """结构校验：非法 type/空题干丢弃；criteria 缺省补默认；difficulty 钳制 1-3。"""
+    """结构校验：非法 type/空题干丢弃；criteria 缺省补默认；difficulty 钳制 1-5。"""
     questions = []
     for item in parsed:
         if not isinstance(item, dict):
@@ -159,7 +166,7 @@ def _criteria_list(value, default: list[str]) -> list[str]:
 
 def _clamp_difficulty(value) -> int:
     try:
-        return max(1, min(3, int(value)))
+        return max(1, min(5, int(value)))
     except (TypeError, ValueError):
         return 1
 

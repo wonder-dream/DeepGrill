@@ -5,13 +5,14 @@ prompt 版本化（PROMPT_VERSION 变更需同步更新测试与 fixture，防�
 """
 import logging
 
+from ..difficulty import DIFFICULTY_NAMES
 from ..errors import JudgeError, LLMError, LLMJsonError
 from ..models import Judgment, Question
 from ..tags import MAX_WEAK_TAGS, TAG_VOCABULARY, tag_vocab_text
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "judge_v4"
+PROMPT_VERSION = "judge_v5"
 
 DIMS = ("accuracy", "completeness", "clarity", "depth")
 WEIGHTS = (0.3, 0.3, 0.2, 0.2)
@@ -30,7 +31,8 @@ JUDGE_SYSTEM_V4 = """你是资深面试官，按随题判分标准对候选人�
 
 题目：{stem}
 标签：{tags}
-难度：{difficulty}（1-3）
+难度：{difficulty}/5（{difficulty_name}）
+判分期望：按难度校准——1-2 级答全要点即可高分；3 级须展示权衡；4-5 级必须在 depth/completeness 体现方案选型与实战取舍，否则按期望扣分
 {depth_note}
 
 只输出 JSON，不要其他文字：
@@ -169,6 +171,7 @@ def _build_messages(
         stem=question.stem,
         tags=tags,
         difficulty=question.difficulty,
+        difficulty_name=DIFFICULTY_NAMES.get(question.difficulty, "未知"),
         depth_note=depth_note,
         vocab=tag_vocab_text(),
         reference_section=reference_section,

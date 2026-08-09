@@ -31,6 +31,7 @@ LLM 输出契约（`json_schema` 结构化输出）：
 ```
 
 > tags 必须取自共享词表（`app/tags.py`，58 词，6 大类），prompt 注入词表 + 代码层过滤非词表词（上限 5 个）。词表用途见 docs/标签词表方案.md。
+> difficulty 为 1-5 整数，prompt 注入分级标准（`app/difficulty.py` `DIFFICULTY_SCALE_TEXT`），代码钳制 1-5（2026-08-09 起由 1-3 细化）。
 
 ## 3. 关键决策
 
@@ -38,7 +39,7 @@ LLM 输出契约（`json_schema` 结构化输出）：
 - **good/bad criteria 随题生成**（D7）：判分时注入 judge，引用随题标准而非现场自由发挥
 - **project 生成器**：从简历源提取项目清单 → 每项目一条深挖题（"讲一下 XX 项目的技术难点和取舍"），按 `daily.project_limit` 节流；未导入简历则不生成
 - **失败容忍**：单篇面经失败仅记 task_logs 跳过，不中断批量；产出空列表合法（面经无有效问题）
-- **输出校验**：缺 criteria 补默认（good=["完整、准确、结构清晰"]，bad=["答非所问"]）；非法 type 丢弃该条；difficulty 钳制 1-3；tags 过滤词表外词（V2 起）
+- **输出校验**：缺 criteria 补默认（good=["完整、准确、结构清晰"]，bad=["答非所问"]）；非法 type 丢弃该条；difficulty 钳制 1-5；tags 过滤词表外词（V2 起）
 
 ## 4. 错误隔离
 

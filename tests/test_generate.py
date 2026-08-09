@@ -155,13 +155,13 @@ def test_missing_or_garbage_fields_handled(db):
     source = add_source(db)
     payload = [
         {"type": "knowledge", "stem": "   ", "tags": [], "difficulty": 1},
-        {"type": "knowledge", "stem": "难度钳制题", "tags": "不是列表", "difficulty": 5},
+        {"type": "knowledge", "stem": "难度钳制题", "tags": "不是列表", "difficulty": 6},
         {"type": "knowledge", "stem": "难度非法题", "tags": ["x"], "difficulty": "abc"},
     ]
     llm = FakeLLM([payload])
     questions = generate_from_source(source, [], llm)
     assert len(questions) == 2
-    assert questions[0].difficulty == 3  # 5 钳制到 3
+    assert questions[0].difficulty == 5  # 6 钳制到 5
     assert questions[0].tags == []
     assert questions[1].difficulty == 1  # 非整数回退 1
 

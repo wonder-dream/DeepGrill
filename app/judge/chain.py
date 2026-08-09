@@ -20,10 +20,12 @@ from .judge import judge
 
 logger = logging.getLogger(__name__)
 
-CHAIN_PROMPT_V2 = """你是资深面试官，正在对候选人进行**逐层深挖**的追问。目标不是考倒候选人，而是探测其思考深度与认知广度：答对就继续加深，直到探到其真实水平为止。
+CHAIN_PROMPT_V3 = """你是资深面试官，正在对候选人进行**逐层深挖**的追问。目标不是考倒候选人，而是探测其思考深度与认知广度：答对就继续加深，直到探到其真实水平为止。
 
 题目：{stem}
 题型侧重：{qtype}
+题目难度：{difficulty}/5（{difficulty_name}）
+目标深度：本题目按难度分级追问——低难度题浅挖（概念/原理/权衡即可），高难度题深挖到底；达到 L{target_level} 即算证明充分，不必强求更深。
 高分标准（good_criteria）：
 {good}
 扣分特征（bad_criteria）：
@@ -49,14 +51,14 @@ L5 横向联系/知识广度：与相关知识点/框架/场景的关联
    - wrong：方向错误或答错
    - unsure：答不出、回避或明确说不会
 2. 据此决定下一轮：
-   - correct → 必须继续加深一层追问（除非已到 L5 且最近两轮均为 correct，才算证明充分）
+   - correct → 必须继续加深一层追问（除非已到目标深度 L{target_level} 且最近两轮均为 correct，才算证明充分）
    - partial → 同层追挖缺口，或降一层确认基础是否牢固
    - wrong/unsure → 若最近一轮同样是 wrong/unsure（连续 2 次答不出/答错），本轮收尾；否则再给一次机会确认
 
 只输出 JSON，不要其他文字：
 {{"action": "continue" 或 "finish", "followup": "下一轮追问或收尾语", "quality": "correct|partial|wrong|unsure", "level": 本轮追问所在层级 1-5}}
 
-finish 只允许两种情况：连续 2 次 wrong/unsure 探到底；或已到 L5 且最近两轮均 correct 证明充分。其他情况一律 continue。"""
+finish 只允许两种情况：连续 2 次 wrong/unsure 探到底；或已到目标深度 L{target_level} 且最近两轮均 correct 证明充分。其他情况一律 continue。"""
 
 DEGRADED_HINT = "请继续"
 
@@ -75,12 +77,14 @@ class ChainSession:
         *,
         judge_model: str = "",
         max_rounds: int = 20,
+        target_level: int = 5,
     ):
         self._session_id = session_id
         self._question = question
         self._llm = llm
         self._judge_model = judge_model
         self._max_rounds = max_rounds
+        self._target_level = target_level
         self._finished = False
         self._max_level = 0
 
@@ -157,10 +161,15 @@ class ChainSession:
         return followup, action if action == "finish" else "continue", level
 
     def _build_prompt(self, answer: str) -> str:
+        from ..difficulty import DIFFICULTY_NAMES
+
         history = "\n".join(self._history_lines()) or "（无）"
-        return CHAIN_PROMPT_V2.format(
+        return CHAIN_PROMPT_V3.format(
             stem=self._question.stem,
             qtype=self._question.type.value,
+            difficulty=self._question.difficulty,
+            difficulty_name=DIFFICULTY_NAMES.get(self._question.difficulty, "未知"),
+            target_level=self._target_level,
             good="\n".join(f"- {c}" for c in self._question.good_criteria),
             bad="\n".join(f"- {c}" for c in self._question.bad_criteria),
             history=history,
@@ -216,10 +225,16 @@ def resume(
     *,
     judge_model: str = "",
     max_rounds: int = 20,
+    target_level: int = 5,
 ) -> ChainSession:
     """从 attempts 表重建上下文；会话已 finished 则恢复为终态（继续调用抛 ChainStateError）。"""
     chain = ChainSession(
-        session_id, question, llm, judge_model=judge_model, max_rounds=max_rounds
+        session_id,
+        question,
+        llm,
+        judge_model=judge_model,
+        max_rounds=max_rounds,
+        target_level=target_level,
     )
     with get_session() as session:
         row = session.get(Session, session_id)

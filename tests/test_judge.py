@@ -218,7 +218,7 @@ def test_json_error_retry_then_failed(db):
 
 def test_prompt_version_frozen():
     """PROMPT_VERSION 变更需显式更新此测试与 fixture。"""
-    assert PROMPT_VERSION == "judge_v4"
+    assert PROMPT_VERSION == "judge_v5"
 
 
 def test_max_level_injected_into_prompt(db):
