@@ -4,6 +4,7 @@ import time
 import pytest
 from datetime import datetime, timedelta
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.config import (
     AppConfig,
@@ -55,7 +56,11 @@ def make_config():
     )
 
 
-def make_client(db, llm, runner=None, embedder=None, **overrides):
+def make_client(db, llm, runner=None, embedder=None, user_role="owner", **overrides):
+    """测试客户端：自动创建测试用户（owner）+ token 带在请求头（多用户鉴权后适配）。"""
+    from app.auth import create_token, hash_password
+    from app.models import User
+
     embedder = embedder or FakeEmbedder()
     app = create_app(
         make_config(),
@@ -63,7 +68,21 @@ def make_client(db, llm, runner=None, embedder=None, **overrides):
         daily_runner=runner,
         embedder_factory=lambda: embedder,
     )
-    return TestClient(app)
+    with get_session() as session:
+        user = session.scalars(
+            select(User).where(User.username == "testuser")
+        ).first()
+        if user is None:
+            user = User(
+                username="testuser",
+                password_hash=hash_password("testpass1"),
+                role=user_role,
+            )
+            session.add(user)
+            commit(session)
+            session.refresh(user)
+        token = create_token(user.id)
+    return TestClient(app, headers={"Authorization": f"Bearer {token}"})
 
 
 def vec(*xs):
@@ -82,7 +101,36 @@ def db(tmp_path):
         yield session
 
 
+def ensure_test_user(db):
+    """确保测试用户存在（与 make_client 同一用户），返回 User。"""
+    from app.auth import create_token, hash_password
+    from app.models import User
+
+    user = db.scalars(select(User).where(User.username == "testuser")).first()
+    if user is None:
+        user = User(username="testuser", password_hash=hash_password("testpass1"), role="owner")
+        db.add(user)
+        commit(db)
+        db.refresh(user)
+    return user
+
+
+def _backdate_picks(db, question_id: int, days: int = 1):
+    """把某题的 UserPick 回拨到 N 天前（模拟昨天选的题）。"""
+    from sqlalchemy import update as _update
+    from app.models import UserPick
+
+    db.execute(
+        _update(UserPick)
+        .where(UserPick.question_id == question_id)
+        .values(picked_at=datetime.now() - timedelta(days=days))
+    )
+    commit(db)
+
+
 def add_today_question(db, stem="讲一下 HashMap 底层原理", status_today=True, tags=None, qtype=QuestionType.knowledge):
+    from app.models import UserPick
+
     source = Source(type=SourceType.manual, source_hash=f"h-{stem}")
     db.add(source)
     commit(db)
@@ -100,6 +148,10 @@ def add_today_question(db, stem="讲一下 HashMap 底层原理", status_today=T
     db.add(q)
     commit(db)
     db.refresh(q)
+    if status_today:
+        user = ensure_test_user(db)
+        db.add(UserPick(user_id=user.id, question_id=q.id, picked_at=datetime.now()))
+        commit(db)
     return q
 
 
@@ -248,6 +300,7 @@ def test_today_excludes_yesterday(db):
     add_today_question(db, stem="今天的题")
     yesterday = add_today_question(db, stem="昨天的题")
     yesterday.selected_at = datetime.now() - timedelta(days=1)
+    _backdate_picks(db, yesterday.id)
     commit(db)
 
     client = make_client(db, FakeLLM([]))
@@ -260,6 +313,7 @@ def test_today_date_param_selects_day(db):
     add_today_question(db, stem="今天的题")
     old = add_today_question(db, stem="昨天的题")
     old.selected_at = datetime.now() - timedelta(days=1)
+    _backdate_picks(db, old.id)
     commit(db)
     client = make_client(db, FakeLLM([]))
 

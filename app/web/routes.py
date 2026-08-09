@@ -11,15 +11,26 @@ import re
 import secrets
 import threading
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import cast, func, select, String
 
 from .. import db
+from ..auth import (
+    MAX_USERS,
+    create_token,
+    hash_password,
+    revoke_token,
+    user_count,
+    user_from_token,
+    validate_password,
+    validate_username,
+    verify_password,
+)
 from ..config import AppConfig, secret_value
 from ..difficulty import max_rounds_for, target_level_for
 from ..embed import Embedder
@@ -32,17 +43,83 @@ from ..models import (
     Attempt,
     Judgment,
     Question,
+    QuestionStatus,
     QuestionType,
     Session,
     SessionKind,
     SessionStatus,
     Source,
     SourceType,
+    User,
+    UserPick,
 )
 from ..tags import TAG_CATEGORIES, TAG_VOCABULARY
 from . import static_dir
 
 logger = logging.getLogger(__name__)
+
+
+def require_user(authorization: str = Header(default="")) -> User:
+    """认证依赖：Bearer token → 当前用户；无效 401。"""
+    token = authorization.removeprefix("Bearer ").strip()
+    user = user_from_token(token)
+    if user is None:
+        raise HTTPException(status_code=401, detail="未登录或登录已过期")
+    return user
+
+
+def require_owner(user: User = Depends(require_user)) -> User:
+    """管理员依赖：role=owner 才可用（上传/题库管理/流水线）。"""
+    if user.role != "owner":
+        raise HTTPException(status_code=403, detail="仅管理员可用")
+    return user
+
+
+def _ensure_today_picks(session, user_id: int) -> list[UserPick]:
+    """今日选题懒加载：用户今天无 picks 时按 D8 配额从公共 pending 池选题（per-user，按天自然隔离）。"""
+    from datetime import datetime as _dt
+
+    today_start = _dt.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    existing = list(
+        session.scalars(
+            select(UserPick).where(
+                UserPick.user_id == user_id,
+                UserPick.picked_at >= today_start,
+            )
+        )
+    )
+    if existing:
+        return existing
+    picked_qids: list[int] = []
+    for qtype, limit in (
+        (QuestionType.knowledge, 3),
+        (QuestionType.design, 2),
+        (QuestionType.project, 1),
+    ):
+        picked_qids.extend(
+            session.scalars(
+                select(Question.id)
+                .where(
+                    Question.status == QuestionStatus.pending,
+                    Question.type == qtype,
+                )
+                .order_by(Question.created_at)
+                .limit(limit)
+            ).all()
+        )
+    if picked_qids:
+        session.add_all(
+            UserPick(user_id=user_id, question_id=qid) for qid in picked_qids
+        )
+        db.commit(session)
+    return list(
+        session.scalars(
+            select(UserPick).where(
+                UserPick.user_id == user_id,
+                UserPick.picked_at >= today_start,
+            )
+        )
+    )
 
 _inflight: set[int] = set()
 _inflight_lock = threading.Lock()
@@ -93,6 +170,65 @@ def create_app(
     async def index():
         return FileResponse(Path(static_dir) / "index.html")
 
+    # --- 认证：注册 / 登录 / 登出 / 当前用户 ---
+
+    @app.post("/api/auth/register")
+    def auth_register(body: dict):
+        username = str(body.get("username", "")).strip()
+        password = str(body.get("password", ""))
+        err = validate_username(username) or validate_password(password)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+        with db.get_session() as session:
+            exists = session.scalars(
+                select(User).where(User.username == username)
+            ).first()
+            if exists is not None:
+                raise HTTPException(status_code=409, detail="用户名已存在")
+            first = session.scalars(select(User).limit(1)).first() is None
+            if not first and user_count() >= MAX_USERS:
+                raise HTTPException(status_code=409, detail="注册名额已满（20 人）")
+            user = User(
+                username=username,
+                password_hash=hash_password(password),
+                role="owner" if first else "user",
+            )
+            session.add(user)
+            db.commit(session)
+            session.refresh(user)
+            if first:
+                db.backfill_owner_data(session, user.id)
+        token = create_token(user.id)
+        return {
+            "token": token,
+            "user": {"id": user.id, "username": user.username, "role": user.role},
+        }
+
+    @app.post("/api/auth/login")
+    def auth_login(body: dict):
+        username = str(body.get("username", "")).strip()
+        password = str(body.get("password", ""))
+        with db.get_session() as session:
+            user = session.scalars(
+                select(User).where(User.username == username)
+            ).first()
+            if user is None or not verify_password(password, user.password_hash):
+                raise HTTPException(status_code=401, detail="用户名或密码错误")
+        token = create_token(user.id)
+        return {
+            "token": token,
+            "user": {"id": user.id, "username": user.username, "role": user.role},
+        }
+
+    @app.post("/api/auth/logout")
+    def auth_logout(user: User = Depends(require_user), authorization: str = Header(default="")):
+        revoke_token(authorization.removeprefix("Bearer ").strip())
+        return {"ok": True}
+
+    @app.get("/api/auth/me")
+    def auth_me(user: User = Depends(require_user)):
+        return {"id": user.id, "username": user.username, "role": user.role}
+
     if enable_scheduler:
         from .. import scheduler
 
@@ -118,20 +254,36 @@ def create_app(
     # --- 今日题目与题目详情 ---
 
     @app.get("/api/today")
-    def today_questions(date: str | None = None):
-        """今日题目列表；date=YYYY-MM-DD 时返回被选为当日题目的题（不限 status，供日历单选回看）。"""
+    def today_questions(date: str | None = None, user: User = Depends(require_user)):
+        """今日题目（按用户懒加载选题）；date=YYYY-MM-DD 回看该用户当日 picks。"""
         with db.get_session() as session:
             if date is not None:
                 try:
-                    questions = db.list_questions_by_date(session, date)
+                    day = datetime.strptime(date, "%Y-%m-%d")
                 except ValueError:
                     raise HTTPException(status_code=400, detail=f"invalid date: {date}")
+                start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+                end = start + timedelta(days=1)
+                picks = list(
+                    session.scalars(
+                        select(UserPick).where(
+                            UserPick.user_id == user.id,
+                            UserPick.picked_at >= start,
+                            UserPick.picked_at < end,
+                        )
+                    )
+                )
             else:
-                questions = db.list_today_questions(session)
+                picks = _ensure_today_picks(session, user.id)
+            questions = [
+                q
+                for q in (session.get(Question, p.question_id) for p in picks)
+                if q is not None
+            ]
             payload = []
             for q in questions:
-                done = _has_finished_session(session, q.id)
-                active = _active_session_id(session, q.id)
+                done = _has_finished_session(session, q.id, user.id)
+                active = _active_session_id(session, q.id, user.id)
                 payload.append(
                     {
                         "id": q.id,
@@ -162,7 +314,7 @@ def create_app(
             }
 
     @app.get("/api/questions/{question_id}/history")
-    def question_history(question_id: int):
+    def question_history(question_id: int, user: User = Depends(require_user)):
         """历史详情：该题全部会话（倒序）+ 各自问答记录与判分（D18 复盘）。"""
         with db.get_session() as session:
             q = session.get(Question, question_id)
@@ -170,7 +322,10 @@ def create_app(
                 raise HTTPException(status_code=404, detail="question not found")
             rows = session.scalars(
                 select(Session)
-                .where(Session.question_id == question_id)
+                .where(
+                    Session.question_id == question_id,
+                    Session.user_id == user.id,
+                )
                 .order_by(Session.id.desc())
             ).all()
             attempts = []
@@ -205,7 +360,7 @@ def create_app(
     # --- 会话 ---
 
     @app.post("/api/sessions")
-    def create_session(body: dict):
+    def create_session(body: dict, user: User = Depends(require_user)):
         question_id = body.get("question_id")
         kind = body.get("kind", "chain")
         if kind not in {k.value for k in SessionKind}:
@@ -217,6 +372,7 @@ def create_app(
                 select(Session)
                 .where(
                     Session.question_id == question_id,
+                    Session.user_id == user.id,
                     Session.status == SessionStatus.active,
                 )
                 .order_by(Session.id.desc())
@@ -224,20 +380,29 @@ def create_app(
             ).first()
             if existing is not None:
                 return {"session_id": existing.id, "status": "active", "resumed": True}
-            row = Session(question_id=question_id, kind=SessionKind(kind))
+            row = Session(
+                question_id=question_id,
+                user_id=user.id,
+                kind=SessionKind(kind),
+            )
             session.add(row)
             db.commit(session)
             session.refresh(row)
         return {"session_id": row.id, "status": "active", "resumed": False}
 
     @app.post("/api/sessions/{session_id}/answer")
-    def submit_answer(session_id: int, body: dict, background: BackgroundTasks):
+    def submit_answer(
+        session_id: int,
+        body: dict,
+        background: BackgroundTasks,
+        user: User = Depends(require_user),
+    ):
         answer = str(body.get("answer", "")).strip()
         if len(answer) < 2:
             raise HTTPException(status_code=400, detail="answer too short")
         with db.get_session() as session:
             row = session.get(Session, session_id)
-            if row is None:
+            if row is None or row.user_id != user.id:
                 raise HTTPException(status_code=404, detail="session not found")
             latest = _latest_judgment(session, session_id)
             if row.status == SessionStatus.finished and not (
@@ -254,27 +419,30 @@ def create_app(
         return {"status": "judging"}
 
     @app.delete("/api/sessions/{session_id}")
-    def delete_session(session_id: int):
+    def delete_session(session_id: int, user: User = Depends(require_user)):
         """删除单次作答（含回答轮次与判分）；题目保留。"""
         with _inflight_lock:
             if session_id in _inflight:
                 raise HTTPException(status_code=409, detail="session is being judged")
         with db.get_session() as session:
             row = session.get(Session, session_id)
-            if row is None:
+            if row is None or row.user_id != user.id:
                 raise HTTPException(status_code=404, detail="session not found")
             session.delete(row)  # cascade 级联删 attempts/judgments
             db.commit(session)
         return {"deleted": True}
 
     @app.delete("/api/questions/{question_id}/history")
-    def delete_question_history(question_id: int):
+    def delete_question_history(question_id: int, user: User = Depends(require_user)):
         """删除该题全部作答记录（会话/回答/判分）；题目本身保留。"""
         with db.get_session() as session:
             if session.get(Question, question_id) is None:
                 raise HTTPException(status_code=404, detail="question not found")
             rows = session.scalars(
-                select(Session).where(Session.question_id == question_id)
+                select(Session).where(
+                    Session.question_id == question_id,
+                    Session.user_id == user.id,
+                )
             ).all()
             for row in rows:
                 session.delete(row)
@@ -282,10 +450,10 @@ def create_app(
         return {"deleted": True}
 
     @app.get("/api/sessions/{session_id}")
-    def session_status(session_id: int):
+    def session_status(session_id: int, user: User = Depends(require_user)):
         with db.get_session() as session:
             row = session.get(Session, session_id)
-            if row is None:
+            if row is None or row.user_id != user.id:
                 raise HTTPException(status_code=404, detail="session not found")
             question = session.get(Question, row.question_id)
             payload = {
@@ -316,10 +484,10 @@ def create_app(
             return payload
 
     @app.get("/api/sessions/{session_id}/resume")
-    def resume_session(session_id: int):
+    def resume_session(session_id: int, user: User = Depends(require_user)):
         with db.get_session() as session:
             row = session.get(Session, session_id)
-            if row is None:
+            if row is None or row.user_id != user.id:
                 raise HTTPException(status_code=404, detail="session not found")
             if row.status == SessionStatus.finished:
                 raise HTTPException(status_code=409, detail="session already finished")
@@ -342,22 +510,24 @@ def create_app(
     # --- 历史（按被选为今日题目的日期分组，未作答也展示） ---
 
     @app.get("/api/history")
-    def history(qtype: str | None = None):
+    def history(qtype: str | None = None, user: User = Depends(require_user)):
         with db.get_session() as session:
-            stmt = (
-                select(Question)
-                .where(Question.selected_at.is_not(None))
-                .order_by(Question.selected_at.desc())
+            picks = list(
+                session.scalars(
+                    select(UserPick)
+                    .where(UserPick.user_id == user.id)
+                    .order_by(UserPick.picked_at.desc())
+                )
             )
-            if qtype:
-                from ..models import QuestionType
-
-                stmt = stmt.where(Question.type == QuestionType(qtype))
-            questions = list(session.scalars(stmt))
-            latest = _latest_judgment_by_question(session)
+            latest = _latest_judgment_by_question(session, user.id)
 
             groups: dict[str, list[dict]] = {}
-            for q in questions:
+            for p in picks:
+                q = session.get(Question, p.question_id)
+                if q is None:
+                    continue
+                if qtype and q.type.value != qtype:
+                    continue
                 item = {
                     "question_id": q.id,
                     "stem": q.stem,
@@ -378,7 +548,7 @@ def create_app(
                     item["total_score"] = j.total_score
                     item["session_id"] = s.id
                     item["done_at"] = s.ended_at.isoformat() if s.ended_at else None
-                day = q.selected_at.date().isoformat()
+                day = p.picked_at.date().isoformat()
                 groups.setdefault(day, []).append(item)
             return [
                 {"date": day, "items": groups[day]}
@@ -395,6 +565,7 @@ def create_app(
         category: str | None = None,
         q: str | None = None,
         difficulty: int | None = None,
+        user: User = Depends(require_user),
     ):
         """全部题目分页浏览（id 倒序）；type/category/difficulty 筛选；q 关键词搜题干+标签；每项带 done 标志。"""
         from ..models import QuestionType as _QT
@@ -438,7 +609,7 @@ def create_app(
             total = len(questions)
             total_pages = (total + page_size - 1) // page_size
             page_items = questions[(page - 1) * page_size : page * page_size]
-            latest = _latest_judgment_by_question(session)
+            latest = _latest_judgment_by_question(session, user.id)
             items = [
                 {
                     "id": q.id,
@@ -468,10 +639,14 @@ def create_app(
         ]
 
     @app.get("/api/review/tags")
-    def review_tags():
-        """全部词表标签 + 薄弱点计数（judgments.weak_tags 聚合）；有计数在前。"""
+    def review_tags(user: User = Depends(require_user)):
+        """全部词表标签 + 薄弱点计数（该用户 judgments.weak_tags 聚合）；有计数在前。"""
         with db.get_session() as session:
-            rows = session.execute(select(Judgment.weak_tags)).all()
+            rows = session.execute(
+                select(Judgment.weak_tags)
+                .join(Session, Judgment.session_id == Session.id)
+                .where(Session.user_id == user.id)
+            ).all()
         counter: Counter = Counter()
         for (tags,) in rows:
             if isinstance(tags, list):
@@ -483,7 +658,7 @@ def create_app(
         return items
 
     @app.get("/api/review")
-    def review(tag: str):
+    def review(tag: str, user: User = Depends(require_user)):
         if tag not in TAG_VOCABULARY:
             raise HTTPException(status_code=400, detail=f"invalid tag: {tag}")
         with db.get_session() as session:
@@ -495,7 +670,7 @@ def create_app(
                     .limit(30)
                 )
             )
-            latest = _latest_judgment_by_question(session)
+            latest = _latest_judgment_by_question(session, user.id)
             items = []
             for q in questions:
                 item = {
@@ -517,15 +692,16 @@ def create_app(
             return items
 
     @app.get("/api/review/paper")
-    def review_paper(tag: str):
+    def review_paper(tag: str, user: User = Depends(require_user)):
         """薄弱点复习卷 v2：LLM 生成针对性复习讲义（markdown 转 HTML）+ 推荐练习题目。
 
-        同步生成（10-30s）；标签级内存缓存（命中直接返回不重复生成）。
+        同步生成（10-30s）；用户+标签级内存缓存（命中直接返回不重复生成）。
         """
         if tag not in TAG_VOCABULARY:
             raise HTTPException(status_code=400, detail=f"invalid tag: {tag}")
+        cache_key = f"{user.id}:{tag}"
         with _review_paper_lock:
-            cached = _review_paper_cache.get(tag)
+            cached = _review_paper_cache.get(cache_key)
         if cached is not None:
             return cached
         with db.get_session() as session:
@@ -566,13 +742,77 @@ def create_app(
         paper_html = _md(paper) if paper else ""
         payload = {"paper_html": paper_html, "recommended_ids": recommended}
         with _review_paper_lock:
-            _review_paper_cache[tag] = payload
+            _review_paper_cache[cache_key] = payload
         return payload
+
+    # --- 管理员题库管理（owner） ---
+
+    @app.put("/api/admin/questions/{question_id}")
+    def admin_update_question(
+        question_id: int, body: dict, user: User = Depends(require_owner)
+    ):
+        """管理员修改题目：stem/tags/difficulty/good_criteria/bad_criteria 可改（type 不可改）。"""
+        with db.get_session() as session:
+            row = session.get(Question, question_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="question not found")
+            if "stem" in body:
+                stem = str(body.get("stem", "")).strip()
+                if len(stem) < 6:
+                    raise HTTPException(status_code=400, detail="题干过短")
+                row.stem = stem
+            if "tags" in body:
+                raw_tags = body.get("tags")
+                if not isinstance(raw_tags, list):
+                    raise HTTPException(status_code=400, detail="tags 必须是列表")
+                row.tags = [t for t in raw_tags if isinstance(t, str)][:5]
+            if "difficulty" in body:
+                d = body.get("difficulty")
+                if not isinstance(d, int) or not 1 <= d <= 5:
+                    raise HTTPException(status_code=400, detail="难度需为 1-5")
+                row.difficulty = d
+            for field in ("good_criteria", "bad_criteria"):
+                if field in body:
+                    val = body.get(field)
+                    if not isinstance(val, list) or not val:
+                        raise HTTPException(status_code=400, detail=f"{field} 需为非空列表")
+                    setattr(row, field, [str(v) for v in val])
+            db.commit(session)
+            session.refresh(row)
+        return {
+            "id": row.id,
+            "stem": row.stem,
+            "difficulty": row.difficulty,
+            "tags": row.tags,
+        }
+
+    @app.delete("/api/admin/questions/{question_id}")
+    def admin_delete_question(
+        question_id: int, user: User = Depends(require_owner)
+    ):
+        """管理员删除题目：级联删全部会话（attempts/judgments）与用户 picks。"""
+        with db.get_session() as session:
+            row = session.get(Question, question_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="question not found")
+            rows = session.scalars(
+                select(Session).where(Session.question_id == question_id)
+            ).all()
+            for s in rows:
+                session.delete(s)
+            picks = session.scalars(
+                select(UserPick).where(UserPick.question_id == question_id)
+            ).all()
+            for p in picks:
+                session.delete(p)
+            session.delete(row)
+            db.commit(session)
+        return {"deleted": True}
 
     # --- 数据备份：导出/导入（sqlite 整库备份 zip） ---
 
     @app.get("/api/export")
-    def export_backup():
+    def export_backup(user: User = Depends(require_owner)):
         """整库备份：sqlite3 backup API 复制当前库 → zip（interview.db + meta.json）下载。"""
         import io
         import json as _json
@@ -615,7 +855,7 @@ def create_app(
             tmp_db.unlink(missing_ok=True)
 
     @app.post("/api/import")
-    def import_backup(body: dict):
+    def import_backup(body: dict, user: User = Depends(require_owner)):
         """从备份 zip 恢复：解压校验 → 当前库备份 → 原子替换 → 重建引擎。
 
         替换运行中 SQLite 文件前先 dispose 引擎连接；恢复后调用方刷新页面。
@@ -695,7 +935,9 @@ def create_app(
     # --- 用户上传题目（格式：题目列表 / 面经文本 / 简历；支持 pdf/docx/doc 二进制） ---
 
     @app.post("/api/upload")
-    def upload_questions(body: dict, background: BackgroundTasks):
+    def upload_questions(
+        body: dict, background: BackgroundTasks, user: User = Depends(require_owner)
+    ):
         filename = str(body.get("filename", ""))
         content = str(body.get("content", ""))
         content_base64 = str(body.get("content_base64", ""))
@@ -736,7 +978,7 @@ def create_app(
         return {"mode": "direct", "count": count, "source_id": source.id}
 
     @app.get("/api/upload/status/{token}")
-    def upload_status(token: str):
+    def upload_status(token: str, user: User = Depends(require_owner)):
         """二进制上传解析轮询：parsing/done/failed；resume 完成带 candidates_token 续候选流程。"""
         with _upload_lock:
             entry = _upload_tasks.get(token)
@@ -745,7 +987,7 @@ def create_app(
             return dict(entry)
 
     @app.get("/api/upload/candidates/{token}")
-    def upload_candidates(token: str):
+    def upload_candidates(token: str, user: User = Depends(require_owner)):
         """简历解析轮询：running/done/failed；done 返回候选题（题干可编辑，tags/难度只读）。"""
         with _resume_lock:
             entry = _resume_candidates.get(token)
@@ -766,7 +1008,7 @@ def create_app(
             return payload
 
     @app.post("/api/upload/confirm")
-    def upload_confirm(body: dict, background: BackgroundTasks):
+    def upload_confirm(body: dict, background: BackgroundTasks, user: User = Depends(require_owner)):
         """简历候选确认：用户编辑后的题 → 校验 → 去重 → 入库（background 内跑 embedding dedup）。"""
         token = str(body.get("token", ""))
         items = body.get("items", [])
@@ -783,7 +1025,7 @@ def create_app(
     # --- 手动触发流水线 ---
 
     @app.post("/api/daily/run")
-    def run_daily(background: BackgroundTasks):
+    def run_daily(background: BackgroundTasks, user: User = Depends(require_owner)):
         background.add_task(_run_daily_safe, daily_runner)
         return {"status": "running"}
 
@@ -1248,12 +1490,13 @@ def _db_url() -> str:
     return f"sqlite:///{DEFAULT_DB_URL}"
 
 
-def _has_finished_session(session, question_id: int) -> bool:
+def _has_finished_session(session, question_id: int, user_id: int) -> bool:
     return (
         session.scalars(
             select(Session)
             .where(
                 Session.question_id == question_id,
+                Session.user_id == user_id,
                 Session.status == SessionStatus.finished,
             )
             .limit(1)
@@ -1262,11 +1505,12 @@ def _has_finished_session(session, question_id: int) -> bool:
     )
 
 
-def _active_session_id(session, question_id: int) -> int | None:
+def _active_session_id(session, question_id: int, user_id: int) -> int | None:
     row = session.scalars(
         select(Session)
         .where(
             Session.question_id == question_id,
+            Session.user_id == user_id,
             Session.status == SessionStatus.active,
         )
         .order_by(Session.id.desc())
@@ -1275,12 +1519,17 @@ def _active_session_id(session, question_id: int) -> int | None:
     return row.id if row else None
 
 
-def _latest_judgment_by_question(session) -> dict[int, tuple[Session, Judgment]]:
-    """每题最新 finished session 及其最新 judgment（按 Session.id 倒序首条即最新）。"""
+def _latest_judgment_by_question(
+    session, user_id: int
+) -> dict[int, tuple[Session, Judgment]]:
+    """每题最新 finished session 及其最新 judgment（按 Session.id 倒序首条即最新），按用户隔离。"""
     rows = session.execute(
         select(Session, Judgment)
         .join(Judgment, Judgment.session_id == Session.id)
-        .where(Session.status == SessionStatus.finished)
+        .where(
+            Session.status == SessionStatus.finished,
+            Session.user_id == user_id,
+        )
         .order_by(Session.id.desc())
     ).all()
     latest: dict[int, tuple[Session, Judgment]] = {}

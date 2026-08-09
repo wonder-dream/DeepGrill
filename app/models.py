@@ -99,6 +99,7 @@ class Session(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     question_id: int = Field(foreign_key="questions.id")
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
     kind: SessionKind
     status: SessionStatus = SessionStatus.active
     started_at: datetime = Field(default_factory=datetime.now)
@@ -161,3 +162,33 @@ class TaskLog(SQLModel, table=True):
     generated_count: int = 0
     error: str = ""
     ran_at: datetime = Field(default_factory=datetime.now)
+
+
+class User(SQLModel, table=True):
+    __tablename__ = "users"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    username: str = Field(unique=True, index=True)
+    password_hash: str
+    role: str = "user"  # owner（管理员，可上传/管理题库）| user
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class UserToken(SQLModel, table=True):
+    __tablename__ = "user_tokens"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    token_hash: str = Field(unique=True)
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class UserPick(SQLModel, table=True):
+    """每用户今日选题（替代 Question.status=today 的全局语义，按天自然隔离）。"""
+
+    __tablename__ = "user_picks"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    question_id: int = Field(foreign_key="questions.id")
+    picked_at: datetime = Field(default_factory=datetime.now)

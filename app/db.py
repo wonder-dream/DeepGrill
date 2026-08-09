@@ -13,7 +13,16 @@ from sqlmodel import Session as DBSession
 from sqlmodel import SQLModel
 
 from .errors import DuplicateSource, StorageError
-from .models import Question, QuestionStatus, QuestionType, Session, SessionStatus, Source, TaskLog
+from .models import (
+    Question,
+    QuestionStatus,
+    QuestionType,
+    Session,
+    SessionStatus,
+    Source,
+    TaskLog,
+    UserPick,
+)
 
 _engine: Engine | None = None
 _factory: sessionmaker | None = None
@@ -35,6 +44,7 @@ def init_db(db_url: str) -> None:
         _engine = create_engine(db_url, connect_args=connect_args)
         if db_url.startswith("sqlite"):
             event.listen(_engine, "connect", _enable_sqlite_foreign_keys)
+            event.listen(_engine, "connect", _enable_sqlite_wal)
         SQLModel.metadata.create_all(_engine)
         if db_url.startswith("sqlite"):
             _migrate_selected_at(_engine)
@@ -42,6 +52,7 @@ def init_db(db_url: str) -> None:
             _migrate_embedding(_engine)
             _migrate_attempt_level(_engine)
             _migrate_cleanup_empty_sessions(_engine)
+            _migrate_session_user(_engine)
     except SQLAlchemyError as e:
         raise StorageError(f"cannot init database {db_url}: {e}") from e
     _factory = sessionmaker(bind=_engine, class_=DBSession, expire_on_commit=False)
@@ -94,6 +105,14 @@ def _migrate_backfill_today_selected_at(engine: Engine) -> None:
         )
 
 
+def _migrate_session_user(engine: Engine) -> None:
+    """多用户迁移：sessions 表补 user_id 列（旧单用户数据由注册 owner 时回填）。"""
+    with engine.begin() as conn:
+        cols = [row[1] for row in conn.execute(text("PRAGMA table_info(sessions)"))]
+        if "user_id" not in cols:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN user_id INTEGER"))
+
+
 def _migrate_embedding(engine: Engine) -> None:
     """轻量迁移：旧库 questions 表补 embedding 列（NULL 由首次去重自动补算）。"""
     with engine.begin() as conn:
@@ -132,6 +151,13 @@ def _enable_sqlite_foreign_keys(dbapi_connection, connection_record) -> None:
     """SQLite 默认 PRAGMA foreign_keys=OFF，逐连接开启以强制外键。"""
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
+def _enable_sqlite_wal(dbapi_connection, connection_record) -> None:
+    """多用户并发读写：WAL 模式（读不阻塞写，20 用户规模更稳）。"""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
     cursor.close()
 
 
@@ -188,6 +214,30 @@ def _wrap_storage(func):
             raise StorageError(f"database operation failed: {e}") from e
 
     return inner
+
+
+@_wrap_storage
+def backfill_owner_data(session: DBSession, user_id: int) -> None:
+    """首个用户（owner）注册时回填旧单用户数据：sessions 归属 + 今日题转 picks。"""
+    from sqlalchemy import update
+
+    session.execute(
+        update(Session).where(Session.user_id.is_(None)).values(user_id=user_id)
+    )
+    today_qs = list(
+        session.scalars(
+            select(Question).where(Question.status == QuestionStatus.today)
+        )
+    )
+    for q in today_qs:
+        session.add(
+            UserPick(
+                user_id=user_id,
+                question_id=q.id,
+                picked_at=q.selected_at or datetime.now(),
+            )
+        )
+    commit(session)
 
 
 @_wrap_storage

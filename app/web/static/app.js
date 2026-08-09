@@ -2,6 +2,8 @@
 
 const state = {
   view: "today",
+  user: null,
+  token: localStorage.getItem("token") || null,
   question: null,
   sessionId: null,
   kind: "chain",
@@ -25,6 +27,7 @@ const state = {
   calYear: null,
   calMonth: null,
   historyDates: new Set(),
+  editingQuestion: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -50,7 +53,19 @@ function show(view) {
 }
 
 async function api(path, options) {
-  const resp = await fetch(path, options);
+  const opts = options || {};
+  opts.headers = Object.assign(
+    {},
+    opts.headers || {},
+    state.token ? { Authorization: `Bearer ${state.token}` } : {}
+  );
+  const resp = await fetch(path, opts);
+  if (resp.status === 401) {
+    state.token = null;
+    localStorage.removeItem("token");
+    showAuth();
+    throw new Error("登录已过期，请重新登录");
+  }
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}));
     throw new Error(body.detail || body.error || `HTTP ${resp.status}`);
@@ -123,19 +138,37 @@ async function loadBank() {
     const badge = q.done
       ? '<span class="badge badge-done">已答</span>'
       : '<span class="badge badge-todo">待做</span>';
+    const isOwner = state.user && state.user.role === "owner";
+    const adminBtns = isOwner
+      ? `<button class="admin-btn" data-action="edit" data-id="${q.id}">编辑</button>
+         <button class="admin-btn admin-delete" data-action="delete" data-id="${q.id}">删除</button>`
+      : "";
     card.innerHTML = `
       <div class="question-head">
         ${badge}
         <span class="badge">${q.type}</span>
         <span class="badge">难度 ${difficultyStars(q.difficulty)}</span>
+        ${adminBtns}
       </div>
       <p>${escapeHtml(q.stem)}</p>`;
-    card.addEventListener("click", () => {
+    card.addEventListener("click", (e) => {
+      if (e.target.closest(".admin-btn")) return;
       state.returnTo = "bank";
       startAnswer(q);
     });
     list.appendChild(card);
   }
+  list.querySelectorAll(".admin-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
+      if (btn.dataset.action === "edit") {
+        openQuestionModal(id);
+      } else if (confirm("删除该题？将同时删除其全部作答记录。")) {
+        api(`/api/admin/questions/${id}`, { method: "DELETE" }).then(() => loadBank());
+      }
+    });
+  });
   const totalPages = Math.max(1, data.total_pages);
   $("#bank-page-info").textContent = `第 ${data.page} / ${totalPages} 页`;
   $("#bank-prev").disabled = data.page <= 1;
@@ -1204,9 +1237,127 @@ $("#detail-back").addEventListener("click", () => {
 });
 $("#detail-delete").addEventListener("click", deleteCurrentAttempt);
 
-loadTagCategories();
-renderCalendar();
-show("today");
+// --- 认证：登录/注册 ---
+function showAuth() {
+  state.user = null;
+  applyRoleUI();
+  document.querySelectorAll(".view").forEach((v) => v.classList.add("hidden"));
+  $("#view-auth").classList.remove("hidden");
+  $("#calendar-panel").classList.add("hidden");
+  $("#auth-error").textContent = "";
+}
+let authMode = "login";
+$("#auth-tab-login").addEventListener("click", () => {
+  authMode = "login";
+  $("#auth-tab-login").classList.add("upload-active");
+  $("#auth-tab-register").classList.remove("upload-active");
+  $("#auth-submit").textContent = "登录";
+  $("#auth-hint").textContent = "登录后开始刷题";
+  $("#auth-error").textContent = "";
+});
+$("#auth-tab-register").addEventListener("click", () => {
+  authMode = "register";
+  $("#auth-tab-register").classList.add("upload-active");
+  $("#auth-tab-login").classList.remove("upload-active");
+  $("#auth-submit").textContent = "注册";
+  $("#auth-hint").textContent = "首个注册用户为管理员（owner）；开放注册共 20 个名额";
+  $("#auth-error").textContent = "";
+});
+$("#auth-submit").addEventListener("click", async () => {
+  const username = $("#auth-username").value.trim();
+  const password = $("#auth-password").value;
+  if (!username || !password) {
+    $("#auth-error").textContent = "请输入用户名和密码";
+    return;
+  }
+  const path = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
+  try {
+    const body = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    }).then(async (r) => {
+      if (!r.ok) {
+        const b = await r.json().catch(() => ({}));
+        throw new Error(b.detail || b.error || `HTTP ${r.status}`);
+      }
+      return r.json();
+    });
+    state.token = body.token;
+    localStorage.setItem("token", body.token);
+    state.user = body.user;
+    applyRoleUI();
+    $("#auth-username").value = "";
+    $("#auth-password").value = "";
+    loadTagCategories();
+    show("today");
+  } catch (err) {
+    $("#auth-error").textContent = err.message;
+  }
+});
+
+function applyRoleUI() {
+  const isOwner = state.user && state.user.role === "owner";
+  $("#daily-run").classList.toggle("hidden", !isOwner);
+  $("#upload-btn").classList.toggle("hidden", !isOwner);
+}
+
+async function initAuth() {
+  if (!state.token) {
+    showAuth();
+    return;
+  }
+  try {
+    const me = await api("/api/auth/me");
+    state.user = me;
+    applyRoleUI();
+    loadTagCategories();
+    renderCalendar();
+    show("today");
+  } catch (e) {
+    showAuth();
+  }
+}
+
+initAuth();
+
+// --- 管理员编辑题目（owner） ---
+async function openQuestionModal(id) {
+  state.editingQuestion = id;
+  $("#qm-error").textContent = "";
+  const detail = await api(`/api/questions/${id}`);
+  $("#qm-stem").value = detail.stem;
+  $("#qm-tags").value = (detail.tags || []).join(", ");
+  $("#qm-difficulty").value = detail.difficulty;
+  $("#qm-good").value = (detail.good_criteria || []).join("\n");
+  $("#qm-bad").value = (detail.bad_criteria || []).join("\n");
+  $("#question-modal").classList.remove("hidden");
+}
+$("#qm-cancel").addEventListener("click", () => {
+  $("#question-modal").classList.add("hidden");
+});
+$("#qm-save").addEventListener("click", async () => {
+  const id = state.editingQuestion;
+  if (id == null) return;
+  const payload = {
+    stem: $("#qm-stem").value.trim(),
+    tags: $("#qm-tags").value.split(/[,，]/).map((s) => s.trim()).filter(Boolean).slice(0, 5),
+    difficulty: Number($("#qm-difficulty").value),
+    good_criteria: $("#qm-good").value.split("\n").map((s) => s.trim()).filter(Boolean),
+    bad_criteria: $("#qm-bad").value.split("\n").map((s) => s.trim()).filter(Boolean),
+  };
+  try {
+    await api(`/api/admin/questions/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    $("#question-modal").classList.add("hidden");
+    loadBank();
+  } catch (err) {
+    $("#qm-error").textContent = err.message;
+  }
+});
 
 // 侧边栏收起/展开（localStorage 记忆）
 (function initSidebar() {

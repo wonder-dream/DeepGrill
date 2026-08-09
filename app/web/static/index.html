@@ -25,6 +25,28 @@
   </aside>
 
   <main>
+    <section id="view-auth" class="view hidden">
+      <div class="card auth-card">
+        <h1 class="auth-title">面试助手</h1>
+        <p class="meta">每日面经出题 · 深挖追问 · 四维判分 · 薄弱点复习</p>
+        <div class="auth-tabs">
+          <button class="upload-tab upload-active" id="auth-tab-login">登录</button>
+          <button class="upload-tab" id="auth-tab-register">注册</button>
+        </div>
+        <div class="auth-form">
+          <label>用户名
+            <input type="text" id="auth-username" autocomplete="username">
+          </label>
+          <label>密码
+            <input type="password" id="auth-password" autocomplete="current-password">
+          </label>
+          <p class="meta" id="auth-hint">注册后即成为第一个管理员（owner）</p>
+          <button id="auth-submit" class="primary">登录</button>
+          <p class="meta" id="auth-error"></p>
+        </div>
+      </div>
+    </section>
+
     <section id="view-upload" class="view hidden">
       <div class="card summary-card">
         <div class="summary-num" id="upload-title">上传题目</div>
@@ -286,6 +308,38 @@
       </div>
     </section>
   </main>
+
+  <div id="question-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>编辑题目</h2>
+      <label>题干
+        <textarea id="qm-stem" rows="2"></textarea>
+      </label>
+      <label>标签（逗号分隔，≤5）
+        <input type="text" id="qm-tags">
+      </label>
+      <label>难度
+        <select id="qm-difficulty">
+          <option value="1">★</option>
+          <option value="2">★★</option>
+          <option value="3">★★★</option>
+          <option value="4">★★★★</option>
+          <option value="5">★★★★★</option>
+        </select>
+      </label>
+      <label>高分标准（每行一条）
+        <textarea id="qm-good" rows="2"></textarea>
+      </label>
+      <label>扣分特征（每行一条）
+        <textarea id="qm-bad" rows="2"></textarea>
+      </label>
+      <div class="upload-row">
+        <button id="qm-save" class="primary">保存</button>
+        <button id="qm-cancel">取消</button>
+      </div>
+      <p class="meta" id="qm-error"></p>
+    </div>
+  </div>
 
   <aside id="calendar-panel">
     <div class="calendar-head">

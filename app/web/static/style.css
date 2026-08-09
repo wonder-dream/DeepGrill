@@ -713,3 +713,93 @@ details summary:hover { color: var(--red); }
   display: inline-block;
   text-align: center;
 }
+
+/* 登录/注册 */
+.auth-card {
+  max-width: 420px;
+  margin: 60px auto;
+  padding: 24px;
+}
+.auth-title {
+  font-family: var(--serif);
+  font-size: 26px;
+  margin: 0 0 4px;
+}
+.auth-form label {
+  display: block;
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin: 10px 0 4px;
+}
+.auth-form input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--line-dark);
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: var(--sans);
+  background: var(--card);
+  color: var(--ink);
+  outline: none;
+}
+.auth-form input:focus { border-color: var(--red); }
+#auth-submit { margin-top: 14px; width: 100%; }
+#auth-error { color: var(--red); }
+
+/* 管理员按钮与编辑弹层 */
+.admin-btn {
+  margin-left: auto;
+  border: 1px solid var(--line-dark);
+  background: var(--card);
+  color: var(--ink-soft);
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--sans);
+  transition: all 0.15s ease;
+}
+.admin-btn:hover { border-color: var(--red); color: var(--red); }
+.admin-delete:hover { border-color: var(--red); color: var(--red); }
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(38, 35, 30, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal-card {
+  width: 480px;
+  max-width: 92vw;
+  max-height: 88vh;
+  overflow: auto;
+  background: var(--card);
+  border: 1px solid var(--line-dark);
+  border-radius: 4px;
+  padding: 18px;
+  box-shadow: 0 6px 24px rgba(38, 35, 30, 0.2);
+}
+.modal-card label {
+  display: block;
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin: 10px 0 4px;
+}
+.modal-card input, .modal-card select, .modal-card textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 9px;
+  border: 1px solid var(--line-dark);
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: var(--sans);
+  background: var(--card);
+  color: var(--ink);
+  outline: none;
+}
+.modal-card textarea { resize: vertical; }
+.modal-card input:focus, .modal-card textarea:focus, .modal-card select:focus { border-color: var(--red); }
+#qm-error { color: var(--red); }
