@@ -316,7 +316,7 @@ M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 → M10 → M11 → M
 
 **接口**：
 - `judge(question, transcript, model, llm, *, session_id=None, reference=None, max_level=None) -> Judgment`
-- 常量 `PROMPT_VERSION = "judge_v4"`（判分 prompt 版本号，随 fixture 冻结）
+- 常量 `PROMPT_VERSION = "judge_v5"`（判分 prompt 版本号，随 fixture 冻结）
 
 **关键决策**：
 - 输入 = 题目 + 该题 good/bad criteria + 完整对话记录 + 标签/难度（D7）
