@@ -177,13 +177,13 @@ def test_empty_env_value_counts_as_missing(tmp_path, monkeypatch):
         load_config(tmp_path / "config.yaml")
 
 
-def test_missing_cookie_env_raises_env_var_missing(tmp_path, monkeypatch):
+def test_missing_cookie_env_allowed(tmp_path, monkeypatch):
+    """牛客 cookie 可选（服务器无 cookie 也能启动，源运行时降级停用）。"""
     write_yaml(tmp_path, VALID_YAML)
     monkeypatch.setenv("LLM_API_KEY", "sk-test")
     monkeypatch.delenv("NOWCODER_COOKIE", raising=False)
-    with pytest.raises(EnvVarMissing) as exc:
-        load_config(tmp_path / "config.yaml")
-    assert exc.value.name == "NOWCODER_COOKIE"
+    cfg = load_config(tmp_path / "config.yaml")
+    assert cfg.nowcoder.cookie_env == "NOWCODER_COOKIE"
 
 
 # --- secret_value ---

@@ -78,7 +78,7 @@ def load_config(path: Path) -> AppConfig:
     except ValidationError as e:
         raise ConfigError(_format_validation_error(e)) from e
     secret_value(config.llm.api_key_env)
-    secret_value(config.nowcoder.cookie_env)
+    # 牛客 cookie 可选：缺失/过期时 nowcoder 源运行时降级停用（其余源不受影响）
     return config
 
 
