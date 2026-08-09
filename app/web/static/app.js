@@ -889,6 +889,45 @@ function setUploadStatus(html, isError) {
   box.classList.toggle("upload-err", !!isError);
   box.classList.toggle("upload-ok", !isError);
 }
+function clearUploadSelection() {
+  uploadFile = null;
+  $("#upload-filename").textContent = "未选择文件";
+  $("#upload-submit").disabled = true;
+}
+function uploadWithProgress(payload, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/upload");
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.setRequestHeader("Authorization", `Bearer ${state.token}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      let data = {};
+      try {
+        data = JSON.parse(xhr.responseText || "{}");
+      } catch (_) {
+        reject(new Error("服务器响应异常"));
+        return;
+      }
+      if (xhr.status === 401) {
+        state.token = null;
+        localStorage.removeItem("token");
+        showAuth();
+        reject(new Error("登录已过期，请重新登录"));
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 400) {
+        reject(new Error(data.detail || data.error || `HTTP ${xhr.status}`));
+        return;
+      }
+      resolve(data);
+    };
+    xhr.onerror = () => reject(new Error("网络错误，上传中断"));
+    xhr.send(JSON.stringify(payload));
+  });
+}
 $("#upload-pick").addEventListener("click", () => $("#upload-file").click());
 $("#upload-file").addEventListener("change", (e) => {
   uploadFile = e.target.files[0] || null;
@@ -896,6 +935,13 @@ $("#upload-file").addEventListener("change", (e) => {
   if (!uploadFile) return;
   if (!/\.(md|txt|pdf|docx?)$/i.test(uploadFile.name)) {
     setUploadStatus("仅支持 .md/.txt/.pdf/.doc/.docx 文件", true);
+    uploadFile = null;
+    $("#upload-filename").textContent = "未选择文件";
+    $("#upload-submit").disabled = true;
+    return;
+  }
+  if (uploadFile.size > 20 * 1024 * 1024) {
+    setUploadStatus("文件超过 20MB 限制，请压缩或分段上传", true);
     uploadFile = null;
     $("#upload-filename").textContent = "未选择文件";
     $("#upload-submit").disabled = true;
@@ -926,18 +972,18 @@ $("#upload-submit").addEventListener("click", async () => {
   }
   $("#upload-submit").disabled = true;
   try {
-    const resp = await api("/api/upload", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+    const resp = await uploadWithProgress(payload, (pct) => {
+      setUploadStatus(`上传中… ${pct}%`);
     });
     if (resp.mode === "direct") {
+      clearUploadSelection();
       setUploadStatus(`已入库 ${resp.count} 题。<a href="#" id="upload-go-bank">去题库查看</a>`);
       $("#upload-go-bank").addEventListener("click", (ev) => {
         ev.preventDefault();
         show("bank");
       });
     } else if (resp.mode === "facejing") {
+      clearUploadSelection();
       setUploadStatus("已提交，后台生成中…（完成后可在题库查看）");
     } else if (resp.mode === "resume") {
       await pollResumeCandidates(resp.token);
@@ -951,6 +997,7 @@ $("#upload-submit").addEventListener("click", async () => {
   }
 });
 async function pollUploadStatus(token) {
+  const start = Date.now();
   setUploadStatus("文件解析中…（PDF/Word 解析约 10-60 秒）");
   for (let i = 0; i < 300; i++) {
     await sleep(2000);
@@ -966,24 +1013,29 @@ async function pollUploadStatus(token) {
       return;
     }
     if (data.status === "done") {
+      const elapsed = Math.round((Date.now() - start) / 1000);
       if (data.mode === "direct") {
-        setUploadStatus(`已入库 ${data.count} 题。<a href="#" id="upload-go-bank">去题库查看</a>`);
+        clearUploadSelection();
+        setUploadStatus(`解析完成，已入库 ${data.count} 题（耗时 ${elapsed} 秒）。<a href="#" id="upload-go-bank">去题库查看</a>`);
         $("#upload-go-bank").addEventListener("click", (ev) => {
           ev.preventDefault();
           show("bank");
         });
       } else if (data.mode === "facejing") {
-        setUploadStatus("解析完成，已提交后台生成中…（完成后可在题库查看）");
+        clearUploadSelection();
+        setUploadStatus(`解析完成（耗时 ${elapsed} 秒），已提交后台生成中…`);
       } else if (data.mode === "resume") {
         await pollResumeCandidates(data.candidates_token);
       }
       return;
     }
+    setUploadStatus(`文件解析中… 已用 ${Math.round((Date.now() - start) / 1000)} 秒（PDF/Word 约 10-60 秒）`);
   }
   setUploadStatus("解析超时，请重试", true);
 }
 async function pollResumeCandidates(token) {
   state.resumeToken = token;
+  const start = Date.now();
   setUploadStatus("简历解析中…（约 10-60 秒）");
   for (let i = 0; i < 120; i++) {
     await sleep(3000);
@@ -1002,6 +1054,7 @@ async function pollResumeCandidates(token) {
       renderCandidates(data.items);
       return;
     }
+    setUploadStatus(`简历解析中… 已用 ${Math.round((Date.now() - start) / 1000)} 秒（约 10-60 秒）`);
   }
   setUploadStatus("解析超时，请稍后在题库查看或重试", true);
 }
@@ -1039,6 +1092,7 @@ $("#candidate-confirm").addEventListener("click", async () => {
       body: JSON.stringify({ token: state.resumeToken, items: valid }),
     });
     $("#upload-candidates").classList.add("hidden");
+    clearUploadSelection();
     setUploadStatus("已提交入库（后台去重中）…完成后可在题库查看");
   } catch (err) {
     setUploadStatus(err.message, true);

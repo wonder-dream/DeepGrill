@@ -1203,34 +1203,50 @@ def _parse_direct_questions(content: str) -> list[str]:
 
 
 def _insert_direct_questions(content: str) -> tuple[Source, int]:
-    """直接模式入库：建 manual source + knowledge 题（难度 1、默认 criteria）。"""
+    """直接模式入库：建 manual source + knowledge 题（难度 1、默认 criteria）；与库内归一化哈希去重。
+
+    source_hash 唯一约束：内容相同的重复上传复用已有 source（题已全去重）。
+    """
+    from ..pipeline.dedup import _dedup_hash_only
     from ..pipeline.generate import DEFAULT_BAD_CRITERIA, DEFAULT_GOOD_CRITERIA
 
     stems = _parse_direct_questions(content)
+    source_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
     with db.get_session() as session:
-        source = Source(
-            type=SourceType.manual,
-            title="用户上传",
-            raw_text=content,
-            cleaned_text=content,
-            source_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
-        )
-        session.add(source)
-        db.commit(session)
-        session.refresh(source)
-        for stem in stems:
-            session.add(
-                Question(
-                    source_id=source.id,
-                    type=QuestionType.knowledge,
-                    stem=stem,
-                    difficulty=1,
-                    good_criteria=list(DEFAULT_GOOD_CRITERIA),
-                    bad_criteria=list(DEFAULT_BAD_CRITERIA),
-                )
+        source = session.scalars(
+            select(Source).where(Source.source_hash == source_hash)
+        ).first()
+        if source is None:
+            source = Source(
+                type=SourceType.manual,
+                title="用户上传",
+                raw_text=content,
+                cleaned_text=content,
+                source_hash=source_hash,
             )
-        db.commit(session)
-    return source, len(stems)
+            session.add(source)
+            db.commit(session)
+            session.refresh(source)
+        existing = [
+            Question(stem=stem)
+            for stem in session.scalars(select(Question.stem)).all()
+        ]
+    kept = _dedup_hash_only([Question(stem=s) for s in stems], existing)
+    if kept:
+        with db.get_session() as session:
+            for q in kept:
+                session.add(
+                    Question(
+                        source_id=source.id,
+                        type=QuestionType.knowledge,
+                        stem=q.stem,
+                        difficulty=1,
+                        good_criteria=list(DEFAULT_GOOD_CRITERIA),
+                        bad_criteria=list(DEFAULT_BAD_CRITERIA),
+                    )
+                )
+            db.commit(session)
+    return source, len(kept)
 
 
 def _tag_direct_questions(source_id: int, llm_factory) -> None:
@@ -1382,10 +1398,22 @@ def _start_resume_parse(source_id: int, count: int, llm_factory) -> str:
                 entry = _resume_candidates.get(token)
                 if entry is not None:
                     entry["status"] = "failed"
-                    entry["error"] = str(e)
+                    entry["error"] = _friendly_upload_error(e)
 
     threading.Thread(target=run, daemon=True).start()
     return token
+
+
+def _friendly_upload_error(e: Exception) -> str:
+    """异步解析异常 → 中文友好文案（避免向用户透传原始 stderr 英文报错）。"""
+    text = str(e)
+    if "LibreOffice" in text:
+        return "DOC 转换失败：服务器未安装 LibreOffice，请转用 PDF/MD/TXT 格式"
+    if "MinerU" in text or "mineru" in text:
+        return "PDF/Word 解析失败（解析器异常），请重试或转用文本格式"
+    if "timed out" in text or "Timeout" in text:
+        return "解析超时（超过 20 分钟），请重试或改用更小文件"
+    return f"解析失败：{text}"
 
 
 def _start_binary_upload(
@@ -1437,7 +1465,7 @@ def _start_binary_upload(
         except Exception as e:
             logger.warning("binary upload %s failed: %s", token, e)
             with _upload_lock:
-                _upload_tasks[token] = {"status": "failed", "error": str(e)}
+                _upload_tasks[token] = {"status": "failed", "error": _friendly_upload_error(e)}
 
     threading.Thread(target=run, daemon=True).start()
     return token

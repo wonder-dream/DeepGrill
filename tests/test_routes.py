@@ -1045,6 +1045,60 @@ def _poll_upload_status(client, token, tries=200):
     raise AssertionError(f"upload status timeout: {data}")
 
 
+def test_upload_direct_dedup_skips_existing(db):
+    """direct 模式重复上传：与库内归一化哈希相同的题跳过（不重复入库）。"""
+    content = "Q: 讲一下 HashMap 底层原理\nQ: Redis 分布式锁"
+    client = make_client(db, FakeLLM([]))
+    first = client.post("/api/upload", json={"filename": "题.md", "content": content}).json()
+    assert first["count"] == 2
+    second = client.post("/api/upload", json={"filename": "题2.md", "content": content}).json()
+    assert second["count"] == 0  # 全部重复
+    third = client.post("/api/upload", json={
+        "filename": "题3.md",
+        "content": "Q: 讲一下 HashMap 底层原理\nQ: 缓存穿透怎么解决？",
+    }).json()
+    assert third["count"] == 1  # 只新增不重复的
+    with db:
+        from sqlalchemy import text as _t
+        n = db.exec(_t("SELECT COUNT(*) FROM questions WHERE stem IN ('讲一下 HashMap 底层原理', 'Redis 分布式锁')")).one()[0]
+        assert n == 2  # 库内仍只有首次导入的 2 题
+
+
+def test_upload_binary_pdf_failed_friendly_error(monkeypatch, db):
+    """二进制解析失败：前端拿到中文包装错误（不透传原始 stderr）。"""
+    from app.web.routes import _upload_tasks
+
+    def fake_extract(filename, data):
+        raise RuntimeError("MinerU 解析失败：Traceback ... stdout stderr")
+
+    monkeypatch.setattr("app.web.routes.extract_text", fake_extract)
+    client = make_client(db, FakeLLM([]))
+    body = client.post("/api/upload", json={
+        "filename": "坏文件.pdf",
+        "content_base64": base64.b64encode(b"x").decode(),
+        "type": "auto",
+    }).json()
+    token = body["token"]
+    try:
+        data = _poll_upload_status(client, token)
+        assert data["status"] == "failed"
+        assert "MinerU" not in data["error"] or "解析失败（解析器异常）" in data["error"]
+        assert "Traceback" not in data["error"]
+    finally:
+        with db:
+            _upload_tasks.pop(token, None)
+
+
+def test_friendly_upload_error_kinds():
+    """中文错误包装：LibreOffice/MinerU/超时分类提示，未知异常保留原文。"""
+    from app.web.routes import _friendly_upload_error
+
+    assert "LibreOffice" in _friendly_upload_error(RuntimeError("未检测到 LibreOffice"))
+    assert "解析器异常" in _friendly_upload_error(RuntimeError("MinerU 解析失败：xx"))
+    assert "超时" in _friendly_upload_error(RuntimeError("command timed out"))
+    assert "其他奇怪错误" in _friendly_upload_error(RuntimeError("其他奇怪错误"))
+
+
 def test_upload_binary_pdf_direct(monkeypatch, db):
     """PDF 二进制上传：解析完成后按内容识别为 direct 模式入库。"""
     from app.web.routes import _upload_tasks
