@@ -107,6 +107,22 @@ def test_schema_mode_with_array_json_returns_list():
     assert client.complete(MSG, json_schema={}) == [{"a": 1}]
 
 
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        ('[1,2,]', [1, 2]),  # 数组尾逗号
+        ('{"a": 1,}', {"a": 1}),  # 对象尾逗号
+        ('[{"a":1}, {"b":2},]', [{"a": 1}, {"b": 2}]),  # 嵌套数组尾逗号
+        ('{"s": "包含,}"}', {"s": "包含,}"}),  # 字符串内 ,} 不受影响
+        ('{"a": [1, 2,], "b": 3,}', {"a": [1, 2], "b": 3}),  # 多处尾逗号
+    ],
+)
+def test_trailing_commas_tolerated(content, expected):
+    """回归：LLM 尾逗号输出可解析（9 个解析失败源根因，2026-08-09）。"""
+    client, _ = make_client(lambda request: completion(content))
+    assert client.complete(MSG, json_schema={}) == expected
+
+
 # --- fail ---
 
 

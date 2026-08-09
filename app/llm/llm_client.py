@@ -11,6 +11,41 @@ _FENCE_OPEN = re.compile(r"^```(?:json)?\s*")
 _FENCE_CLOSE = re.compile(r"\s*```$")
 
 
+def _strip_trailing_commas(text: str) -> str:
+    """清理 JSON 尾逗号（LLM 常见输出，如 [1,2,] / {"a":1,}），字符串内的逗号不受影响。"""
+    out: list[str] = []
+    in_str = False
+    escaped = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j < n and text[j] in "}]":
+                i = j  # 丢弃尾逗号，右括号下一轮正常输出
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 class LLMClient:
     """统一 OpenAI 兼容调用（DeepSeek/Qwen/OpenAI 可换）：重试/超时/JSON 解析。
 
@@ -81,10 +116,13 @@ class LLMClient:
         raise LLMError(f"llm call failed after retries: {last_exc}") from last_exc
 
     def _parse_json(self, content: str):
-        """剥离围栏后解析 JSON 并原样返回（dict/list/标量均可，类型校验由调用方负责）。"""
+        """剥离围栏后解析 JSON 并原样返回（dict/list/标量均可，类型校验由调用方负责）。
+
+        容忍 LLM 常见尾逗号（[1,2,] / {"a":1,}）——2026-08-09 诊断：9 个解析失败源根因。
+        """
         text = _FENCE_OPEN.sub("", content.strip())
         text = _FENCE_CLOSE.sub("", text)
         try:
-            return json.loads(text)
+            return json.loads(_strip_trailing_commas(text))
         except json.JSONDecodeError as e:
             raise LLMJsonError(f"cannot parse llm json output: {e}") from e
