@@ -29,6 +29,16 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 打开 http://127.0.0.1:8000 使用。默认每日 08:00 自动跑流水线，也可点页面「立即更新」。
 
+## 界面预览
+
+| 今日题目（日历单选 + 星级难度） | 历史记录（日期范围日历） |
+|---|---|
+| ![今日题目](docs/screenshots/01-today.png) | ![历史记录](docs/screenshots/02-history.png) |
+
+| 题库（关键词/难度筛选） | 薄弱点复习（LLM 复习讲义） |
+|---|---|
+| ![题库](docs/screenshots/04-bank.png) | ![薄弱点复习](docs/screenshots/03-review.png) |
+
 > 首次「立即更新」会 clone 面经仓库 + 用 LLM 生成 36 道题，耗时 10-20 分钟（一次性成本）；之后每日增量运行很快。
 > 牛客源需 .env 中配置有效 `NOWCODER_COOKIE`（登录后 F12 复制），cookie 过期会自动安静停用该源，GitHub 源与手动导入不受影响（详见 docs/modules/M06-nowcoder.md）。
 
