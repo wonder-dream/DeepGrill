@@ -4,9 +4,11 @@
 - 并发作答同一会话 → 409（in-flight 集合）
 - 判分失败：结果接口返回 status="failed"，可再次作答重试
 """
+import base64
 import hashlib
 import logging
 import re
+import secrets
 import threading
 from collections import Counter
 from datetime import datetime
@@ -23,6 +25,7 @@ from ..difficulty import max_rounds_for, target_level_for
 from ..embed import Embedder
 from ..errors import AppError
 from ..judge.chain import resume
+from ..parsers import extract_text
 from ..judge.judge import STATUS_FAILED, judge
 from ..pipeline.generate import _clamp_difficulty
 from ..models import (
@@ -43,6 +46,12 @@ logger = logging.getLogger(__name__)
 
 _inflight: set[int] = set()
 _inflight_lock = threading.Lock()
+
+_resume_candidates: dict[str, dict] = {}
+_resume_lock = threading.Lock()
+
+_upload_tasks: dict[str, dict] = {}
+_upload_lock = threading.Lock()
 
 
 def create_app(
@@ -491,27 +500,93 @@ def create_app(
             items.sort(key=lambda i: (i["done"], -i["id"]))  # 未做优先，组内新题在前
             return items
 
-    # --- 用户上传题目（格式：面经文本 / Q: 直接入库） ---
+    # --- 用户上传题目（格式：题目列表 / 面经文本 / 简历；支持 pdf/docx/doc 二进制） ---
 
     @app.post("/api/upload")
     def upload_questions(body: dict, background: BackgroundTasks):
         filename = str(body.get("filename", ""))
         content = str(body.get("content", ""))
-        if not filename.lower().endswith((".md", ".txt")):
-            raise HTTPException(status_code=400, detail="仅支持 .md/.txt 文件")
-        if len(content.encode("utf-8")) > 2 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="文件超过 2MB 限制")
+        content_base64 = str(body.get("content_base64", ""))
+        up_type = body.get("type", "auto")
+        suffix = Path(filename).suffix.lower()
+        if suffix not in {".md", ".txt", ".pdf", ".doc", ".docx"}:
+            raise HTTPException(status_code=400, detail="仅支持 .md/.txt/.pdf/.doc/.docx 文件")
+        if content_base64:
+            try:
+                data = base64.b64decode(content_base64)
+            except Exception:
+                raise HTTPException(status_code=400, detail="文件编码无效")
+            if len(data) > 20 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="文件超过 20MB 限制")
+            if not data:
+                raise HTTPException(status_code=400, detail="文件内容为空")
+            token = _start_binary_upload(
+                filename, data, up_type, body.get("count"), llm_factory, embedder_factory
+            )
+            return {"mode": "parsing", "token": token}
+        if len(content.encode("utf-8")) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="文件超过 20MB 限制")
         if not content.strip():
             raise HTTPException(status_code=400, detail="文件内容为空")
-        if _is_direct_format(content):
-            source, count = _insert_direct_questions(content)
-            background.add_task(_tag_direct_questions, source.id, llm_factory)
-            return {"mode": "direct", "count": count, "source_id": source.id}
-        source = _import_facejing(content, filename)
-        background.add_task(
-            _generate_uploaded_source, source.id, llm_factory, embedder_factory
-        )
-        return {"mode": "facejing", "source_id": source.id}
+        if up_type == "resume":
+            count = _clamp_resume_count(body.get("count"))
+            source = _import_resume(content)
+            token = _start_resume_parse(source.id, count, llm_factory)
+            return {"mode": "resume", "token": token, "source_id": source.id}
+        if up_type == "facejing" or (up_type == "auto" and not _is_direct_format(content)):
+            source = _import_facejing(content, filename)
+            background.add_task(
+                _generate_uploaded_source, source.id, llm_factory, embedder_factory
+            )
+            return {"mode": "facejing", "source_id": source.id}
+        source, count = _insert_direct_questions(content)
+        background.add_task(_tag_direct_questions, source.id, llm_factory)
+        return {"mode": "direct", "count": count, "source_id": source.id}
+
+    @app.get("/api/upload/status/{token}")
+    def upload_status(token: str):
+        """二进制上传解析轮询：parsing/done/failed；resume 完成带 candidates_token 续候选流程。"""
+        with _upload_lock:
+            entry = _upload_tasks.get(token)
+            if entry is None:
+                raise HTTPException(status_code=404, detail="token not found")
+            return dict(entry)
+
+    @app.get("/api/upload/candidates/{token}")
+    def upload_candidates(token: str):
+        """简历解析轮询：running/done/failed；done 返回候选题（题干可编辑，tags/难度只读）。"""
+        with _resume_lock:
+            entry = _resume_candidates.get(token)
+            if entry is None:
+                raise HTTPException(status_code=404, detail="token not found")
+            payload = {"status": entry["status"]}
+            if entry["status"] == "done":
+                payload["items"] = [
+                    {
+                        "stem": q.stem,
+                        "tags": q.tags,
+                        "difficulty": q.difficulty,
+                    }
+                    for q in entry["questions"]
+                ]
+            elif entry["status"] == "failed":
+                payload["error"] = entry.get("error", "")
+            return payload
+
+    @app.post("/api/upload/confirm")
+    def upload_confirm(body: dict, background: BackgroundTasks):
+        """简历候选确认：用户编辑后的题 → 校验 → 去重 → 入库（background 内跑 embedding dedup）。"""
+        token = str(body.get("token", ""))
+        items = body.get("items", [])
+        if not isinstance(items, list) or not items:
+            raise HTTPException(status_code=400, detail="no items")
+        with _resume_lock:
+            entry = _resume_candidates.pop(token, None)
+            if entry is None:
+                raise HTTPException(status_code=404, detail="token not found")
+            source_id = entry["source_id"]
+        background.add_task(_confirm_project_questions, source_id, items, embedder_factory)
+        return {"status": "importing", "source_id": source_id}
 
     # --- 手动触发流水线 ---
 
@@ -707,7 +782,7 @@ def _insert_direct_questions(content: str) -> tuple[Source, int]:
 
 
 def _tag_direct_questions(source_id: int, llm_factory) -> None:
-    """直接模式后台补标签 + 难度（≤20 题一次调用，词表过滤；失败留空）。"""
+    """直接模式后台校验 + 补标签/难度（≤20 题一次调用）：verdict=delete 删除、rewrite 改写题干、keep 仅补标签难度。"""
     try:
         from ..difficulty import DIFFICULTY_SCALE_TEXT
         from ..tags import MAX_TAGS, TAG_VOCABULARY, tag_vocab_text
@@ -725,10 +800,17 @@ def _tag_direct_questions(source_id: int, llm_factory) -> None:
         stems = [q.stem for q in questions]
         numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(stems))
         prompt = (
-            "为以下题目各选 1-{max_tags} 个最相关的标签（必须从词表中选）并按难度分级标准标注难度：\n{vocab}\n\n"
+            "为以下题目各选 1-{max_tags} 个最相关的标签（必须从词表中选）并按难度分级标准标注难度；"
+            "同时判断每题是否合格面试题并给出处理方式：\n{vocab}\n\n"
             "难度分级标准：\n{difficulty_scale}\n\n"
+            "verdict 判定标准：\n"
+            "- delete：非技术面试题（面试者反问如「贵公司主要做什么业务」、闲聊、流程题如「还有什么想问的」）\n"
+            "- rewrite：技术考点但表述不自然（口语化/含糊/一题多问），new_stem 给出自然改写（保持语义，"
+            "\"请解释/请描述/请设计/为什么…\"句式，一问一题）\n"
+            "- keep：表述自然的技术题，new_stem 留空\n\n"
             "题目列表：\n{numbered}\n\n"
-            '只输出 JSON：{{"items": [{{"stem": "题干原文", "tags": [标签], "difficulty": 1-5 整数}}]}}'
+            '只输出 JSON：{{"items": [{{"stem": "题干原文", "tags": [标签], "difficulty": 1-5 整数, '
+            '"verdict": "keep|rewrite|delete", "new_stem": "改写后题干或空"}}]}}'
         ).format(
             max_tags=MAX_TAGS,
             vocab=tag_vocab_text(),
@@ -745,20 +827,47 @@ def _tag_direct_questions(source_id: int, llm_factory) -> None:
                 s = item.get("stem")
                 tags = item.get("tags", [])
                 if isinstance(s, str) and isinstance(tags, list):
+                    verdict = item.get("verdict")
+                    if verdict not in ("delete", "rewrite", "keep"):
+                        verdict = "keep"
+                    new_stem = item.get("new_stem")
                     by_stem[s] = {
                         "tags": [
                             t for t in tags if isinstance(t, str) and t in TAG_VOCABULARY
                         ][:MAX_TAGS],
                         "difficulty": _clamp_difficulty(item.get("difficulty")),
+                        "verdict": verdict,
+                        "new_stem": (
+                            new_stem.strip()
+                            if isinstance(new_stem, str) and new_stem.strip()
+                            else None
+                        ),
                     }
-        if by_stem:
-            with db.get_session() as session:
-                for q in questions:
-                    if q.stem in by_stem:
-                        row = session.get(Question, q.id)
-                        row.tags = by_stem[q.stem]["tags"]
-                        row.difficulty = by_stem[q.stem]["difficulty"]
-                db.commit(session)
+        if not by_stem:
+            return
+        with db.get_session() as session:
+            for q in questions:
+                if q.stem not in by_stem:
+                    continue
+                info = by_stem[q.stem]
+                row = session.get(Question, q.id)
+                if row is None:
+                    continue
+                if info["verdict"] == "delete":
+                    sessions = session.scalars(
+                        select(Session).where(Session.question_id == q.id)
+                    ).all()
+                    for s in sessions:
+                        session.delete(s)
+                    session.delete(row)
+                elif info["verdict"] == "rewrite" and info["new_stem"]:
+                    row.stem = info["new_stem"]
+                    row.tags = info["tags"]
+                    row.difficulty = info["difficulty"]
+                else:
+                    row.tags = info["tags"]
+                    row.difficulty = info["difficulty"]
+            db.commit(session)
     except Exception as e:
         logger.warning("tag direct questions failed (留空): %s", e)
 
@@ -772,6 +881,151 @@ def _import_facejing(content: str, filename: str) -> Source:
     path = uploads / f"{hashlib.sha256(content.encode('utf-8')).hexdigest()[:12]}.md"
     path.write_text(content, encoding="utf-8")
     return import_file(path, "manual")
+
+
+def _import_resume(content: str) -> Source:
+    """简历模式：内容写入 data/uploads/resume_*.md（文件名前缀识别 resume 类型）并导入。"""
+    from ..crawler.importer import import_file
+
+    uploads = Path("data/uploads")
+    uploads.mkdir(parents=True, exist_ok=True)
+    path = uploads / f"resume_{hashlib.sha256(content.encode('utf-8')).hexdigest()[:12]}.md"
+    path.write_text(content, encoding="utf-8")
+    return import_file(path, "resume")
+
+
+def _clamp_resume_count(value) -> int:
+    try:
+        return max(1, min(10, int(value)))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _start_resume_parse(source_id: int, count: int, llm_factory) -> str:
+    """后台线程解析简历 → project 候选题（内存 token 态，重启丢失可接受）。"""
+    from ..pipeline.generate import generate_project_questions
+
+    token = secrets.token_hex(8)
+    with _resume_lock:
+        _resume_candidates[token] = {
+            "status": "running",
+            "source_id": source_id,
+            "questions": [],
+            "error": "",
+        }
+
+    def run() -> None:
+        try:
+            with db.get_session() as session:
+                source = session.get(Source, source_id)
+            questions = generate_project_questions(source, count, llm_factory("generate"))
+            with _resume_lock:
+                entry = _resume_candidates.get(token)
+                if entry is not None:
+                    entry["status"] = "done"
+                    entry["questions"] = questions
+        except Exception as e:
+            logger.warning("resume parse %s failed: %s", token, e)
+            with _resume_lock:
+                entry = _resume_candidates.get(token)
+                if entry is not None:
+                    entry["status"] = "failed"
+                    entry["error"] = str(e)
+
+    threading.Thread(target=run, daemon=True).start()
+    return token
+
+
+def _start_binary_upload(
+    filename: str, data: bytes, up_type, count, llm_factory, embedder_factory
+) -> str:
+    """二进制文件（pdf/docx/doc）后台任务：提取文本 → 按 type 走现有流程。
+
+    BackgroundTasks 是请求作用域，线程内直接同步调用后台任务函数（均自带 try/except）。
+    """
+    token = secrets.token_hex(8)
+    with _upload_lock:
+        _upload_tasks[token] = {"status": "parsing"}
+
+    def run() -> None:
+        try:
+            text = extract_text(filename, data)
+            if up_type == "resume":
+                count_n = _clamp_resume_count(count)
+                source = _import_resume(text)
+                cand_token = _start_resume_parse(source.id, count_n, llm_factory)
+                with _upload_lock:
+                    _upload_tasks[token] = {
+                        "status": "done",
+                        "mode": "resume",
+                        "source_id": source.id,
+                        "candidates_token": cand_token,
+                    }
+            elif up_type == "direct" or (
+                up_type == "auto" and _is_direct_format(text)
+            ):
+                source, n = _insert_direct_questions(text)
+                _tag_direct_questions(source.id, llm_factory)
+                with _upload_lock:
+                    _upload_tasks[token] = {
+                        "status": "done",
+                        "mode": "direct",
+                        "count": n,
+                        "source_id": source.id,
+                    }
+            else:
+                source = _import_facejing(text, filename)
+                _generate_uploaded_source(source.id, llm_factory, embedder_factory)
+                with _upload_lock:
+                    _upload_tasks[token] = {
+                        "status": "done",
+                        "mode": "facejing",
+                        "source_id": source.id,
+                    }
+        except Exception as e:
+            logger.warning("binary upload %s failed: %s", token, e)
+            with _upload_lock:
+                _upload_tasks[token] = {"status": "failed", "error": str(e)}
+
+    threading.Thread(target=run, daemon=True).start()
+    return token
+
+
+def _confirm_project_questions(source_id: int, items: list[dict], embedder_factory) -> None:
+    """简历候选确认入库：构造 project 题（默认 criteria）→ 与库内 embedding 去重 → 入库。"""
+    try:
+        from ..pipeline.dedup import dedup
+        from ..pipeline.generate import DEFAULT_BAD_CRITERIA, DEFAULT_GOOD_CRITERIA
+
+        stems = [
+            str(i.get("stem", "")).strip()
+            for i in items
+            if isinstance(i, dict) and str(i.get("stem", "")).strip()
+        ]
+        if not stems:
+            logger.warning("confirm: no valid stems for source %s", source_id)
+            return
+        with db.get_session() as session:
+            pool = list(session.scalars(select(Question)))
+        questions = [
+            Question(
+                source_id=source_id,
+                type=QuestionType.project,
+                stem=s,
+                tags=[],
+                difficulty=1,
+                good_criteria=list(DEFAULT_GOOD_CRITERIA),
+                bad_criteria=list(DEFAULT_BAD_CRITERIA),
+            )
+            for s in stems
+        ]
+        kept = dedup(questions, pool, embedder_factory())
+        with db.get_session() as session:
+            session.add_all(kept)
+            db.commit(session)
+        logger.info("confirmed %d project questions for source %s", len(kept), source_id)
+    except Exception as e:
+        logger.warning("confirm project questions failed for source %s: %s", source_id, e)
 
 
 def _generate_uploaded_source(source_id: int, llm_factory, embedder_factory) -> None:

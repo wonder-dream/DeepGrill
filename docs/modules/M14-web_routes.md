@@ -26,7 +26,10 @@ FastAPI 路由层：今日题目、答题（单轮/追问轮）、判分结果�
 | GET | `/api/review?tag=` | 薄弱点复习（Phase 2 v1）：按词表 tag 检索同类题，未做优先；tag 须在共享词表内否则 400 |
 | GET | `/api/review/tags` | 全部词表标签 + 薄弱点计数（weak_tags 聚合，有计数在前；复习入口页用，2026-08-08） |
 | GET | `/api/tags` | 标签分类结构（6 大类，前端筛选联动用，2026-08-08） |
-| POST | `/api/upload` | 用户上传题目（JSON {filename, content}）：Q:/列表行直接入库（后台 LLM 补标签 + 难度 1-5）；面经文本入库 source 后台立即生成（单源不受 36 上限）；2026-08-09 |
+| POST | `/api/upload` | 用户上传题目（JSON {filename, content 或 content_base64, type?}）：direct（Q:/列表行直入，后台补标签+难度+校验改写）/ facejing（面经后台生成）/ resume（后台解析候选，type 缺省自动识别）；pdf/docx/doc 二进制走 base64 + 解析轮询（2026-08-09 上传页三方式 + 多格式） |
+| GET | `/api/upload/status/{token}` | 二进制上传解析轮询：parsing/done/failed；resume 完成带 candidates_token（2026-08-09） |
+| GET | `/api/upload/candidates/{token}` | 简历解析轮询：running/done/failed + 候选题列表（题干可编辑，2026-08-09） |
+| POST | `/api/upload/confirm` | 简历候选确认：编辑后题 → 校验 → 库内去重 → 入库（2026-08-09） |
 | POST | `/api/daily/run` | 手动触发流水线，返回 DailyReport |
 
 ## 3. 关键决策

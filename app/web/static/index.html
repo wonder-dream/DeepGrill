@@ -21,10 +21,42 @@
     </nav>
     <button id="daily-run" class="sidebar-daily">立即更新</button>
     <button id="upload-btn" class="sidebar-upload">上传题目</button>
-    <input type="file" id="upload-file" accept=".md,.txt" hidden>
+    <input type="file" id="upload-file" accept=".md,.txt,.pdf,.doc,.docx" hidden>
   </aside>
 
   <main>
+    <section id="view-upload" class="view hidden">
+      <div class="card summary-card">
+        <div class="summary-num" id="upload-title">上传题目</div>
+        <div class="summary-sub">面试档案 · 资料入库</div>
+      </div>
+      <div class="card">
+        <div class="upload-tabs">
+          <button class="upload-tab upload-active" data-upload-type="direct">题目列表</button>
+          <button class="upload-tab" data-upload-type="facejing">面经文本</button>
+          <button class="upload-tab" data-upload-type="resume">简历</button>
+        </div>
+        <p class="meta" id="upload-desc"></p>
+        <div class="upload-row">
+          <button id="upload-pick" class="primary">选择文件</button>
+          <span id="upload-filename" class="meta">未选择文件</span>
+          <input type="file" id="upload-file" accept=".md,.txt,.pdf,.doc,.docx" hidden>
+        </div>
+        <div class="upload-row hidden" id="upload-count-row">
+          <label>生成题目数量
+            <input type="number" id="upload-count" min="1" max="10" value="5">
+          </label>
+        </div>
+        <button id="upload-submit" class="primary" disabled>上传</button>
+        <div id="upload-status"></div>
+      </div>
+      <div class="card hidden" id="upload-candidates">
+        <h2>候选题目（可编辑校对后确认入库）</h2>
+        <div id="candidate-list"></div>
+        <button id="candidate-confirm" class="primary">确认入库</button>
+      </div>
+    </section>
+
     <section id="view-bank" class="view hidden">
       <div class="card summary-card">
         <div class="summary-num" id="bank-summary"></div>

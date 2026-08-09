@@ -1,4 +1,6 @@
+import base64
 import math
+import time
 import pytest
 from datetime import datetime, timedelta
 from fastapi.testclient import TestClient
@@ -669,6 +671,124 @@ def test_upload_direct_mode_tags_llm(db):
         assert diff2 == 5  # 9 钳制到 5
 
 
+def test_upload_direct_mode_verdict_delete(db):
+    """后台校验：verdict=delete 的题（反问/闲聊）被级联删除。"""
+    content = "Q: 讲一下 HashMap 底层原理\nQ: 反问：贵公司主要做什么业务"
+    llm = FakeLLM([
+        {"items": [
+            {"stem": "讲一下 HashMap 底层原理", "tags": ["Java"], "difficulty": 3,
+             "verdict": "keep", "new_stem": ""},
+            {"stem": "反问：贵公司主要做什么业务", "tags": [], "difficulty": 1,
+             "verdict": "delete", "new_stem": ""},
+        ]}
+    ])
+    client = make_client(db, llm)
+    body = client.post("/api/upload", json={"filename": "题.md", "content": content}).json()
+    assert body["count"] == 2  # 上传时先入库 2 题
+
+    with db:
+        from sqlalchemy import text as _t
+        remaining = [r[0] for r in db.exec(_t("SELECT stem FROM questions WHERE source_id = :i"),
+                                           params={"i": body["source_id"]}).all()]
+        assert remaining == ["讲一下 HashMap 底层原理"]  # delete 题已移除
+
+
+def test_upload_direct_mode_verdict_rewrite(db):
+    """后台校验：verdict=rewrite 的题用 new_stem 更新题干（自然化改写）。"""
+    content = "Q: 看你项目里用过压测，怎么做的？"
+    llm = FakeLLM([
+        {"items": [
+            {"stem": "看你项目里用过压测，怎么做的？", "tags": ["测试"], "difficulty": 2,
+             "verdict": "rewrite", "new_stem": "请描述你使用压测工具的项目实践与结果。"},
+        ]}
+    ])
+    client = make_client(db, llm)
+    body = client.post("/api/upload", json={"filename": "题.md", "content": content}).json()
+
+    with db:
+        from sqlalchemy import text as _t
+        stem = db.exec(_t("SELECT stem FROM questions WHERE source_id = :i"),
+                       params={"i": body["source_id"]}).one()[0]
+        assert stem == "请描述你使用压测工具的项目实践与结果。"
+
+
+def test_upload_resume_generates_candidates(db):
+    """简历上传：后台解析出 project 候选题，轮询接口返回候选列表。"""
+    from app.web.routes import _resume_candidates
+
+    content = "# 简历\n\n项目一：Agent 系统\n项目二：RAG 平台"
+    llm = FakeLLM([[
+        {"type": "project", "stem": "讲一下 Agent 系统的技术难点和取舍", "tags": ["Agent"],
+         "difficulty": 3, "good_criteria": ["真实"], "bad_criteria": ["编造"]},
+        {"type": "project", "stem": "讲一下 RAG 平台的检索优化", "tags": ["RAG"],
+         "difficulty": 4, "good_criteria": ["真实"], "bad_criteria": ["编造"]},
+    ]])
+    client = make_client(db, llm)
+    body = client.post("/api/upload", json={
+        "filename": "简历.md", "content": content, "type": "resume", "count": 3,
+    }).json()
+    assert body["mode"] == "resume"
+    token = body["token"]
+    try:
+        data = None
+        for _ in range(100):
+            data = client.get(f"/api/upload/candidates/{token}").json()
+            if data["status"] in ("done", "failed"):
+                break
+            time.sleep(0.05)
+        assert data["status"] == "done"
+        assert len(data["items"]) == 2
+        assert data["items"][0]["stem"] == "讲一下 Agent 系统的技术难点和取舍"
+        assert data["items"][0]["difficulty"] == 3
+    finally:
+        with db:
+            _resume_candidates.pop(token, None)
+
+
+def test_upload_resume_confirm_imports(db):
+    """简历候选确认：编辑后的题干入库（project 题），重复题被去重拒收。"""
+    from app.web.routes import _resume_candidates
+
+    content = "# 简历\n\n项目一：Agent 系统"
+    llm = FakeLLM([[
+        {"type": "project", "stem": "讲一下 Agent 系统的技术难点和取舍", "tags": ["Agent"],
+         "difficulty": 3, "good_criteria": ["真实"], "bad_criteria": ["编造"]},
+    ]])
+    client = make_client(db, llm)
+    body = client.post("/api/upload", json={
+        "filename": "简历.md", "content": content, "type": "resume",
+    }).json()
+    token = body["token"]
+    try:
+        for _ in range(100):
+            data = client.get(f"/api/upload/candidates/{token}").json()
+            if data["status"] in ("done", "failed"):
+                break
+            time.sleep(0.05)
+        edited = data["items"][0]["stem"] + "？请说明设计取舍。"
+        resp = client.post("/api/upload/confirm", json={
+            "token": token,
+            "items": [
+                {"stem": edited},
+                {"stem": data["items"][0]["stem"]},  # 与已入库题重复 → dedup 拒收
+            ],
+        })
+        assert resp.status_code == 200
+        with db:
+            from sqlalchemy import text as _t
+            rows = []
+            for n in range(100):  # confirm 为后台任务，轮询等待入库完成
+                rows = db.exec(_t("SELECT stem FROM questions WHERE source_id = :i"),
+                               params={"i": body["source_id"]}).all()
+                if rows:
+                    break
+                time.sleep(0.05)
+            assert sorted(r[0] for r in rows) == sorted([edited, data["items"][0]["stem"]])
+    finally:
+        with db:
+            _resume_candidates.pop(token, None)
+
+
 def test_upload_facejing_mode_generates(db):
     content = "一面：\n面试官：缓存穿透怎么解决？"
     llm = FakeLLM([Q1_FACEJING])
@@ -700,7 +820,8 @@ def test_upload_validation(db):
     client = make_client(db, FakeLLM([]))
     assert client.post("/api/upload", json={"filename": "题.json", "content": "x"}).status_code == 400
     assert client.post("/api/upload", json={"filename": "题.md", "content": ""}).status_code == 400
-    assert client.post("/api/upload", json={"filename": "题.md", "content": "x" * (2 * 1024 * 1024 + 1)}).status_code == 400
+    assert client.post("/api/upload", json={"filename": "题.md", "content": "x" * (20 * 1024 * 1024 + 1)}).status_code == 400
+    assert client.post("/api/upload", json={"filename": "题.pdf", "content_base64": "###"}).status_code == 400
 
 
 # --- edge ---
@@ -813,3 +934,105 @@ def test_invalid_kind_400(db):
     q = add_today_question(db)
     client = make_client(db, FakeLLM([]))
     assert client.post("/api/sessions", json={"question_id": q.id, "kind": "esoteric"}).status_code == 400
+
+
+# --- 二进制上传（pdf/docx/doc，monkeypatch extract_text 避免真调 MinerU） ---
+
+
+def _poll_upload_status(client, token, tries=200):
+    data = None
+    for _ in range(tries):
+        data = client.get(f"/api/upload/status/{token}").json()
+        if data["status"] in ("done", "failed"):
+            return data
+        time.sleep(0.05)
+    raise AssertionError(f"upload status timeout: {data}")
+
+
+def test_upload_binary_pdf_direct(monkeypatch, db):
+    """PDF 二进制上传：解析完成后按内容识别为 direct 模式入库。"""
+    from app.web.routes import _upload_tasks
+
+    def fake_extract(filename, data):
+        return "Q: 讲一下 HashMap 底层原理\nQ: Redis 分布式锁"
+
+    monkeypatch.setattr("app.web.routes.extract_text", fake_extract)
+    client = make_client(db, FakeLLM([]))
+    body = client.post("/api/upload", json={
+        "filename": "题目.pdf",
+        "content_base64": base64.b64encode(b"fake pdf bytes").decode(),
+        "type": "auto",
+    }).json()
+    assert body["mode"] == "parsing"
+    token = body["token"]
+    try:
+        data = _poll_upload_status(client, token)
+        assert data["status"] == "done"
+        assert data["mode"] == "direct"
+        assert data["count"] == 2
+    finally:
+        with db:
+            _upload_tasks.pop(token, None)
+
+
+def test_upload_binary_pdf_facejing(monkeypatch, db):
+    from app.web.routes import _upload_tasks
+
+    def fake_extract(filename, data):
+        return "一面：\n面试官：缓存穿透怎么解决？"
+
+    monkeypatch.setattr("app.web.routes.extract_text", fake_extract)
+    client = make_client(db, FakeLLM([Q1_FACEJING]))
+    body = client.post("/api/upload", json={
+        "filename": "面经.pdf",
+        "content_base64": base64.b64encode(b"x").decode(),
+        "type": "facejing",
+    }).json()
+    token = body["token"]
+    try:
+        data = _poll_upload_status(client, token)
+        assert data["status"] == "done"
+        assert data["mode"] == "facejing"
+    finally:
+        with db:
+            _upload_tasks.pop(token, None)
+
+
+def test_upload_binary_resume(monkeypatch, db):
+    """PDF 简历上传：解析后进入候选确认流程。"""
+    from app.web.routes import _resume_candidates, _upload_tasks
+
+    def fake_extract(filename, data):
+        return "# 简历\n\n项目一：Agent 系统"
+
+    monkeypatch.setattr("app.web.routes.extract_text", fake_extract)
+    llm = FakeLLM([[
+        {"type": "project", "stem": "讲一下 Agent 系统的技术难点和取舍", "tags": ["Agent"],
+         "difficulty": 3, "good_criteria": ["真实"], "bad_criteria": ["编造"]},
+    ]])
+    client = make_client(db, llm)
+    body = client.post("/api/upload", json={
+        "filename": "简历.pdf",
+        "content_base64": base64.b64encode(b"x").decode(),
+        "type": "resume",
+        "count": 3,
+    }).json()
+    token = body["token"]
+    cand_token = None
+    try:
+        data = _poll_upload_status(client, token)
+        assert data["status"] == "done"
+        assert data["mode"] == "resume"
+        cand_token = data["candidates_token"]
+        for _ in range(200):
+            cand = client.get(f"/api/upload/candidates/{cand_token}").json()
+            if cand["status"] in ("done", "failed"):
+                break
+            time.sleep(0.05)
+        assert cand["status"] == "done"
+        assert cand["items"][0]["stem"] == "讲一下 Agent 系统的技术难点和取舍"
+    finally:
+        with db:
+            _upload_tasks.pop(token, None)
+            if cand_token:
+                _resume_candidates.pop(cand_token, None)

@@ -13,3 +13,7 @@ sentence-transformers
 # torch 锁定 GPU 版（来自 pytorch cu124 index；lock 文件经 --extra-index-url 生成，
 # 勿用 PyPI 默认 CPU 版覆盖）：
 torch==2.6.0+cu124
+# 文档解析（PDF/DOCX 走 MinerU，GPU torch 兼容；DOC 需系统 LibreOffice）
+mineru[pipeline]
+torchvision==0.21.0+cu124
+accelerate

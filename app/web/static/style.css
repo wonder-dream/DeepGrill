@@ -647,3 +647,63 @@ details summary:hover { color: var(--red); }
 @media (max-width: 1100px) {
   #calendar-panel { display: none; }
 }
+
+/* 上传页 */
+.upload-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.upload-tab {
+  border: 1px solid var(--line-dark);
+  background: var(--card);
+  color: var(--ink);
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--sans);
+  transition: all 0.15s ease;
+}
+.upload-tab:hover { border-color: var(--red); color: var(--red); }
+.upload-tab.upload-active {
+  border-color: var(--red);
+  background: var(--red-soft);
+  color: var(--red);
+  font-weight: 600;
+}
+.upload-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+}
+#upload-count {
+  width: 70px;
+  margin-left: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-dark);
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: var(--sans);
+  background: var(--card);
+  color: var(--ink);
+}
+#upload-status { margin-top: 12px; font-size: 13px; }
+#upload-status.upload-ok { color: var(--green); }
+#upload-status.upload-err { color: var(--red); }
+.candidate-stem {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--line-dark);
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: var(--sans);
+  background: var(--card);
+  color: var(--ink);
+  resize: vertical;
+  outline: none;
+}
+.candidate-stem:focus { border-color: var(--red); }
+#candidate-confirm { margin-top: 10px; }

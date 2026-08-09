@@ -18,6 +18,8 @@ const state = {
   rangeTo: null,
   todayDate: null,
   calendarMode: "today",
+  uploadType: "direct",
+  resumeToken: null,
   calViews: {},
   calYear: null,
   calMonth: null,
@@ -787,30 +789,190 @@ document.querySelectorAll("nav button[data-view]").forEach((btn) => {
 });
 $("#daily-run").addEventListener("click", runDaily);
 
-// 上传题目（面经文本 / Q: 直接入库）
-$("#upload-btn").addEventListener("click", () => $("#upload-file").click());
-$("#upload-file").addEventListener("change", async (e) => {
-  const file = e.target.files[0];
+// 上传页（题目列表 / 面经文本 / 简历）
+const UPLOAD_DESC = {
+  direct: "以 Q: 或列表行形式提供题目，入库后自动补标签/难度，反问闲聊自动过滤。",
+  facejing: "提供面试经验文本，后台解析生成知识题/设计题（LLM 生成）。",
+  resume: "提供简历文本，后台解析项目经历生成 project 深挖题；生成后先展示候选，校对确认后入库。",
+};
+let uploadFile = null;
+
+$("#upload-btn").addEventListener("click", () => show("upload"));
+document.querySelectorAll(".upload-tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".upload-tab").forEach((b) => b.classList.remove("upload-active"));
+    btn.classList.add("upload-active");
+    state.uploadType = btn.dataset.uploadType;
+    $("#upload-desc").textContent = UPLOAD_DESC[state.uploadType] || "";
+    $("#upload-count-row").classList.toggle("hidden", state.uploadType !== "resume");
+    $("#upload-candidates").classList.add("hidden");
+    resetUploadStatus();
+  });
+});
+function resetUploadStatus() {
+  const box = $("#upload-status");
+  box.innerHTML = "";
+  box.classList.remove("upload-ok", "upload-err");
+}
+function setUploadStatus(html, isError) {
+  const box = $("#upload-status");
+  box.innerHTML = html;
+  box.classList.toggle("upload-err", !!isError);
+  box.classList.toggle("upload-ok", !isError);
+}
+$("#upload-pick").addEventListener("click", () => $("#upload-file").click());
+$("#upload-file").addEventListener("change", (e) => {
+  uploadFile = e.target.files[0] || null;
   e.target.value = "";
-  if (!file) return;
-  if (!/\.(md|txt)$/i.test(file.name)) {
-    alert("仅支持 .md/.txt 文件");
+  if (!uploadFile) return;
+  if (!/\.(md|txt|pdf|docx?)$/i.test(uploadFile.name)) {
+    setUploadStatus("仅支持 .md/.txt/.pdf/.doc/.docx 文件", true);
+    uploadFile = null;
+    $("#upload-filename").textContent = "未选择文件";
+    $("#upload-submit").disabled = true;
     return;
   }
-  const content = await file.text();
+  $("#upload-filename").textContent = `${uploadFile.name}（${(uploadFile.size / 1024).toFixed(1)} KB）`;
+  $("#upload-submit").disabled = false;
+});
+$("#upload-submit").addEventListener("click", async () => {
+  if (!uploadFile) return;
+  const type = state.uploadType;
+  const isBinary = /\.(pdf|docx?)$/i.test(uploadFile.name);
+  const payload = { filename: uploadFile.name, type };
+  if (isBinary) {
+    const buf = await uploadFile.arrayBuffer();
+    let bin = "";
+    const bytes = new Uint8Array(buf);
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    payload.content_base64 = btoa(bin);
+  } else {
+    payload.content = await uploadFile.text();
+  }
+  if (type === "resume") {
+    payload.count = Number($("#upload-count").value) || 5;
+  }
+  $("#upload-submit").disabled = true;
   try {
     const resp = await api("/api/upload", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: file.name, content }),
+      body: JSON.stringify(payload),
     });
     if (resp.mode === "direct") {
-      alert(`已入库 ${resp.count} 题，可在题库查看`);
-    } else {
-      alert("已提交，后台生成中…（完成后可在题库查看）");
+      setUploadStatus(`已入库 ${resp.count} 题。<a href="#" id="upload-go-bank">去题库查看</a>`);
+      $("#upload-go-bank").addEventListener("click", (ev) => {
+        ev.preventDefault();
+        show("bank");
+      });
+    } else if (resp.mode === "facejing") {
+      setUploadStatus("已提交，后台生成中…（完成后可在题库查看）");
+    } else if (resp.mode === "resume") {
+      await pollResumeCandidates(resp.token);
+    } else if (resp.mode === "parsing") {
+      await pollUploadStatus(resp.token);
     }
   } catch (err) {
-    alert(err.message);
+    setUploadStatus(err.message, true);
+  } finally {
+    $("#upload-submit").disabled = false;
+  }
+});
+async function pollUploadStatus(token) {
+  setUploadStatus("文件解析中…（PDF/Word 解析约 10-60 秒）");
+  for (let i = 0; i < 300; i++) {
+    await sleep(2000);
+    let data;
+    try {
+      data = await api(`/api/upload/status/${token}`);
+    } catch (err) {
+      setUploadStatus(err.message, true);
+      return;
+    }
+    if (data.status === "failed") {
+      setUploadStatus(`解析失败：${data.error || "未知错误"}`, true);
+      return;
+    }
+    if (data.status === "done") {
+      if (data.mode === "direct") {
+        setUploadStatus(`已入库 ${data.count} 题。<a href="#" id="upload-go-bank">去题库查看</a>`);
+        $("#upload-go-bank").addEventListener("click", (ev) => {
+          ev.preventDefault();
+          show("bank");
+        });
+      } else if (data.mode === "facejing") {
+        setUploadStatus("解析完成，已提交后台生成中…（完成后可在题库查看）");
+      } else if (data.mode === "resume") {
+        await pollResumeCandidates(data.candidates_token);
+      }
+      return;
+    }
+  }
+  setUploadStatus("解析超时，请重试", true);
+}
+async function pollResumeCandidates(token) {
+  state.resumeToken = token;
+  setUploadStatus("简历解析中…（约 10-60 秒）");
+  for (let i = 0; i < 120; i++) {
+    await sleep(3000);
+    let data;
+    try {
+      data = await api(`/api/upload/candidates/${token}`);
+    } catch (err) {
+      setUploadStatus(err.message, true);
+      return;
+    }
+    if (data.status === "failed") {
+      setUploadStatus(`解析失败：${data.error || "未知错误"}`, true);
+      return;
+    }
+    if (data.status === "done") {
+      renderCandidates(data.items);
+      return;
+    }
+  }
+  setUploadStatus("解析超时，请稍后在题库查看或重试", true);
+}
+function renderCandidates(items) {
+  setUploadStatus(`解析完成，共 ${items.length} 题，请校对后确认入库。`);
+  const list = $("#candidate-list");
+  list.innerHTML = "";
+  items.forEach((item, idx) => {
+    const card = document.createElement("div");
+    card.className = "card candidate-card";
+    card.innerHTML = `
+      <div class="question-head">
+        <span class="badge">project</span>
+        <span class="badge">难度 ${difficultyStars(item.difficulty)}</span>
+        <span class="badge">${(item.tags || []).join("、") || "无标签"}</span>
+      </div>
+      <textarea data-idx="${idx}" rows="2" class="candidate-stem">${escapeHtml(item.stem)}</textarea>`;
+    list.appendChild(card);
+  });
+  $("#upload-candidates").classList.remove("hidden");
+}
+$("#candidate-confirm").addEventListener("click", async () => {
+  const items = Array.from(document.querySelectorAll(".candidate-stem")).map((ta) => ({
+    stem: ta.value.trim(),
+  }));
+  const valid = items.filter((i) => i.stem.length >= 6);
+  if (!valid.length) {
+    setUploadStatus("没有有效的题目（题干过短）", true);
+    return;
+  }
+  try {
+    const resp = await api("/api/upload/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: state.resumeToken, items: valid }),
+    });
+    $("#upload-candidates").classList.add("hidden");
+    setUploadStatus("已提交入库（后台去重中）…完成后可在题库查看");
+  } catch (err) {
+    setUploadStatus(err.message, true);
   }
 });
 $("#answer-submit").addEventListener("click", submitAnswer);
