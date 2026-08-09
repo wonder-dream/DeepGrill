@@ -24,6 +24,7 @@ FastAPI 路由层：今日题目、答题（单轮/追问轮）、判分结果�
 | GET | `/api/sessions/{id}/resume` | 恢复未完成会话（D18） |
 | GET | `/api/history` | 历史记录（按被选为今日题目的日期分组；未作答也展示，可选按题型筛选；前端支持状态/日期/分数/题型/标签筛选，2026-08-08） |
 | GET | `/api/review?tag=` | 薄弱点复习（Phase 2 v1）：按词表 tag 检索同类题，未做优先；tag 须在共享词表内否则 400 |
+| GET | `/api/review/paper?tag=` | 复习卷 v2：LLM 生成针对性复习讲义（markdown→HTML）+ 推荐练习题目；标签级内存缓存（2026-08-09） |
 | GET | `/api/review/tags` | 全部词表标签 + 薄弱点计数（weak_tags 聚合，有计数在前；复习入口页用，2026-08-08） |
 | GET | `/api/tags` | 标签分类结构（6 大类，前端筛选联动用，2026-08-08） |
 | POST | `/api/upload` | 用户上传题目（JSON {filename, content 或 content_base64, type?}）：direct（Q:/列表行直入，后台补标签+难度+校验改写）/ facejing（面经后台生成）/ resume（后台解析候选，type 缺省自动识别）；pdf/docx/doc 二进制走 base64 + 解析轮询（2026-08-09 上传页三方式 + 多格式） |

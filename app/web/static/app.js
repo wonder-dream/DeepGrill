@@ -20,6 +20,7 @@ const state = {
   calendarMode: "today",
   uploadType: "direct",
   resumeToken: null,
+  reviewRecommended: new Set(),
   calViews: {},
   calYear: null,
   calMonth: null,
@@ -506,6 +507,32 @@ async function loadReview(tag) {
   $("#review-title").textContent = `薄弱点复习：${tag}`;
   $("#review-back").classList.remove("hidden");
   $("#review-filter").classList.remove("hidden");
+  $("#review-paper-card").classList.remove("hidden");
+  $("#review-paper").innerHTML = "";
+  $("#review-paper-btn").disabled = false;
+  $("#review-paper-btn").textContent = "生成复习卷";
+  renderReviewItems();
+}
+
+async function loadReviewPaper() {
+  const btn = $("#review-paper-btn");
+  btn.disabled = true;
+  btn.textContent = "生成中…（约 10-30 秒）";
+  try {
+    const data = await api(`/api/review/paper?tag=${encodeURIComponent(state.reviewTag)}`);
+    const box = $("#review-paper");
+    if (!data.paper_html) {
+      box.innerHTML = '<p class="meta">该标签暂无题目，无法生成复习卷</p>';
+    } else {
+      box.innerHTML = data.paper_html;
+      state.reviewRecommended = new Set(data.recommended_ids || []);
+    }
+  } catch (err) {
+    $("#review-paper").innerHTML = `<p class="meta">${escapeHtml(err.message)}</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "重新生成复习卷";
+  }
   renderReviewItems();
 }
 
@@ -516,6 +543,12 @@ function renderReviewItems() {
     $("#filter-review-category").value,
     $("#filter-review-difficulty").value
   );
+  const recommended = state.reviewRecommended || new Set();
+  items.sort((a, b) => {
+    const ra = recommended.has(a.id) ? 0 : 1;
+    const rb = recommended.has(b.id) ? 0 : 1;
+    return ra - rb;
+  });
   const list = $("#review-list");
   list.innerHTML = "";
   if (!items.length) {
@@ -528,9 +561,12 @@ function renderReviewItems() {
     const badge = q.done
       ? `<span class="badge badge-done">得分 ${q.total_score ?? "—"}</span>`
       : '<span class="badge badge-todo">待做</span>';
+    const recBadge = recommended.has(q.id)
+      ? '<span class="badge badge-done">推荐</span>'
+      : "";
     card.innerHTML = `
       <div class="question-head">
-        ${badge}
+        ${recBadge}${badge}
         <span class="badge">${q.type}</span>
         <span class="badge">难度 ${difficultyStars(q.difficulty)}</span>
       </div>
@@ -990,6 +1026,7 @@ function goBack() {
 
 $("#answer-back").addEventListener("click", goBack);
 $("#result-back").addEventListener("click", goBack);
+$("#review-paper-btn").addEventListener("click", loadReviewPaper);
 $("#review-back").addEventListener("click", () => {
   state.reviewTag = null;
   show("review");

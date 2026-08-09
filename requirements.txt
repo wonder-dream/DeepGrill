@@ -17,3 +17,6 @@ torch==2.6.0+cu124
 mineru[pipeline]
 torchvision==0.21.0+cu124
 accelerate
+# 复习卷讲义 markdown 转 HTML（富格式渲染，为后续升级准备）
+Markdown
+

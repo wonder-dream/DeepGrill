@@ -124,6 +124,8 @@ magika==1.0.3
     # via mineru
 mammoth==1.12.0
     # via mineru
+markdown==3.10.3
+    # via -r requirements.txt
 markupsafe==3.0.3
     # via jinja2
 mineru==3.4.4

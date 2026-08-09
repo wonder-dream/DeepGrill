@@ -448,6 +448,48 @@ def test_review_returns_matching_questions(db):
     assert items[1]["total_score"] == 76
 
 
+def test_review_paper_generates(db):
+    """复习卷 v2：LLM 生成讲义（markdown→HTML）+ 推荐题（须在素材内）。"""
+    from app.web.routes import _review_paper_cache
+
+    q1 = add_today_question(db, stem="讲一下 RAG 检索流程", tags=["RAG"])
+    q2 = add_today_question(db, stem="RAG 与向量数据库", tags=["RAG"])
+    llm = FakeLLM([{
+        "paper": "## 核心知识点\n\n- RAG 全流程\n\n## 答题框架\n\n**分层回答**",
+        "recommended_ids": [q1.id, q2.id],
+    }])
+    client = make_client(db, llm)
+    data = client.get("/api/review/paper", params={"tag": "RAG"}).json()
+
+    assert "<h2>核心知识点</h2>" in data["paper_html"]  # markdown 已转 HTML
+    assert "<strong>分层回答</strong>" in data["paper_html"]
+    assert sorted(data["recommended_ids"]) == sorted([q1.id, q2.id])
+    assert data["paper_html"]  # 非空
+    with db:
+        _review_paper_cache.clear()
+
+
+def test_review_paper_cached(db):
+    """标签级缓存：二次请求不重复调 LLM。"""
+    from app.web.routes import _review_paper_cache
+
+    add_today_question(db, stem="RAG 题", tags=["RAG"])
+    llm = FakeLLM([{
+        "paper": "## 讲义", "recommended_ids": [],
+    }])
+    client = make_client(db, llm)
+    client.get("/api/review/paper", params={"tag": "RAG"})
+    client.get("/api/review/paper", params={"tag": "RAG"})
+    assert len(llm.calls) == 1  # 第二次命中缓存
+    with db:
+        _review_paper_cache.clear()
+
+
+def test_review_paper_invalid_tag_400(db):
+    client = make_client(db, FakeLLM([]))
+    assert client.get("/api/review/paper", params={"tag": "不存在的标签"}).status_code == 400
+
+
 def test_review_excludes_other_tags(db):
     add_today_question(db, stem="RAG 题", tags=["RAG"])
     add_today_question(db, stem="Java 题", tags=["Java"])

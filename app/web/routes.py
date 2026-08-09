@@ -53,6 +53,22 @@ _resume_lock = threading.Lock()
 _upload_tasks: dict[str, dict] = {}
 _upload_lock = threading.Lock()
 
+_review_paper_cache: dict[str, dict] = {}
+_review_paper_lock = threading.Lock()
+
+REVIEW_PAPER_PROMPT = """你是面试复习讲师。针对薄弱主题「{tag}」，结合下面题库中该主题的同类题，生成一份针对性复习讲义。
+
+要求：
+1. paper 用 markdown 编写（可用标题/列表/粗体/表格/代码块），包含三部分：
+   - 核心知识点梳理（该主题必须掌握的概念与原理）
+   - 高频考点与易错点（面试常问什么、候选人容易踩的坑）
+   - 答题框架与表述要点（按题目难度分层：基础题怎么答、进阶题怎么答）
+2. recommended_ids：从下面同类题中选出 3-5 道「最值得优先练习」的题（必须是下列 id 之一）
+3. 只输出 JSON，不要其他文字：{{"paper": "markdown 讲义", "recommended_ids": [整数 id 列表]}}
+
+同类题素材：
+{materials}"""
+
 
 def create_app(
     config: AppConfig,
@@ -499,6 +515,59 @@ def create_app(
                 items.append(item)
             items.sort(key=lambda i: (i["done"], -i["id"]))  # 未做优先，组内新题在前
             return items
+
+    @app.get("/api/review/paper")
+    def review_paper(tag: str):
+        """薄弱点复习卷 v2：LLM 生成针对性复习讲义（markdown 转 HTML）+ 推荐练习题目。
+
+        同步生成（10-30s）；标签级内存缓存（命中直接返回不重复生成）。
+        """
+        if tag not in TAG_VOCABULARY:
+            raise HTTPException(status_code=400, detail=f"invalid tag: {tag}")
+        with _review_paper_lock:
+            cached = _review_paper_cache.get(tag)
+        if cached is not None:
+            return cached
+        with db.get_session() as session:
+            questions = list(
+                session.scalars(
+                    select(Question)
+                    .where(cast(Question.tags, String).like(f'%"{tag}"%'))
+                    .order_by(Question.created_at.desc())
+                    .limit(30)
+                )
+            )
+        if not questions:
+            return {"paper_html": "", "recommended_ids": []}
+        materials = "\n".join(
+            f"- [id={q.id}]（难度 {q.difficulty}/5）{q.stem}"
+            for q in questions[:8]
+        )
+        try:
+            parsed = llm_factory("generate").complete(
+                [{"role": "user", "content": REVIEW_PAPER_PROMPT.format(
+                    tag=tag, materials=materials,
+                )}],
+                json_schema={},
+            )
+        except Exception as e:
+            logger.warning("review paper generate failed for %s: %s", tag, e)
+            raise HTTPException(status_code=500, detail=f"复习卷生成失败：{e}")
+        paper = parsed.get("paper", "") if isinstance(parsed, dict) else ""
+        recommended = (
+            [int(i) for i in parsed.get("recommended_ids", [])]
+            if isinstance(parsed, dict)
+            else []
+        )
+        valid_ids = {q.id for q in questions}
+        recommended = [i for i in recommended if i in valid_ids][:5]
+        from markdown import markdown as _md
+
+        paper_html = _md(paper) if paper else ""
+        payload = {"paper_html": paper_html, "recommended_ids": recommended}
+        with _review_paper_lock:
+            _review_paper_cache[tag] = payload
+        return payload
 
     # --- 用户上传题目（格式：题目列表 / 面经文本 / 简历；支持 pdf/docx/doc 二进制） ---
 
