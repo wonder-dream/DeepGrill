@@ -14,7 +14,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import cast, func, select, String
@@ -39,6 +39,9 @@ from ..judge.chain import resume
 from ..parsers import extract_text
 from ..judge.judge import STATUS_FAILED, judge
 from ..pipeline.generate import _clamp_difficulty
+from ..ratelimit import check as _rl_check
+from ..ratelimit import fail as _rl_fail
+from ..ratelimit import success as _rl_success
 from ..models import (
     Attempt,
     Judgment,
@@ -169,6 +172,21 @@ def create_app(
     @app.get("/", include_in_schema=False)
     async def index():
         return FileResponse(Path(static_dir) / "index.html")
+
+    @app.middleware("http")
+    async def auth_rate_limit_middleware(request: Request, call_next):
+        """登录/注册防爆破：失败（≥400）滑动窗口限速，成功清零（内存态）。"""
+        if request.url.path not in ("/api/auth/login", "/api/auth/register"):
+            return await call_next(request)
+        ip = request.client.host if request.client else "unknown"
+        if not _rl_check(ip):
+            return JSONResponse(status_code=429, content={"detail": "尝试过于频繁，请稍后再试"})
+        response = await call_next(request)
+        if response.status_code >= 400:
+            _rl_fail(ip)
+        else:
+            _rl_success(ip)
+        return response
 
     # --- 认证：注册 / 登录 / 登出 / 当前用户 ---
 

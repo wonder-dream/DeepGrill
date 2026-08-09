@@ -106,6 +106,36 @@ def test_login_success_and_wrong_password(db):
     assert bad.status_code == 401
 
 
+def test_login_rate_limit_429(db):
+    """同 IP 连续 5 次登录失败后，第 6 次请求 429。"""
+    c = bare_client()
+    register(c, "alice", "pass1234")
+    for _ in range(5):
+        assert c.post("/api/auth/login", json={"username": "alice", "password": "wrong123"}).status_code == 401
+    assert c.post("/api/auth/login", json={"username": "alice", "password": "wrong123"}).status_code == 429
+
+
+def test_login_rate_limit_reset_on_success(db):
+    """成功登录清零失败计数：4 次失败 + 1 次成功后可再失败 5 次才触发 429。"""
+    c = bare_client()
+    register(c, "alice", "pass1234")
+    for _ in range(4):
+        c.post("/api/auth/login", json={"username": "alice", "password": "wrong123"})
+    assert c.post("/api/auth/login", json={"username": "alice", "password": "pass1234"}).status_code == 200
+    for _ in range(5):
+        assert c.post("/api/auth/login", json={"username": "alice", "password": "wrong123"}).status_code == 401
+    assert c.post("/api/auth/login", json={"username": "alice", "password": "wrong123"}).status_code == 429
+
+
+def test_register_rate_limit_429(db):
+    """注册接口同样限速：连续 5 次注册失败（重名 409）后 429。"""
+    c = bare_client()
+    register(c, "alice", "pass1234")
+    for _ in range(5):
+        assert register(c, "alice").status_code == 409
+    assert register(c, "alice").status_code == 429
+
+
 def test_me_and_logout(db):
     c = bare_client()
     token = register(c, "alice").json()["token"]
