@@ -1,10 +1,10 @@
 import re
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 
-from sqlalchemy import create_engine, event, func, select, text
+from sqlalchemy import create_engine, event, func, or_, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
@@ -12,7 +12,7 @@ from sqlmodel import Session as DBSession
 from sqlmodel import SQLModel
 
 from .errors import DuplicateSource, StorageError
-from .models import Question, QuestionStatus, QuestionType, Source, TaskLog
+from .models import Question, QuestionStatus, QuestionType, Session, SessionStatus, Source, TaskLog
 
 _engine: Engine | None = None
 _factory: sessionmaker | None = None
@@ -162,12 +162,70 @@ def _wrap_storage(func):
 
 @_wrap_storage
 def list_today_questions(session: DBSession) -> list[Question]:
+    """今日题目：status=today 且被选为今日（selected_at 属今天）的题。
+
+    昨日及更早未完成的题不在此列（由 recycle_stale_today 回收回 pending 池）。
+    """
     stmt = (
         select(Question)
         .where(Question.status == QuestionStatus.today)
+        .where(Question.selected_at >= _today_start())
         .order_by(Question.created_at)
     )
     return list(session.scalars(stmt))
+
+
+@_wrap_storage
+def list_questions_by_date(session: DBSession, date_str: str) -> list[Question]:
+    """按被选为今日题目的日期（selected_at 落于当日零点~次日零点）查题，不限 status。
+
+    供今日页日历单选回看某一天的题目（含被回收回 pending 的未完成题）。
+    """
+    day = datetime.strptime(date_str, "%Y-%m-%d")
+    start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    stmt = (
+        select(Question)
+        .where(Question.selected_at >= start, Question.selected_at < end)
+        .order_by(Question.created_at)
+    )
+    return list(session.scalars(stmt))
+
+
+@_wrap_storage
+def recycle_stale_today(session: DBSession) -> int:
+    """回收昨日及更早被选为今日、但未完成的题回 pending 池（今日列表按日期过滤后不再展示，
+    回池后可在后续选题中再次被选中）；已完成（有 finished 会话）的题保持 today 不回池。"""
+    stmt = (
+        select(Question)
+        .where(Question.status == QuestionStatus.today)
+        .where(or_(Question.selected_at.is_(None), Question.selected_at < _today_start()))
+    )
+    stale = list(session.scalars(stmt))
+    recycled = 0
+    for q in stale:
+        finished = (
+            session.scalars(
+                select(Session)
+                .where(
+                    Session.question_id == q.id,
+                    Session.status == SessionStatus.finished,
+                )
+                .limit(1)
+            ).first()
+            is not None
+        )
+        if finished:
+            continue
+        q.status = QuestionStatus.pending
+        recycled += 1
+    if recycled:
+        commit(session)
+    return recycled
+
+
+def _today_start() -> datetime:
+    return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 @_wrap_storage

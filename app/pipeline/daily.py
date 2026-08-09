@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from ..config import AppConfig
 from ..crawler import github, importer, nowcoder
-from ..db import commit, get_session, pick_questions
+from ..db import commit, get_session, pick_questions, recycle_stale_today
 from ..models import Question, QuestionType, Source, SourceType, TaskLog
 from .dedup import dedup
 from .generate import generate_from_source, generate_project_questions
@@ -188,10 +188,14 @@ def generate_source_immediately(source_id: int, llm, embedder) -> int:
 
 
 def _pick_phase(config: AppConfig, report: dict) -> None:
-    """D8 配额选题：knowledge > design > project，不足配额取实际可选数。"""
+    """D8 配额选题：knowledge > design > project，不足配额取实际可选数。
+
+    选题前先回收昨日及更早未完成的 today 题回 pending 池（今日列表按日期过滤）。
+    """
     daily = config.daily
     picked = []
     with get_session() as session:
+        recycle_stale_today(session)
         for qtype, limit in (
             (QuestionType.knowledge, daily.knowledge_limit),
             (QuestionType.design, daily.design_limit),

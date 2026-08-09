@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timedelta
 from sqlalchemy import select
 
 from app.config import (
@@ -12,7 +13,16 @@ from app.config import (
 from app.crawler.nowcoder import NowcoderError
 from app.db import commit, latest_task_log
 from app.errors import LLMError
-from app.models import Question, QuestionStatus, QuestionType, Source, SourceType
+from app.models import (
+    Question,
+    QuestionStatus,
+    QuestionType,
+    Session,
+    SessionKind,
+    SessionStatus,
+    Source,
+    SourceType,
+)
 from app.pipeline.daily import default_sources, run_daily
 from tests.fakes import FakeEmbedder, FakeLLM, FakeSource
 
@@ -226,6 +236,50 @@ def test_rerun_idempotent(db):
     assert second["new_questions"] == 0  # 与库内重复被拒收
     count = db.scalars(select(Question)).all()
     assert len(count) == 1
+
+
+def test_stale_today_recycled_to_pending(db):
+    """回归：昨日被选为今日但未完成的题被回收回 pending 池；已完成（有 finished 会话）的不回收。"""
+    from app.db import recycle_stale_today
+
+    s = add_source(db)
+    undone = Question(
+        source_id=s.id, type=QuestionType.knowledge, stem="昨天没做的题",
+        status=QuestionStatus.today, selected_at=datetime.now() - timedelta(days=1),
+    )
+    db.add(undone)
+    done = Question(
+        source_id=s.id, type=QuestionType.knowledge, stem="昨天做完的题",
+        status=QuestionStatus.today, selected_at=datetime.now() - timedelta(days=1),
+    )
+    db.add(done)
+    commit(db)
+    db.refresh(undone)
+    db.refresh(done)
+    db.add(Session(question_id=done.id, kind=SessionKind.open, status=SessionStatus.finished))
+    commit(db)
+
+    recycled = recycle_stale_today(db)
+
+    assert recycled == 1
+    assert db.scalars(select(Question).where(Question.id == undone.id)).one().status == QuestionStatus.pending
+    assert db.scalars(select(Question).where(Question.id == done.id)).one().status == QuestionStatus.today
+
+
+def test_stale_today_repicked_on_next_run(db):
+    """回收回池后，当次流水线选题会重新选中昨天的未做题（不丢题）。"""
+    s = add_source(db)
+    q = Question(
+        source_id=s.id, type=QuestionType.knowledge, stem="昨天没做的题",
+        status=QuestionStatus.today, selected_at=datetime.now() - timedelta(days=1),
+    )
+    db.add(q)
+    commit(db)
+
+    report = run_daily(make_config(), [FakeSource("a", [])], FakeLLM([]), EMBEDDER)
+
+    assert report["errors"] == []
+    assert [x.stem for x in report["today_questions"]] == ["昨天没做的题"]
 
 
 # --- fail ---
