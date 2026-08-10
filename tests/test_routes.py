@@ -783,7 +783,7 @@ def test_review_tags_aggregates_weak_tags(db):
     assert by_tag["RAG"] == 2
     assert by_tag["缓存"] == 1
     assert by_tag["Agent"] == 0
-    assert len(tags) == 74  # 全部词表标签
+    assert len(tags) == 81  # 全部词表标签
     # 有计数的排最前
     counts = [t["count"] for t in tags]
     assert counts[0] == 2 and counts[1] == 1
@@ -793,7 +793,7 @@ def test_review_tags_aggregates_weak_tags(db):
 def test_review_tags_empty_db(db):
     client = make_client(db, FakeLLM([]))
     tags = client.get("/api/review/tags").json()
-    assert len(tags) == 74
+    assert len(tags) == 81
     assert all(t["count"] == 0 for t in tags)
 
 
@@ -806,7 +806,7 @@ def test_tag_categories_structure(db):
     assert [c["name"] for c in cats] == [name for name, _ in TAG_CATEGORIES]
     flat = [t for c in cats for t in c["tags"]]
     assert flat == list(TAG_VOCABULARY)
-    assert len(flat) == 74
+    assert len(flat) == 81
 
 
 # --- 题库浏览 ---
