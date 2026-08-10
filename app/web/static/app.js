@@ -36,23 +36,37 @@ const state = {
 
 const $ = (sel) => document.querySelector(sel);
 
-// 可刷新恢复的主视图（hash 路由）；answer/result/detail 为流程中间态不入 hash
+// 可刷新恢复的主视图（hash 路由，带状态参数）；answer/result/detail 为流程中间态（sessionStorage 恢复）
 const HASHABLE = new Set(["today", "bank", "history", "review", "upload"]);
+
+if ("scrollRestoration" in history) history.scrollRestoration = "manual"; // 后退不恢复旧滚动位
+
+function scrollTop() {
+  window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+}
 
 function show(view) {
   state.view = view;
+  scrollTop(); // 切换页面回到顶部
   document.querySelectorAll(".view").forEach((v) => v.classList.add("hidden"));
   $("#view-" + view).classList.remove("hidden");
   document.querySelectorAll("nav button[data-view]").forEach((btn) => {
     btn.classList.toggle("nav-active", btn.dataset.view === view);
   });
   const panel = $("#calendar-panel");
-  if (view === "today" || view === "history" || view === "bank") {
+  if (view === "today" || view === "history") {
     state.calendarMode = view;
     panel.classList.toggle("hidden", window.innerWidth <= 768); // 移动端经「日历」按钮展开
+    panel.classList.remove("panel-extra-only");
     if (!panel.classList.contains("hidden")) renderCalendar();
+  } else if (view === "bank") {
+    panel.classList.toggle("hidden", window.innerWidth <= 768);
+    panel.classList.add("panel-extra-only"); // 题库页只留概览（无日历）
   } else {
     panel.classList.add("hidden");
+    panel.classList.remove("panel-extra-only");
   }
   $("#calendar-toggle").classList.toggle("hidden", !(view === "today" || view === "history" || view === "bank"));
   if (view === "today") {
@@ -62,22 +76,97 @@ function show(view) {
   if (view === "bank") {
     loadBank();
     loadStats();
-    loadHistory(); // 圆点数据
   }
   if (view === "history") {
     loadHistory();
     loadStats();
   }
-  if (HASHABLE.has(view) && location.hash !== "#" + view) location.hash = view;
+  if (HASHABLE.has(view)) updateHash();
+}
+
+// --- hash 路由状态：主视图 + 筛选/页码/范围/标签（刷新与后退可恢复） ---
+
+function currentViewParams() {
+  const p = new URLSearchParams();
+  const setIf = (key, el) => {
+    const val = el.value;
+    if (val && val !== "all") p.set(key, val);
+  };
+  if (state.view === "bank") {
+    if (state.bankPage > 1) p.set("page", String(state.bankPage));
+    if (state.bankPageSize !== 20) p.set("page_size", String(state.bankPageSize));
+    setIf("q", $("#bank-search"));
+    setIf("type", $("#filter-bank-type"));
+    setIf("difficulty", $("#filter-bank-difficulty"));
+    setIf("category", $("#filter-bank-category"));
+  } else if (state.view === "history") {
+    if (state.rangeFrom) p.set("from", state.rangeFrom);
+    if (state.rangeTo) p.set("to", state.rangeTo);
+    setIf("done", $("#filter-done"));
+    setIf("score", $("#filter-score"));
+    setIf("type", $("#filter-type"));
+    setIf("difficulty", $("#filter-difficulty"));
+    setIf("category", $("#filter-category"));
+  } else if (state.view === "review") {
+    if (state.reviewTag) p.set("tag", state.reviewTag);
+  } else if (state.view === "today") {
+    if (state.todayDate) p.set("date", state.todayDate);
+  }
+  return p;
+}
+
+function updateHash() {
+  if (!HASHABLE.has(state.view)) return;
+  const qs = currentViewParams().toString();
+  const hash = "#" + state.view + (qs ? "?" + qs : "");
+  if (location.hash !== hash) {
+    // pushState：翻页/筛选等状态变化进入浏览器历史，后退可逐步回退（replaceState 会直接退出应用）
+    history.pushState(null, "", location.pathname + location.search + hash);
+  }
+}
+
+function applyViewParams(view, params) {
+  if (view === "bank") {
+    state.bankPage = params.has("page") ? Math.max(1, Number(params.get("page")) || 1) : 1;
+    const ps = Number(params.get("page_size")) || 20;
+    state.bankPageSize = [10, 20, 30, 50].includes(ps) ? ps : 20;
+    $("#bank-page-size").value = String(state.bankPageSize);
+    if (params.has("q")) $("#bank-search").value = params.get("q");
+    if (params.has("type")) $("#filter-bank-type").value = params.get("type");
+    if (params.has("difficulty")) $("#filter-bank-difficulty").value = params.get("difficulty");
+    if (params.has("category")) $("#filter-bank-category").value = params.get("category");
+  } else if (view === "history") {
+    state.rangeFrom = params.get("from") || null;
+    state.rangeTo = params.get("to") || null;
+    $("#filter-date-from").value = state.rangeFrom || "";
+    $("#filter-date-to").value = state.rangeTo || "";
+    if (params.has("done")) $("#filter-done").value = params.get("done");
+    if (params.has("score")) {
+      $("#filter-score").value = params.get("score");
+      $("#filter-score").disabled = false;
+    }
+    if (params.has("type")) $("#filter-type").value = params.get("type");
+    if (params.has("difficulty")) $("#filter-difficulty").value = params.get("difficulty");
+    if (params.has("category")) $("#filter-category").value = params.get("category");
+  } else if (view === "review") {
+    state.reviewTag = params.get("tag") || null;
+  } else if (view === "today") {
+    state.todayDate = params.get("date") || null;
+  }
 }
 
 window.addEventListener("hashchange", () => {
-  const target = location.hash.slice(1);
-  if (!HASHABLE.has(target) || state.view === target) return;
+  const raw = location.hash.slice(1);
+  const [target, qs] = raw.split("?");
+  if (!HASHABLE.has(target)) return;
+  const params = new URLSearchParams(qs || "");
+  const sameView = state.view === target;
+  if (sameView && currentViewParams().toString() === params.toString()) return;
+  applyViewParams(target, params);
   if (target === "review") {
-    state.reviewTag = null;
     show("review");
-    loadReviewHome();
+    if (state.reviewTag) loadReview(state.reviewTag);
+    else loadReviewHome();
   } else {
     show(target);
   }
@@ -284,6 +373,8 @@ async function loadToday(date) {
     state.todayItems = items;
     renderToday();
     renderPanelExtra();
+    scrollTop();
+    updateHash();
   } catch (err) {
     uiToast(err.message, true);
   }
@@ -429,6 +520,7 @@ async function startAnswer(q) {
   }
   const detail = await api(`/api/questions/${q.id}`); // today 列表不含 criteria，答题页需详情
   state.question = { ...q, ...detail };
+  saveAnswerState();
   renderAnswer();
   if (resumed) {
     // 断点恢复：拉取已有轮次并渲染时间线，继续作答（D18）
@@ -438,7 +530,75 @@ async function startAnswer(q) {
       $("#answer-status").textContent = `已恢复上次对话（已答 ${s.rounds_done} 轮），请在下方继续回答`;
     }
   }
+  history.pushState(null, "", `#answer?session=${state.sessionId}`); // 浏览器后退 → hash 回主视图
   show("answer");
+}
+
+// --- 答题中间页恢复：刷新后回到答题/结果页（sessionStorage） ---
+
+function saveAnswerState() {
+  if (!state.sessionId || !state.question) return;
+  sessionStorage.setItem(
+    "answer_state",
+    JSON.stringify({
+      question_id: state.question.id,
+      session_id: state.sessionId,
+      returnTo: state.returnTo || "today",
+    })
+  );
+}
+
+async function restoreAnswerSession() {
+  let saved;
+  try {
+    saved = JSON.parse(sessionStorage.getItem("answer_state") || "");
+  } catch (e) {
+    sessionStorage.removeItem("answer_state");
+    return false;
+  }
+  if (!saved || !saved.session_id) return false;
+  let s;
+  try {
+    s = await api(`/api/sessions/${saved.session_id}`);
+  } catch (e) {
+    sessionStorage.removeItem("answer_state"); // 会话不存在/已删除：放弃恢复
+    return false;
+  }
+  if (s.status === "active" || s.status === "judging") {
+    let q;
+    try {
+      q = await api(`/api/questions/${saved.question_id}`);
+    } catch (e) {
+      sessionStorage.removeItem("answer_state");
+      return false;
+    }
+    state.sessionId = saved.session_id;
+    state.question = q;
+    state.returnTo = saved.returnTo || "today";
+    saveAnswerState();
+    renderAnswer();
+    history.pushState(null, "", `#answer?session=${state.sessionId}`); // 后退 → hash 回主视图
+    if (s.status === "judging") {
+      $("#answer-status").textContent = "判分进行中…";
+      pollResult();
+    } else if (s.rounds_done > 0) {
+      renderChat(s.transcript || [], s.followup);
+      $("#answer-status").textContent = `已恢复上次对话（已答 ${s.rounds_done} 轮），请在下方继续回答`;
+    }
+    show("answer");
+    return true;
+  }
+  if (s.status === "done") {
+    renderResult(s.judgment);
+    show("result");
+    return true;
+  }
+  if (s.status === "failed") {
+    renderResult(null);
+    show("result");
+    return true;
+  }
+  return false;
 }
 
 function renderAnswer() {
@@ -591,6 +751,8 @@ function renderChat(transcript, followup) {
 
 async function loadDetail(questionId) {
   state.detailQuestionId = questionId;
+  sessionStorage.setItem("detail_state", String(questionId)); // 刷新后恢复详情页
+  history.pushState(null, "", `#detail?q=${questionId}`); // 后退 → hash 回主视图
   const data = await api(`/api/questions/${questionId}/history`);
   state.detailAttempts = data.attempts;
   $("#detail-type").textContent = data.type;
@@ -769,6 +931,7 @@ async function loadReviewPaper() {
     } else {
       box.innerHTML = data.paper_html;
       state.reviewRecommended = new Set(data.recommended_ids || []);
+      sessionStorage.setItem("review_paper_tag", state.reviewTag); // 刷新后自动恢复
     }
   } catch (err) {
     $("#review-paper").innerHTML = `<p class="meta">${escapeHtml(err.message)}</p>`;
@@ -864,6 +1027,8 @@ function applyFilters() {
     if (items.length) groups.push({ date: g.date, items });
   }
   renderHistory(groups);
+  scrollTop();
+  updateHash();
 }
 
 function renderHistory(groups) {
@@ -963,9 +1128,7 @@ function renderCalendar() {
   $("#calendar-hint").textContent =
     mode === "history"
       ? "点击选择开始日期，再次点击选择结束日期"
-      : mode === "bank"
-        ? "圆点 = 该日有题（实心 = 已答）；点击日期查看该日作答"
-        : "圆点 = 该日有题（实心 = 已答）；点击日期查看该日题目";
+      : "圆点 = 该日有题（实心 = 已答）；点击日期查看该日题目";
   for (let i = 0; i < mondayOffset; i++) {
     const blank = document.createElement("span");
     blank.className = "calendar-cell blank";
@@ -1431,6 +1594,7 @@ $("#import-file").addEventListener("change", async (e) => {
 });
 $("#answer-submit").addEventListener("click", submitAnswer);
 function goBack() {
+  sessionStorage.removeItem("answer_state"); // 离开答题流程：清除恢复点
   if (state.returnTo === "review") {
     show("review");
     loadReview(state.reviewTag);
@@ -1501,8 +1665,6 @@ $("#calendar-clear").addEventListener("click", () => {
   const now = new Date();
   if (state.calendarMode === "history") {
     setRange(null, null);
-  } else if (state.calendarMode === "bank") {
-    show("today");
   } else {
     loadToday();
   }
@@ -1592,7 +1754,17 @@ $("#bank-next").addEventListener("click", () => {
     loadBank();
   }
 });
+$("#bank-goto-btn").addEventListener("click", gotoBankPage);
+$("#bank-goto").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") gotoBankPage();
+});
+$("#bank-page-size").addEventListener("change", (e) => {
+  state.bankPageSize = Number(e.target.value) || 20;
+  state.bankPage = 1; // 换条数回第一页
+  loadBank();
+});
 $("#detail-back").addEventListener("click", () => {
+  sessionStorage.removeItem("detail_state"); // 离开详情页：清除恢复点
   show("history");
   applyFilters();
 });
@@ -1635,6 +1807,11 @@ $("#auth-tab-login").addEventListener("click", () => {
   $("#auth-submit").textContent = "登录";
   $("#auth-hint").textContent = "登录后开始刷题";
   $("#auth-error").textContent = "";
+});
+["#auth-username", "#auth-password"].forEach((sel) => {
+  $(sel).addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("#auth-submit").click(); // 回车提交
+  });
 });
 $("#auth-tab-register").addEventListener("click", () => {
   authMode = "register";

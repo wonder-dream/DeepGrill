@@ -189,6 +189,19 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
   border-top: 1px solid var(--line-dark);
   padding-top: 12px;
 }
+
+/* 题库页：面板只保留概览（隐藏日历相关块） */
+#calendar-panel.panel-extra-only .calendar-head,
+#calendar-panel.panel-extra-only .calendar-clear-row,
+#calendar-panel.panel-extra-only .calendar-week,
+#calendar-panel.panel-extra-only .calendar-grid,
+#calendar-panel.panel-extra-only .calendar-pick,
+#calendar-panel.panel-extra-only .calendar-hint { display: none; }
+#calendar-panel.panel-extra-only .panel-extra {
+  margin-top: 0;
+  border-top: none;
+  padding-top: 0;
+}
 .panel-title {
   font-family: var(--serif);
   font-size: 13px;
