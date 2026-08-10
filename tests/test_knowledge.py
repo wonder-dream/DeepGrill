@@ -46,7 +46,7 @@ def test_index_search_hits(db):
     _add_chunk(db, 1, "MySQL 索引 B+ 树原理", version=1)
     idx = KnowledgeIndex()
     hits = idx.search(_vec(1), k=2)
-    assert len(hits) == 2
+    assert len(hits) == 1  # 仅高相似块命中（Redis 块相似度 0 被阈值过滤）
     assert hits[0][1] == "MySQL 索引 B+ 树原理"
 
 
@@ -73,10 +73,28 @@ def test_index_faiss_fallback_numpy(db):
     assert len(hits) == 1  # 与 query 零相似度的块被过滤（0 相似度不命中）
 
 
-def test_index_empty_returns_empty(db):
+def test_index_returns_empty(db):
     """无知识数据 → 返回空（调用方不注入）。"""
     idx = KnowledgeIndex()
     assert idx.search(_vec(0)) == []
+
+
+def test_index_filters_low_similarity(db):
+    """相似度低于阈值（KNOWLEDGE_MIN_SIM）的块不注入（防不相关主题误导）。"""
+    import numpy as np
+
+    from app.models import KnowledgeChunk as KC
+
+    v = np.asarray([0.8, 0.6] + [0.0] * 6, dtype=np.float32)
+    v = v / np.linalg.norm(v)  # 与 vec(0) 点积 0.8（>0.5 命中）；与 vec(2) 点积 0（<0.5 过滤）
+    with get_session() as s:
+        s.add(KC(title="混合", content="混合块", source_hash="h-low", embedding=v.tobytes()))
+        commit(s)
+    idx = KnowledgeIndex()
+    hits = idx.search(_vec(0), k=3)
+    assert any(c == "混合块" for _, c in hits)   # 高相似命中
+    hits2 = idx.search(_vec(2), k=3)
+    assert all(c != "混合块" for _, c in hits2)  # 低相似过滤
 
 
 def test_format_knowledge_truncated(db):

@@ -26,6 +26,7 @@ HYBRID_WEIGHT = 0.8  # hybrid 融合权重（评估标定：scripts/eval_retriev
 
 KNOWLEDGE_K = 5  # 知识注入块数
 KNOWLEDGE_MAX_CHARS = 4000  # 知识片段拼接上限（防爆上下文）
+KNOWLEDGE_MIN_SIM = 0.5  # 知识命中最低余弦相似度（低于不注入，防止不相关主题误导判分）
 
 
 def search_questions(
@@ -181,11 +182,19 @@ class KnowledgeIndex:
                 q = np.asarray(query_vec, dtype=np.float32)
                 if self._faiss is not None:
                     scores, idxs = self._index.search(q.reshape(1, -1), k)
-                    ids = [self._ids[i] for i in idxs[0] if i >= 0]
+                    ids = [
+                        self._ids[i]
+                        for score, i in zip(scores[0], idxs[0])
+                        if i >= 0 and score >= KNOWLEDGE_MIN_SIM
+                    ]
                 else:
                     sims = self._index @ q
                     order = np.argsort(-sims)[:k]
-                    ids = [self._ids[i] for i in order if i < len(self._ids) and sims[i] > 0]
+                    ids = [
+                        self._ids[i]
+                        for i in order
+                        if i < len(self._ids) and sims[i] >= KNOWLEDGE_MIN_SIM
+                    ]
                 if not ids:
                     return []
                 with get_session() as session:
