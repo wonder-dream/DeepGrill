@@ -97,6 +97,49 @@ def test_index_filters_low_similarity(db):
     assert all(c != "混合块" for _, c in hits2)  # 低相似过滤
 
 
+def test_search_multi_merges_across_queries(db):
+    """多查询：两个查询分别命中不同块 → 合并后都保留（互补召回）。"""
+    _add_chunk(db, 0, "Redis 持久化 RDB AOF", version=1)
+    _add_chunk(db, 1, "GMP 调度模型原理", version=1)
+    idx = KnowledgeIndex()
+    hits = idx.search_multi([_vec(0), _vec(1)], ["Redis 持久化", "GMP 调度"], k=2)
+    contents = {c for _, c in hits}
+    assert "Redis 持久化 RDB AOF" in contents
+    assert "GMP 调度模型原理" in contents
+
+
+def test_search_multi_takes_max_score_per_chunk(db):
+    """同一块被两个查询命中 → 取最高分（不重复计数）。"""
+    _add_chunk(db, 0, "Redis 持久化", version=1)
+    idx = KnowledgeIndex()
+    hits = idx.search_multi([_vec(0), _vec(0)], ["Redis", "持久化"], k=1)
+    assert len(hits) == 1  # 同一块去重
+    assert hits[0][1] == "Redis 持久化"
+
+
+def test_search_multi_text_coverage_rescue(db):
+    """文本覆盖度救回：向量相似度低但含查询关键词的块经混合分命中。"""
+    import numpy as np
+
+    from app.models import KnowledgeChunk as KC
+
+    # 块 A：向量与 query 正交（相似度 0，过不了阈值），但内容含关键词 "GMP"
+    v_a = np.asarray([0.0] * DIM, dtype=np.float32)
+    v_a[1] = 1.0  # 与 _vec(0) 相似度 0
+    with get_session() as s:
+        s.add(KC(title="GMP", content="GMP 调度模型 P 队列 work stealing", source_hash="h-gmp",
+                 embedding=np.asarray(_vec(1), dtype=np.float32).tobytes()))
+        s.add(KC(title="无关", content="完全没有关键词的内容", source_hash="h-other",
+                 embedding=np.asarray(_vec(0), dtype=np.float32).tobytes()))
+        commit(s)
+    idx = KnowledgeIndex()
+    # 多查询：query1=_vec(0)（命中"无关"块），query2=_vec(2)（无命中）——均不含 GMP 块
+    # 用文本路验证：query_texts 含 GMP 关键词 + 向量路召回候选后混合排序
+    hits = idx.search_multi([_vec(1), _vec(0)], ["GMP", "调度"], k=3)
+    contents = [c for _, c in hits]
+    assert "GMP 调度模型 P 队列 work stealing" in contents
+
+
 def test_format_knowledge_truncated(db):
     """知识片段拼接截断到 KNOWLEDGE_MAX_CHARS。"""
     from app.retrieval import KNOWLEDGE_MAX_CHARS

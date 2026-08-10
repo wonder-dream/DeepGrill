@@ -821,7 +821,7 @@ def create_app(
             f"- [id={q.id}]（难度 {q.difficulty}/5）{q.stem}"
             for q in questions[:8]
         )
-        knowledge = _knowledge_for(tag, embedder_factory)
+        knowledge = _knowledge_for(tag, None, embedder_factory)
         if knowledge:
             materials += "\n\n【知识资料（供讲义要点核对）】\n" + knowledge
         try:
@@ -1169,7 +1169,7 @@ def _run_answer_job(
             row = session.get(Session, session_id)
             question = session.get(Question, row.question_id)
         judge_llm = llm_factory("judge")
-        knowledge = _knowledge_for(question.stem, embedder_factory)
+        knowledge = _knowledge_for(question.stem, question.tags, embedder_factory)
         if row.status == SessionStatus.finished:
             # 判分失败重试：从 attempts 重建 transcript 直接重判，不再续答
             judgment = judge(
@@ -1225,14 +1225,16 @@ def _run_answer_job(
             _inflight.discard(session_id)
 
 
-def _knowledge_for(stem: str, embedder_factory, k: int = 5) -> str | None:
-    """判分/追问/复习卷前检索知识库（RAG）；无知识/失败返回 None（调用方不注入）。"""
+def _knowledge_for(stem: str, tags, embedder_factory, k: int = 5) -> str | None:
+    """判分/追问/复习卷前检索知识库（多查询 + 混合检索）；无知识/失败返回 None（调用方不注入）。"""
     try:
-        from ..retrieval import format_knowledge, knowledge_search
+        from ..retrieval import format_knowledge, knowledge_search_multi
 
+        tag_list = [t for t in (tags or []) if isinstance(t, str)][:3]
+        query_texts = [stem] + tag_list
         embedder = embedder_factory()
-        query_vec = embedder.encode([stem])[0]
-        chunks = knowledge_search(query_vec, k)
+        query_vecs = embedder.encode(query_texts)
+        chunks = knowledge_search_multi(query_vecs, query_texts, k)
         if not chunks:
             return None
         return format_knowledge(chunks)

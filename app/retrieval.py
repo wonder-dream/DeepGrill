@@ -168,45 +168,114 @@ class KnowledgeIndex:
             logger.warning("faiss 不可用，知识库检索降级 numpy 暴力")
 
     def search(self, query_vec, k: int = KNOWLEDGE_K) -> list[tuple[str, str]]:
-        """检索相关知识块，返回 [(title, content)]；异常/无数据返回空。"""
+        """单查询检索（保持兼容）；异常/无数据返回空。"""
         try:
-            with self._lock:
-                with get_session() as session:
-                    meta = session.get(KnowledgeMeta, 1)
-                    version = meta.version if meta is not None else 0
-                    if version != self._version:
-                        self._rebuild(session)
-                        self._version = version
-                if self._index is None or not self._ids:
-                    return []
-                q = np.asarray(query_vec, dtype=np.float32)
-                if self._faiss is not None:
-                    scores, idxs = self._index.search(q.reshape(1, -1), k)
-                    ids = [
-                        self._ids[i]
-                        for score, i in zip(scores[0], idxs[0])
-                        if i >= 0 and score >= KNOWLEDGE_MIN_SIM
-                    ]
-                else:
-                    sims = self._index @ q
-                    order = np.argsort(-sims)[:k]
-                    ids = [
-                        self._ids[i]
-                        for i in order
-                        if i < len(self._ids) and sims[i] >= KNOWLEDGE_MIN_SIM
-                    ]
-                if not ids:
-                    return []
-                with get_session() as session:
-                    chunks = [session.get(KnowledgeChunk, i) for i in ids]
-                out = []
-                for c in chunks:
-                    if c is not None and c.content:
-                        out.append((c.title or "", c.content))
-                return out
+            scores = self._vector_scores(query_vec, k)
+            return self._chunks_for(scores, k)
         except Exception as e:
             logger.warning("knowledge search failed: %s", e)
             return []
+
+    def search_multi(
+        self, query_vecs, query_texts: list[str], k: int = KNOWLEDGE_K
+    ) -> list[tuple[str, str]]:
+        """多查询 + 混合检索：向量路 + 文本路双路召回，混合分排序。
+
+        - 向量路：每查询独立检索（阈值 0.5 过滤）→ 按 chunk 取最高分合并
+        - 文本路：查询关键词 content LIKE 命中 → 加入候选集（无阈值限制，扩大召回，
+          救回纯向量漏检但含主题词的块）
+        - 混合分 = HYBRID_WEIGHT × 向量分 + (1 - HYBRID_WEIGHT) × 文本覆盖度
+        """
+        try:
+            self._ensure_index()
+            if self._index is None or not self._ids:
+                return []
+            cand: dict[int, float] = {}
+            for v in query_vecs:
+                for cid, s in self._vector_scores(v, k * 2).items():
+                    cand[cid] = max(cand.get(cid, 0.0), s)
+            terms = _extract_query_terms(query_texts)
+            for cid in self._text_match_ids(terms):  # 文本路：无阈值扩大召回
+                cand.setdefault(cid, 0.0)
+            if not cand:
+                return []
+            with get_session() as session:
+                chunks = {
+                    c.id: c
+                    for c in session.scalars(
+                        select(KnowledgeChunk).where(KnowledgeChunk.id.in_(list(cand)))
+                    ).all()
+                }
+            results = []
+            for cid, vscore in cand.items():
+                c = chunks.get(cid)
+                if c is None or not c.content:
+                    continue
+                tscore = _text_coverage(c.content, terms)
+                hybrid = HYBRID_WEIGHT * vscore + (1 - HYBRID_WEIGHT) * tscore
+                results.append((hybrid, cid, c.title or "", c.content))
+            results.sort(key=lambda x: x[0], reverse=True)
+            return [(t, c) for _, _cid, t, c in results[:k]]
+        except Exception as e:
+            logger.warning("knowledge search_multi failed: %s", e)
+            return []
+
+    def _text_match_ids(self, terms: list[str]) -> set[int]:
+        """文本路召回：content LIKE 命中任一关键词的块 id（无阈值，扩大召回）。"""
+        ids: set[int] = set()
+        if not terms:
+            return ids
+        with get_session() as session:
+            for t in terms:
+                for (cid,) in session.execute(
+                    select(KnowledgeChunk.id).where(KnowledgeChunk.content.like(f"%{t}%"))
+                ).all():
+                    ids.add(cid)
+        return ids
+
+    def _ensure_index(self) -> None:
+        """version 检测自动重建（导入脚本 version+1 后下次查询触发）。"""
+        with self._lock:
+            with get_session() as session:
+                meta = session.get(KnowledgeMeta, 1)
+                version = meta.version if meta is not None else 0
+                if version != self._version:
+                    self._rebuild(session)
+                    self._version = version
+
+    def _vector_scores(self, query_vec, k: int) -> dict[int, float]:
+        """单查询向量检索 → {chunk_id: score}（含 KNOWLEDGE_MIN_SIM 阈值过滤）。"""
+        self._ensure_index()
+        if self._index is None or not self._ids:
+            return {}
+        q = np.asarray(query_vec, dtype=np.float32)
+        if self._faiss is not None:
+            scores, idxs = self._index.search(q.reshape(1, -1), k)
+            return {
+                self._ids[i]: float(s)
+                for s, i in zip(scores[0], idxs[0])
+                if i >= 0 and s >= KNOWLEDGE_MIN_SIM
+            }
+        sims = self._index @ q
+        order = np.argsort(-sims)[:k]
+        return {
+            self._ids[i]: float(sims[i])
+            for i in order
+            if i < len(self._ids) and sims[i] >= KNOWLEDGE_MIN_SIM
+        }
+
+    def _chunks_for(self, scores: dict[int, float], k: int) -> list[tuple[str, str]]:
+        """{chunk_id: score} → 按分排序取 top-k → [(title, content)]。"""
+        if not scores:
+            return []
+        ids = sorted(scores, key=scores.get, reverse=True)[:k]
+        with get_session() as session:
+            chunks = [session.get(KnowledgeChunk, i) for i in ids]
+        out = []
+        for c in chunks:
+            if c is not None and c.content:
+                out.append((c.title or "", c.content))
+        return out
 
     def _rebuild(self, session) -> None:
         chunks = session.scalars(
@@ -230,6 +299,42 @@ class KnowledgeIndex:
 def knowledge_search(query_vec, k: int = KNOWLEDGE_K) -> list[tuple[str, str]]:
     """知识检索便捷入口（进程内单例）。"""
     return _knowledge_index.search(query_vec, k)
+
+
+def knowledge_search_multi(
+    query_vecs, query_texts: list[str], k: int = KNOWLEDGE_K
+) -> list[tuple[str, str]]:
+    """多查询 + 混合检索便捷入口（进程内单例）。"""
+    return _knowledge_index.search_multi(query_vecs, query_texts, k)
+
+
+def _extract_query_terms(query_texts: list[str]) -> list[str]:
+    """查询关键词：短片段（tags，≤8 字符无空格）整体作词；长句只提英文数字 token。
+
+    文本路 LIKE 匹配用（中文无需分词，短词直接匹配；长句整句匹配无意义）。
+    """
+    import re
+
+    terms: list[str] = []
+    for text in query_texts:
+        if not text:
+            continue
+        if len(text) <= 8 and not re.search(r"\s", text):
+            if text not in terms:
+                terms.append(text)
+        else:
+            for tok in re.findall(r"[A-Za-z][A-Za-z0-9_]{1,}", text):
+                if tok not in terms:
+                    terms.append(tok)
+    return terms
+
+
+def _text_coverage(content: str, terms: list[str]) -> float:
+    """文本覆盖度：块内容包含的查询关键词比例（0-1）。"""
+    if not terms or not content:
+        return 0.0
+    hit = sum(1 for t in terms if t in content)
+    return hit / len(terms)
 
 
 def format_knowledge(chunks: list[tuple[str, str]]) -> str:
