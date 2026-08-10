@@ -221,3 +221,25 @@ class UserPick(SQLModel, table=True):
     picked_at: datetime = Field(default_factory=datetime.now)
 
 
+class KnowledgeChunk(SQLModel, table=True):
+    """知识库块（RAG）：八股文/资料切块 + bge-m3 向量，判分/追问/复习卷注入用。"""
+
+    __tablename__ = "knowledge_chunks"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    title: str = ""  # 来源文档标题
+    content: str = ""
+    source_hash: str = Field(unique=True, index=True)  # 内容 hash，幂等去重
+    embedding: Optional[bytes] = None  # bge-m3 向量（float32 BLOB）
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class KnowledgeMeta(SQLModel, table=True):
+    """知识库版本号（单行 id=1）：导入成功 version+1，FAISS 索引据此自动重建。"""
+
+    __tablename__ = "knowledge_meta"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    version: int = Field(default=0)
+
+

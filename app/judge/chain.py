@@ -44,6 +44,8 @@ L5 横向联系/知识广度：与相关知识点/框架/场景的关联
 候选人最新回答：
 {answer}
 
+{knowledge_section}
+
 每轮必须：
 1. 先评估候选人本轮回答质量（quality）：
    - correct：准确且完整
@@ -78,6 +80,7 @@ class ChainSession:
         judge_model: str = "",
         max_rounds: int = 20,
         target_level: int = 5,
+        knowledge: str | None = None,
     ):
         self._session_id = session_id
         self._question = question
@@ -85,6 +88,7 @@ class ChainSession:
         self._judge_model = judge_model
         self._max_rounds = max_rounds
         self._target_level = target_level
+        self._knowledge = knowledge
         self._finished = False
         self._max_level = 0
 
@@ -117,8 +121,8 @@ class ChainSession:
             self._finished = True
         return RoundResult(interviewer_message=followup, finished=self._finished)
 
-    def finish(self, reference: str | None = None) -> Judgment:
-        """结束追问链：调用 M10 整轮判分（带最大追问层级 + 质量轨迹 + 可选参考）并落库；会话标记 finished。"""
+    def finish(self, reference: str | None = None, knowledge: str | None = None) -> Judgment:
+        """结束追问链：调用 M10 整轮判分（带最大追问层级 + 质量轨迹 + 可选参考/知识）并落库；会话标记 finished。"""
         qualities = [
             a.quality for a in self._attempts() if a.quality
         ] or None
@@ -129,6 +133,7 @@ class ChainSession:
             self._llm,
             session_id=self._session_id,
             reference=reference,
+            knowledge=knowledge or self._knowledge,
             max_level=self._max_level or None,
             quality_trace=qualities,
         )
@@ -199,6 +204,12 @@ class ChainSession:
         from ..difficulty import DIFFICULTY_NAMES
 
         history = "\n".join(self._history_lines()) or "（无）"
+        knowledge_section = (
+            "以下为相关知识资料（供追问时核对要点、发现候选人的知识缺口，不要直接复述原文）：\n"
+            f"{self._knowledge}"
+            if self._knowledge
+            else ""
+        )
         return CHAIN_PROMPT_V3.format(
             stem=self._question.stem,
             qtype=self._question.type.value,
@@ -209,6 +220,7 @@ class ChainSession:
             bad="\n".join(f"- {c}" for c in self._question.bad_criteria),
             history=history,
             answer=answer,
+            knowledge_section=knowledge_section,
         )
 
     def _history_lines(self) -> list[str]:
@@ -262,6 +274,7 @@ def resume(
     judge_model: str = "",
     max_rounds: int = 20,
     target_level: int = 5,
+    knowledge: str | None = None,
 ) -> ChainSession:
     """从 attempts 表重建上下文；会话已 finished 则恢复为终态（继续调用抛 ChainStateError）。"""
     chain = ChainSession(
@@ -271,6 +284,7 @@ def resume(
         judge_model=judge_model,
         max_rounds=max_rounds,
         target_level=target_level,
+        knowledge=knowledge,
     )
     with get_session() as session:
         row = session.get(Session, session_id)

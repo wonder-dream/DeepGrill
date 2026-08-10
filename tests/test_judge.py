@@ -234,7 +234,7 @@ def test_json_error_retry_then_failed(db):
 
 def test_prompt_version_frozen():
     """PROMPT_VERSION 变更需显式更新此测试与 fixture。"""
-    assert PROMPT_VERSION == "judge_v6"
+    assert PROMPT_VERSION == "judge_v7"  # v7：注入知识库标准参照（RAG）
 
 
 def test_max_level_injected_into_prompt(db):
@@ -301,3 +301,28 @@ def test_reference_used_flag(db):
     llm = FakeLLM([VALID])
     judgment = judge(make_question(), TRANSCRIPT, "m", llm, reference="- 旧题\n  高分回答")
     assert judgment.scores["reference_used"] is True
+
+
+def test_knowledge_injected_into_prompt(db):
+    """judge_v7：knowledge（RAG 知识库片段）注入为标准参照区。"""
+    llm = FakeLLM([VALID])
+    judge(
+        make_question(),
+        TRANSCRIPT,
+        "m",
+        llm,
+        knowledge="- [缓存] Redis 淘汰策略 LRU 与 LFU 的适用场景",
+    )
+    content = "\n".join(m["content"] for m in llm.calls[0])
+    assert "相关知识资料" in content
+    assert "Redis 淘汰策略" in content
+    assert "不要照抄原文" in content
+
+
+def test_no_knowledge_no_section(db):
+    """无知识时行为不变（不注入知识段，判分正常）。"""
+    llm = FakeLLM([VALID])
+    judgment = judge(make_question(), TRANSCRIPT, "m", llm)
+    content = "\n".join(m["content"] for m in llm.calls[0])
+    assert "相关知识资料" not in content
+    assert judgment.total_score is not None

@@ -130,6 +130,19 @@ def test_prompt_injects_difficulty_and_target_level(db):
     assert "已到 L5" not in content
 
 
+def test_prompt_injects_knowledge(db):
+    """chain 追问：knowledge（RAG）注入 prompt 供面试官核对要点。"""
+    s, q = add_session(db)
+    llm = FakeLLM([FINISH, VALID_JUDGMENT])
+    chain = ChainSession(
+        s.id, q, llm, judge_model="m", knowledge="- [Redis] 淘汰策略 LRU 实现细节"
+    )
+    chain.next_round("答")
+    content = "\n".join(m["content"] for m in llm.calls[0])
+    assert "相关知识资料" in content
+    assert "LRU 实现细节" in content
+
+
 def test_two_consecutive_bad_answers_finish(db):
     """连续 2 次差评（wrong/unsure）→ 判定探到底收尾；单次差评不误杀。"""
     s, q = add_session(db)

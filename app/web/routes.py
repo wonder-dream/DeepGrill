@@ -821,6 +821,9 @@ def create_app(
             f"- [id={q.id}]（难度 {q.difficulty}/5）{q.stem}"
             for q in questions[:8]
         )
+        knowledge = _knowledge_for(tag, embedder_factory)
+        if knowledge:
+            materials += "\n\n【知识资料（供讲义要点核对）】\n" + knowledge
         try:
             parsed = llm_factory("generate").complete(
                 [{"role": "user", "content": REVIEW_PAPER_PROMPT.format(
@@ -1160,12 +1163,13 @@ def create_app(
 def _run_answer_job(
     session_id: int, answer: str, config: AppConfig, llm_factory, embedder_factory
 ) -> None:
-    """后台任务：M11 追问 / M10 判分（含参考检索）→ 落库；异常记日志，会话保持 active 可重试。"""
+    """后台任务：M11 追问 / M10 判分（含参考检索 + 知识库 RAG 注入）→ 落库；异常记日志，会话保持 active 可重试。"""
     try:
         with db.get_session() as session:
             row = session.get(Session, session_id)
             question = session.get(Question, row.question_id)
         judge_llm = llm_factory("judge")
+        knowledge = _knowledge_for(question.stem, embedder_factory)
         if row.status == SessionStatus.finished:
             # 判分失败重试：从 attempts 重建 transcript 直接重判，不再续答
             judgment = judge(
@@ -1175,6 +1179,7 @@ def _run_answer_job(
                 judge_llm,
                 session_id=session_id,
                 reference=_reference_for(question, embedder_factory, row.user_id),
+                knowledge=knowledge,
                 max_level=_max_level(session_id),
             )
             with db.get_session() as session:
@@ -1189,10 +1194,14 @@ def _run_answer_job(
                 judge_model=config.llm.judge_model,
                 max_rounds=max_rounds,
                 target_level=target_level_for(question.difficulty),
+                knowledge=knowledge,
             )
             result = chain.next_round(answer)
             if result["finished"]:
-                chain.finish(reference=_reference_for(question, embedder_factory, row.user_id))
+                chain.finish(
+                    reference=_reference_for(question, embedder_factory, row.user_id),
+                    knowledge=knowledge,
+                )
         else:
             judgment = judge(
                 question,
@@ -1201,6 +1210,7 @@ def _run_answer_job(
                 judge_llm,
                 session_id=session_id,
                 reference=_reference_for(question, embedder_factory, row.user_id),
+                knowledge=knowledge,
             )
             with db.get_session() as session:
                 session.add(judgment)
@@ -1213,6 +1223,22 @@ def _run_answer_job(
     finally:
         with _inflight_lock:
             _inflight.discard(session_id)
+
+
+def _knowledge_for(stem: str, embedder_factory, k: int = 5) -> str | None:
+    """判分/追问/复习卷前检索知识库（RAG）；无知识/失败返回 None（调用方不注入）。"""
+    try:
+        from ..retrieval import format_knowledge, knowledge_search
+
+        embedder = embedder_factory()
+        query_vec = embedder.encode([stem])[0]
+        chunks = knowledge_search(query_vec, k)
+        if not chunks:
+            return None
+        return format_knowledge(chunks)
+    except Exception as e:
+        logger.warning("knowledge retrieval failed, skip injection: %s", e)
+        return None
 
 
 def _reference_for(question, embedder_factory, user_id: int) -> str | None:

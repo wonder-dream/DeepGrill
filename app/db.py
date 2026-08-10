@@ -56,6 +56,7 @@ def init_db(db_url: str) -> None:
             _migrate_cleanup_empty_sessions(_engine)
             _migrate_session_user(_engine)
             _migrate_token_expires_at(_engine)
+            _migrate_knowledge_meta(_engine)
     except SQLAlchemyError as e:
         raise StorageError(f"cannot init database {db_url}: {e}") from e
     _factory = sessionmaker(bind=_engine, class_=DBSession, expire_on_commit=False)
@@ -129,6 +130,14 @@ def _migrate_token_expires_at(engine: Engine) -> None:
                 "WHERE expires_at IS NULL"
             )
         )
+
+
+def _migrate_knowledge_meta(engine: Engine) -> None:
+    """幂等迁移：knowledge_meta 初始化版本行（create_all 建表，此处补 id=1 行）。"""
+    with engine.begin() as conn:
+        n = conn.execute(text("SELECT COUNT(*) FROM knowledge_meta")).scalar()
+        if n == 0:
+            conn.execute(text("INSERT INTO knowledge_meta (id, version) VALUES (1, 0)"))
 
 
 def _migrate_embedding(engine: Engine) -> None:

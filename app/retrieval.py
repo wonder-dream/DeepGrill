@@ -1,10 +1,13 @@
-"""检索模块（Phase 2 §9.3）：同类题检索（text/vector/hybrid）+ 高分回答参考组装。
+"""检索模块（Phase 2 §9.3）：同类题检索（text/vector/hybrid）+ 高分回答参考组装 + 知识库 RAG。
 
 - search_questions：统一检索接口，评分归一化 0-1 降序返回 top-k
 - build_reference：检索同类题 → 组装高分回答片段（真实回答优先，reference_answer 兜底）
+- KnowledgeIndex：知识库向量索引（FAISS IndexFlatIP 内存层 + SQLite 数据层），
+  version 检测自动重建（导入即生效），降级链 faiss → numpy 暴力 → 空结果
 - 冷启动：库内无高分数据时 build_reference 返回 None（judge 降级不注入）
 """
 import logging
+import threading
 
 import numpy as np
 from sqlalchemy import select
@@ -12,7 +15,7 @@ from sqlalchemy import select
 from .db import get_session
 from .embed import ensure_embeddings, from_bytes
 from .errors import EmbedError
-from .models import Attempt, Judgment, Question, Session, SessionStatus
+from .models import Attempt, Judgment, KnowledgeChunk, KnowledgeMeta, Question, Session, SessionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +23,9 @@ HIGH_SCORE = 80  # 高分阈值（total_score ≥ 80 视为高分回答）
 TOP_K = 3  # 参考注入条数
 REF_LEN_LIMIT = 500  # 每条参考截断字符数
 HYBRID_WEIGHT = 0.8  # hybrid 融合权重（评估标定：scripts/eval_retrieval.py，MRR 最优）
+
+KNOWLEDGE_K = 5  # 知识注入块数
+KNOWLEDGE_MAX_CHARS = 4000  # 知识片段拼接上限（防爆上下文）
 
 
 def search_questions(
@@ -136,3 +142,102 @@ def _high_score_answer(session, question: Question) -> str | None:
     if not text.strip():
         return None
     return text[:REF_LEN_LIMIT] + ("..." if len(text) > REF_LEN_LIMIT else "")
+
+
+class KnowledgeIndex:
+    """知识库向量索引：FAISS IndexFlatIP 内存层 + SQLite 数据层。
+
+    - 进程内单例（Embedder 单例同模式）；查询前比对 knowledge_meta.version，
+      导入脚本 version+1 后下次查询自动重建（1-2s 一次性，无需重启）
+    - 降级链：faiss 不可用/构建失败 → numpy 暴力余弦 → 返回空（调用方不注入）
+    - Index.search 只读线程安全，10 并发无锁压力
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._version = -1
+        self._index = None  # faiss.Index 或 numpy 矩阵（降级）
+        self._ids: list[int] = []
+        self._faiss = None
+        try:
+            import faiss  # noqa: F401
+
+            self._faiss = faiss
+        except ImportError:
+            logger.warning("faiss 不可用，知识库检索降级 numpy 暴力")
+
+    def search(self, query_vec, k: int = KNOWLEDGE_K) -> list[tuple[str, str]]:
+        """检索相关知识块，返回 [(title, content)]；异常/无数据返回空。"""
+        try:
+            with self._lock:
+                with get_session() as session:
+                    meta = session.get(KnowledgeMeta, 1)
+                    version = meta.version if meta is not None else 0
+                    if version != self._version:
+                        self._rebuild(session)
+                        self._version = version
+                if self._index is None or not self._ids:
+                    return []
+                q = np.asarray(query_vec, dtype=np.float32)
+                if self._faiss is not None:
+                    scores, idxs = self._index.search(q.reshape(1, -1), k)
+                    ids = [self._ids[i] for i in idxs[0] if i >= 0]
+                else:
+                    sims = self._index @ q
+                    order = np.argsort(-sims)[:k]
+                    ids = [self._ids[i] for i in order if i < len(self._ids) and sims[i] > 0]
+                if not ids:
+                    return []
+                with get_session() as session:
+                    chunks = [session.get(KnowledgeChunk, i) for i in ids]
+                out = []
+                for c in chunks:
+                    if c is not None and c.content:
+                        out.append((c.title or "", c.content))
+                return out
+        except Exception as e:
+            logger.warning("knowledge search failed: %s", e)
+            return []
+
+    def _rebuild(self, session) -> None:
+        chunks = session.scalars(
+            select(KnowledgeChunk).where(KnowledgeChunk.embedding.is_not(None))
+        ).all()
+        if not chunks:
+            self._index = None
+            self._ids = []
+            return
+        vectors = np.array([from_bytes(c.embedding) for c in chunks], dtype=np.float32)
+        if self._faiss is not None:
+            idx = self._faiss.IndexFlatIP(vectors.shape[1])
+            idx.add(vectors)
+            self._index = idx
+        else:
+            self._index = vectors
+        self._ids = [c.id for c in chunks]
+        logger.info("knowledge index rebuilt: %d chunks (faiss=%s)", len(chunks), self._faiss is not None)
+
+
+def knowledge_search(query_vec, k: int = KNOWLEDGE_K) -> list[tuple[str, str]]:
+    """知识检索便捷入口（进程内单例）。"""
+    return _knowledge_index.search(query_vec, k)
+
+
+def format_knowledge(chunks: list[tuple[str, str]]) -> str:
+    """知识片段拼接为 prompt 段（标题+内容，总长严格不超过 KNOWLEDGE_MAX_CHARS）。"""
+    parts = []
+    total = 0
+    for title, content in chunks:
+        room = KNOWLEDGE_MAX_CHARS - total
+        if room <= 0:
+            break
+        block = f"- [{title}] {content}" if title else f"- {content}"
+        if len(block) > room:
+            block = block[:room]
+        parts.append(block)
+        total += len(block)
+    text = "\n\n".join(parts)
+    return text[:KNOWLEDGE_MAX_CHARS]  # 分隔符兜底截断
+
+
+_knowledge_index = KnowledgeIndex()

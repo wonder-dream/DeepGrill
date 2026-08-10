@@ -12,7 +12,7 @@ from ..tags import MAX_WEAK_TAGS, TAG_VOCABULARY, tag_vocab_text
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "judge_v6"
+PROMPT_VERSION = "judge_v7"  # v7：注入知识库标准参照（RAG，judge_v6 增加）
 
 DIMS = ("accuracy", "completeness", "clarity", "depth")
 WEIGHTS = (0.3, 0.3, 0.2, 0.2)
@@ -36,13 +36,15 @@ JUDGE_SYSTEM_V4 = """你是资深面试官，按随题判分标准对候选人�
 {depth_note}
 {quality_trace_section}
 
-只输出 JSON，不要其他文字：
+ 只输出 JSON，不要其他文字：
 {{"scores": {{"accuracy": 0-100, "completeness": 0-100, "clarity": 0-100, "depth": 0-100}}, "review": "评语", "reference_answer": "参考答案", "weak_tags": ["0-3 个薄弱主题标签"]}}
 
 weak_tags 必须从以下词表中选择 0-3 个（薄弱主题，与题目标签同词表，便于同类题复习），不得使用词表外的词：
 {vocab}
 
-{reference_section}"""
+{reference_section}
+
+{knowledge_section}"""
 
 JUDGE_USER_V1 = """高分标准（good_criteria）：
 {good}
@@ -64,14 +66,16 @@ def judge(
     reference: str | None = None,
     max_level: int | None = None,
     quality_trace: list[str] | None = None,
+    knowledge: str | None = None,
 ) -> Judgment:
     """对完整对话判分；LLM 失败重试 1 次，仍失败返回 status=failed 的 Judgment。
 
     reference：库内同类高分回答片段（可选），非空时注入 prompt 作标准参照。
+    knowledge：知识库检索片段（RAG，可选），非空时注入作知识标准参照（judge_v7）。
     max_level：深挖追问探到的最大层级（L1-L5，可选），depth 维度按此校准。
     quality_trace：逐轮回答质量序列（correct/partial/wrong/unsure，可选），depth 校准依据。
     """
-    messages = _build_messages(question, transcript, reference, max_level, quality_trace)
+    messages = _build_messages(question, transcript, reference, max_level, quality_trace, knowledge)
     try:
         parsed = _call_llm(llm, messages)
         judgment = _parse_judgment(parsed, model, reference)
@@ -173,6 +177,7 @@ def _build_messages(
     reference: str | None = None,
     max_level: int | None = None,
     quality_trace: list[str] | None = None,
+    knowledge: str | None = None,
 ) -> list[dict]:
     tags = ", ".join(question.tags) if question.tags else "（无）"
     if reference:
@@ -182,6 +187,13 @@ def _build_messages(
         )
     else:
         reference_section = ""
+    if knowledge:
+        knowledge_section = (
+            "以下为相关知识资料（权威知识点，供核对答案正确性与参考答案撰写，不要照抄原文）：\n"
+            f"{knowledge}"
+        )
+    else:
+        knowledge_section = ""
     if max_level:
         depth_note = (
             f"追问深度：本轮深挖追问探到 L{max_level}（共 5 层：概念→原理→权衡→边界→横向）。\n"
@@ -206,6 +218,7 @@ def _build_messages(
         quality_trace_section=quality_trace_section,
         vocab=tag_vocab_text(),
         reference_section=reference_section,
+        knowledge_section=knowledge_section,
     )
     user = JUDGE_USER_V1.format(
         good="\n".join(f"- {c}" for c in question.good_criteria),

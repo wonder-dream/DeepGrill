@@ -10,3 +10,4 @@ data/logs/
 deploy_package.tar.gz
 data/interview.db-shm
 data/interview.db-wal
+data/knowledge/
