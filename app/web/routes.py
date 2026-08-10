@@ -601,6 +601,61 @@ def create_app(
                 for day in sorted(groups, reverse=True)
             ]
 
+    # --- 统计概览（打卡日历 + 答题趋势 + 汇总数字） ---
+
+    @app.get("/api/stats")
+    def stats(user: User = Depends(require_user)):
+        """该用户统计：题库总数/已答数/已完成题数/平均分 + 近 30 天答题趋势。
+
+        trend 按 finished 判分会话（ended_at 当天）聚合；failed 判分不计入
+        （failed 的 judgment total_score 为 NULL，用 IS NOT NULL 过滤）。
+        """
+        today = datetime.now().date()
+        with db.get_session() as session:
+            bank_total = session.scalar(select(func.count()).select_from(Question))
+            rows = session.execute(
+                select(
+                    func.date(Session.ended_at),
+                    func.count(Session.id),
+                    func.avg(Judgment.total_score),
+                )
+                .join(Judgment, Judgment.session_id == Session.id)
+                .where(
+                    Session.user_id == user.id,
+                    Session.status == SessionStatus.finished,
+                    Session.ended_at.is_not(None),
+                    Judgment.total_score.is_not(None),
+                )
+                .group_by(func.date(Session.ended_at))
+            ).all()
+            done_questions = len(_latest_judgment_by_question(session, user.id))
+        by_day = {date_str: (n, avg) for date_str, n, avg in rows}
+        trend = []
+        answered_total = 0
+        score_sum = 0.0
+        for i in range(29, -1, -1):
+            day = today - timedelta(days=i)
+            date_str = day.isoformat()
+            n, avg = by_day.get(date_str, (0, None))
+            answered_total += n or 0
+            if avg is not None:
+                score_sum += avg * n
+            trend.append(
+                {
+                    "date": date_str,
+                    "answered": n or 0,
+                    "avg_score": round(avg) if avg is not None else None,
+                }
+            )
+        avg_score = round(score_sum / answered_total) if answered_total else None
+        return {
+            "bank_total": bank_total,
+            "answered_total": answered_total,
+            "done_questions": done_questions,
+            "avg_score": avg_score,
+            "trend": trend,
+        }
+
     # --- 题库浏览（分页 + 筛选） ---
 
     @app.get("/api/bank")

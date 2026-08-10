@@ -26,6 +26,7 @@ from app.models import (
     SessionStatus,
     Source,
     SourceType,
+    User,
 )
 from app.web.routes import _inflight, create_app
 from tests.fakes import FakeEmbedder, FakeLLM
@@ -320,6 +321,78 @@ def test_history_excludes_never_selected_questions(db):
     groups = client.get("/api/history").json()
     stems = [i["stem"] for g in groups for i in g["items"]]
     assert stems == ["选过的题"]
+
+
+def _finish_session(db, question_id, user_id, score, days_ago=0):
+    """造一条 finished + 判分 ok 的会话（ended_at = 今天 - days_ago 天）。"""
+    from app.models import SessionStatus
+
+    s = Session(
+        question_id=question_id,
+        user_id=user_id,
+        kind=SessionKind.open,
+        status=SessionStatus.finished,
+        ended_at=datetime.now() - timedelta(days=days_ago),
+    )
+    db.add(s)
+    commit(db)
+    db.refresh(s)
+    db.add(Judgment(
+        session_id=s.id,
+        scores={"status": "ok"},
+        total_score=score,
+        weak_tags=[],
+    ))
+    commit(db)
+    return s
+
+
+def test_stats_aggregates_trend(db):
+    """stats：答题数按 ended_at 天聚合、平均分、汇总数字正确；failed 判分（total_score=NULL）不计入。"""
+    add_today_question(db, stem="统计题 A", status_today=False)
+    add_today_question(db, stem="统计题 B", status_today=False)
+    add_today_question(db, stem="统计题 C", status_today=False)
+    client = make_client(db, FakeLLM([]))
+    uid = db.scalars(select(User).where(User.username == "testuser")).one().id
+    qs = db.scalars(select(Question)).all()
+    _finish_session(db, qs[0].id, uid, 80, days_ago=0)
+    _finish_session(db, qs[1].id, uid, 60, days_ago=0)
+    _finish_session(db, qs[2].id, uid, None, days_ago=0)  # failed 判分（无总分）
+
+    data = client.get("/api/stats").json()
+    assert data["bank_total"] == 3
+    assert data["answered_total"] == 2  # failed 不计入
+    assert data["avg_score"] == 70
+    assert len(data["trend"]) == 30
+    today_row = data["trend"][-1]
+    assert today_row["answered"] == 2
+    assert today_row["avg_score"] == 70
+
+
+def test_stats_empty_db(db):
+    """stats：无任何答题 → trend 30 天空行，汇总为 0/None。"""
+    client = make_client(db, FakeLLM([]))
+    data = client.get("/api/stats").json()
+    assert len(data["trend"]) == 30
+    assert all(r["answered"] == 0 for r in data["trend"])
+    assert data["answered_total"] == 0
+    assert data["avg_score"] is None
+    assert data["done_questions"] == 0
+
+
+def test_stats_user_isolation(db):
+    """stats per-user：A 的答题不出现在 B 的统计里。"""
+    add_today_question(db, stem="隔离统计题", status_today=False)
+    alice = make_client(db, FakeLLM([]), user_role="user", username="alice")
+    bob = make_client(db, FakeLLM([]), user_role="user", username="bob")
+    uid = db.scalars(select(User).where(User.username == "alice")).one().id
+    q = db.scalars(select(Question)).one()
+    _finish_session(db, q.id, uid, 90, days_ago=0)
+
+    a = alice.get("/api/stats").json()
+    b = bob.get("/api/stats").json()
+    assert a["answered_total"] == 1
+    assert b["answered_total"] == 0
 
 
 def test_today_empty_list(db):

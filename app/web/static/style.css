@@ -149,7 +149,7 @@ body {
 .sidebar.collapsed h1, .sidebar.collapsed nav, .sidebar.collapsed .sidebar-daily, .sidebar.collapsed .sidebar-upload, .sidebar.collapsed .sidebar-logout { display: none; }
 .sidebar.collapsed #sidebar-toggle { border: none; }
 
-main { flex: 1; max-width: 660px; margin: 28px auto; padding: 0 20px 60px; min-width: 0; }
+main { flex: 1; max-width: 880px; margin: 28px auto; padding: 0 20px 60px; min-width: 0; }
 
 .primary, #result-back, #answer-back, #detail-back, #detail-delete, #review-back {
   border: 1px solid var(--line-dark);
@@ -182,6 +182,133 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 
 .card-list { display: flex; flex-direction: column; }
+
+/* 右侧日历面板附加内容（打卡圆点 / 当日完成情况 / 答题趋势 / 概览） */
+.panel-extra {
+  margin-top: 14px;
+  border-top: 1px solid var(--line-dark);
+  padding-top: 12px;
+}
+.panel-title {
+  font-family: var(--serif);
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  letter-spacing: 1px;
+  color: var(--ink);
+}
+.panel-line { font-size: 13px; margin: 0 0 6px; }
+
+/* 当日完成进度条 */
+.progress-track {
+  height: 8px;
+  border: 1px solid var(--line-dark);
+  border-radius: 4px;
+  background: var(--card);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--red);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+/* 日历格圆点：空心 = 有题未做，实心 = 有题已答 */
+.calendar-cell { position: relative; }
+.cal-dot {
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--red);
+  background: transparent;
+}
+.calendar-cell.done .cal-dot { background: var(--red); }
+
+/* 答题趋势柱状图 */
+.trend-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 110px;
+}
+.trend-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  height: 100%;
+  min-width: 0;
+}
+.trend-bar {
+  width: 100%;
+  max-width: 22px;
+  background: var(--red-soft);
+  border: 1px solid var(--line-dark);
+  border-radius: 2px 2px 0 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  position: relative;
+  min-height: 2px;
+}
+.trend-bar span {
+  position: absolute;
+  top: -16px;
+  font-size: 10px;
+  color: var(--ink-soft);
+}
+.trend-day {
+  font-size: 10px;
+  color: var(--ink-soft);
+  margin-top: 4px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* 概览数字 */
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px 6px;
+}
+.ov-item {
+  text-align: center;
+  padding: 8px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.ov-num {
+  display: block;
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--red);
+}
+.ov-label {
+  font-size: 11px;
+  color: var(--ink-soft);
+  letter-spacing: 1px;
+}
+
+/* 空状态 */
+.empty-state {
+  text-align: center;
+  padding: 34px 22px;
+}
+.empty-mark {
+  display: block;
+  font-size: 34px;
+  line-height: 1;
+  color: var(--line-dark);
+  margin-bottom: 10px;
+}
+.empty-state p { margin: 2px 0; }
 
 /* 档案抬头（今日统计） */
 .summary-card {

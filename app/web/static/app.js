@@ -28,6 +28,8 @@ const state = {
   calYear: null,
   calMonth: null,
   historyDates: new Set(),
+  historyDone: {},
+  stats: null,
   editingQuestion: null,
 };
 
@@ -44,17 +46,27 @@ function show(view) {
     btn.classList.toggle("nav-active", btn.dataset.view === view);
   });
   const panel = $("#calendar-panel");
-  if (view === "today" || view === "history") {
+  if (view === "today" || view === "history" || view === "bank") {
     state.calendarMode = view;
     panel.classList.toggle("hidden", window.innerWidth <= 768); // 移动端经「日历」按钮展开
     if (!panel.classList.contains("hidden")) renderCalendar();
   } else {
     panel.classList.add("hidden");
   }
-  $("#calendar-toggle").classList.toggle("hidden", !(view === "today" || view === "history"));
-  if (view === "today") loadToday(state.todayDate || undefined);
-  if (view === "bank") loadBank();
-  if (view === "history") loadHistory();
+  $("#calendar-toggle").classList.toggle("hidden", !(view === "today" || view === "history" || view === "bank"));
+  if (view === "today") {
+    loadToday(state.todayDate || undefined);
+    loadHistory(); // 圆点数据
+  }
+  if (view === "bank") {
+    loadBank();
+    loadStats();
+    loadHistory(); // 圆点数据
+  }
+  if (view === "history") {
+    loadHistory();
+    loadStats();
+  }
   if (HASHABLE.has(view) && location.hash !== "#" + view) location.hash = view;
 }
 
@@ -199,7 +211,7 @@ async function loadBank() {
   const list = $("#bank-list");
   list.innerHTML = "";
   if (!data.items.length) {
-    list.innerHTML = '<div class="card"><p class="meta">无符合条件的题目</p></div>';
+    list.innerHTML = emptyState("暂无符合条件的题目", "调整筛选条件，或去「上传题目」扩充题库");
   }
   for (const q of data.items) {
     const card = document.createElement("div");
@@ -252,9 +264,85 @@ async function loadToday(date) {
       : await api("/api/today");
     state.todayItems = items;
     renderToday();
+    renderPanelExtra();
   } catch (err) {
     uiToast(err.message, true);
   }
+}
+
+// --- 右侧日历面板附加内容：当日完成情况 / 答题趋势 / 概览（随视图切换） ---
+
+async function loadStats() {
+  try {
+    state.stats = await api("/api/stats");
+    renderPanelExtra();
+  } catch (e) {
+    // 统计加载失败静默（不影响主内容）
+  }
+}
+
+function renderPanelExtra() {
+  const box = $("#panel-extra");
+  if (state.view === "today") {
+    renderTodayProgress(box);
+  } else if (state.view === "history") {
+    renderTrendChart(box);
+  } else if (state.view === "bank") {
+    renderStatsOverview(box);
+  }
+}
+
+function renderTodayProgress(box) {
+  const items = state.todayItems || [];
+  const done = items.filter((q) => q.done).length;
+  const pct = items.length ? Math.round((done / items.length) * 100) : 0;
+  box.innerHTML = `
+    <h4 class="panel-title">今日完成情况</h4>
+    <p class="panel-line">${done} / ${items.length} 已答</p>
+    <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>`;
+}
+
+function renderTrendChart(box) {
+  const stats = state.stats;
+  if (!stats) {
+    box.innerHTML = '<h4 class="panel-title">答题趋势</h4><p class="meta">加载中…</p>';
+    return;
+  }
+  const last14 = (stats.trend || []).slice(-14);
+  const max = Math.max(1, ...last14.map((r) => r.answered));
+  const cols = last14
+    .map((r) => {
+      const h = Math.round((r.answered / max) * 100);
+      return `<div class="trend-col" title="${r.date} 答 ${r.answered} 题">
+        <div class="trend-bar" style="height:${h}%">${r.answered ? `<span>${r.answered}</span>` : ""}</div>
+        <span class="trend-day">${r.date.slice(8)}</span>
+      </div>`;
+    })
+    .join("");
+  box.innerHTML = `
+    <h4 class="panel-title">答题趋势</h4>
+    <div class="trend-chart">${last14.length ? cols : '<p class="meta">暂无答题数据</p>'}</div>
+    <p class="meta">${stats.avg_score != null ? `近 30 天共答 ${stats.answered_total} 题 · 平均分 ${stats.avg_score}` : "暂无答题数据"}</p>`;
+}
+
+function renderStatsOverview(box) {
+  const stats = state.stats;
+  if (!stats) {
+    box.innerHTML = '<h4 class="panel-title">概览</h4><p class="meta">加载中…</p>';
+    return;
+  }
+  const items = [
+    ["题库", stats.bank_total],
+    ["已完成", stats.done_questions],
+    ["已答", stats.answered_total],
+    ["平均分", stats.avg_score != null ? stats.avg_score : "—"],
+  ];
+  box.innerHTML =
+    '<h4 class="panel-title">概览</h4><div class="overview-grid">' +
+    items
+      .map(([k, v]) => `<div class="ov-item"><span class="ov-num">${v}</span><span class="ov-label">${k}</span></div>`)
+      .join("") +
+    "</div>";
 }
 
 function renderToday() {
@@ -274,7 +362,9 @@ function renderToday() {
   const list = $("#today-list");
   list.innerHTML = "";
   if (!items.length) {
-    list.innerHTML = `<div class="card"><p class="meta">${state.todayDate ? "该日无题目" : "无符合条件的题目"}</p></div>`;
+    list.innerHTML = state.todayDate
+      ? emptyState("该日无题目", "换个日期看看，或点「立即更新」生成新题")
+      : emptyState("无符合条件的题目", "调整筛选条件，或点「立即更新」获取今日新题");
     return;
   }
   for (const q of items) {
@@ -686,7 +776,7 @@ function renderReviewItems() {
   const list = $("#review-list");
   list.innerHTML = "";
   if (!items.length) {
-    list.innerHTML = '<div class="card"><p class="meta">无符合条件的题目</p></div>';
+    list.innerHTML = emptyState("无符合条件的题目", "换个标签或筛选条件试试");
     return;
   }
   for (const q of items) {
@@ -719,6 +809,10 @@ async function loadHistory() {
     const groups = await api("/api/history");
     state.historyGroups = groups;
     state.historyDates = new Set(groups.map((g) => g.date));
+    state.historyDone = {};
+    for (const g of groups) {
+      state.historyDone[g.date] = (g.items || []).some((i) => i.done);
+    }
     renderCalendar();
     applyFilters();
   } catch (err) {
@@ -757,7 +851,7 @@ function renderHistory(groups) {
   const list = $("#history-list");
   list.innerHTML = "";
   if (!groups.length) {
-    list.innerHTML = '<div class="card"><p class="meta">无符合条件的记录</p></div>';
+    list.innerHTML = emptyState("暂无符合条件的记录", "答过题之后，这里会按日期展示你的作答历史");
     return;
   }
   for (const g of groups) {
@@ -805,6 +899,10 @@ function padDate(n) {
   return String(n).padStart(2, "0");
 }
 
+function emptyState(title, hint) {
+  return `<div class="card empty-state"><span class="empty-mark">○</span><p>${title}</p>${hint ? `<p class="meta">${hint}</p>` : ""}</div>`;
+}
+
 function difficultyStars(n) {
   const c = Math.max(0, Math.min(5, Number(n) || 1));
   return "★".repeat(c) + "☆".repeat(5 - c);
@@ -844,7 +942,11 @@ function renderCalendar() {
   const mode = state.calendarMode;
   $("#calendar-clear").textContent = mode === "history" ? "清除范围" : "回到今日";
   $("#calendar-hint").textContent =
-    mode === "history" ? "点击选择开始日期，再次点击选择结束日期" : "点击选择日期，查看该日题目";
+    mode === "history"
+      ? "点击选择开始日期，再次点击选择结束日期"
+      : mode === "bank"
+        ? "圆点 = 该日有题（实心 = 已答）；点击日期查看该日作答"
+        : "圆点 = 该日有题（实心 = 已答）；点击日期查看该日题目";
   for (let i = 0; i < mondayOffset; i++) {
     const blank = document.createElement("span");
     blank.className = "calendar-cell blank";
@@ -856,7 +958,9 @@ function renderCalendar() {
     cell.type = "button";
     cell.className = "calendar-cell";
     cell.dataset.date = date;
-    cell.textContent = d;
+    const hasQ = date in state.historyDone;
+    cell.innerHTML = `${d}${hasQ ? '<span class="cal-dot"></span>' : ""}`;
+    if (hasQ && state.historyDone[date]) cell.classList.add("done");
     if (date === today) cell.classList.add("today");
     if (mode === "history") {
       const from = state.rangeFrom;
@@ -1369,6 +1473,8 @@ $("#calendar-clear").addEventListener("click", () => {
   const now = new Date();
   if (state.calendarMode === "history") {
     setRange(null, null);
+  } else if (state.calendarMode === "bank") {
+    show("today");
   } else {
     loadToday();
   }
@@ -1388,6 +1494,13 @@ $("#calendar-grid").addEventListener("click", (e) => {
     // 点「今天」不带 date 参数（服务端按自身时区取今日，避免浏览器/服务器时区差导致空列表）
     loadToday(date === todayStr ? undefined : date);
     renderCalendar();
+    return;
+  }
+  if (state.calendarMode === "bank") {
+    // 题库页点击日期 → 历史页筛选该日
+    setRange(date, date);
+    show("history");
+    applyFilters();
     return;
   }
   if (!state.rangeFrom || state.rangeTo) {
