@@ -181,7 +181,7 @@ def test_weak_tags_mapped_deduped_and_capped(db):
     payload = {**VALID, "weak_tags": ["Java 基础", "Java 并发", "高并发场景", "RAG 检索"]}
     llm = FakeLLM([payload])
     judgment = judge(make_question(), TRANSCRIPT, "m", llm)
-    assert judgment.weak_tags == ["Java", "高并发", "RAG"]
+    assert judgment.weak_tags == ["Java", "并发", "RAG"]  # 高并发场景 子串映射到保留词 并发（2026-08-10 词表精简）
 
 
 def test_weak_tags_capped_at_max(db):

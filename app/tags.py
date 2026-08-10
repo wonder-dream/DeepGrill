@@ -6,12 +6,16 @@ prompt 约束选择 + 代码层过滤（generate._validate_questions / judge._pa
 
 标签按大类组织（TAG_CATEGORIES 为唯一数据源，TAG_VOCABULARY 由它展开），
 前端筛选按分类联动（GET /api/tags 提供分类结构）。
+
+2026-08-10 重构：后端基础拆分为语言分类（Java/Python/Go/前端）+ 领域分类
+（数据库与中间件/分布式与高并发/基础设施）；删除上位词/题型词/近义冗余 10 个
+（大模型/Agent框架/混合检索/强化学习/锁/IO/项目深挖/场景题/架构设计/高并发），
+扩充语言专属标签 16 个（Java+5/Python+5/Go+6）。
 """
 
 TAG_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Agent 生态", (
         "Agent",
-        "Agent框架",
         "Multi-Agent",
         "ReAct",
         "Function Calling",
@@ -24,7 +28,6 @@ TAG_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "Transformer",
         "Attention",
         "Tokenizer",
-        "大模型",
         "Prompt工程",
         "上下文工程",
         "微调",
@@ -41,52 +44,72 @@ TAG_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "检索",
         "重排序",
         "文档问答",
-        "混合检索",
     )),
     ("训练与对齐", (
         "预训练",
         "RLHF",
-        "强化学习",
         "数据工程",
         "模型评估",
     )),
-    ("后端基础", (
+    ("Java", (
         "Java",
         "Spring",
-        "MySQL",
-        "Redis",
-        "消息队列",
-        "微服务",
-        "分布式",
-        "高并发",
+        "SpringBoot",
+        "MyBatis",
         "JVM",
-        "网络",
-        "缓存",
-        "并发",
-        "锁",
-        "IO",
+        "JUC",
+        "线程池",
+        "类加载",
+    )),
+    ("Python", (
         "Python",
         "GIL",
         "asyncio",
         "FastAPI",
+        "Django",
+        "Flask",
+        "装饰器",
+        "生成器",
+        "元类",
+    )),
+    ("Go", (
         "Go",
+        "Goroutine",
+        "Channel",
+        "GMP",
+        "GC",
+        "Context",
+        "Gin",
+    )),
+    ("前端", (
+        "前端",
+    )),
+    ("数据库与中间件", (
+        "MySQL",
+        "Redis",
+        "消息队列",
+        "缓存",
+        "数据库",
+    )),
+    ("分布式与高并发", (
+        "微服务",
+        "分布式",
+        "并发",
+    )),
+    ("基础设施", (
         "操作系统",
         "Linux",
         "Docker",
         "K8s",
+        "网络",
         "Git",
-        "数据库",
         "安全",
     )),
     ("通用", (
         "系统设计",
-        "架构设计",
         "算法",
         "数据结构",
         "设计模式",
-        "项目深挖",
-        "场景题",
-        "前端",
         "测试",
     )),
 )

@@ -717,8 +717,8 @@ def test_bank_search_chinese_tag(db):
     client = make_client(db, FakeLLM([]))
     hit = client.get("/api/bank", params={"q": "缓存"}).json()
     assert hit["total"] == 1  # 题干命中（纯题干题无缓存标签）
-    cat = client.get("/api/bank", params={"category": "后端基础", "page_size": 50}).json()
-    assert cat["total"] >= 2  # 分类过滤（中文标签 Java/缓存）都命中
+    cat = client.get("/api/bank", params={"category": "数据库与中间件", "page_size": 50}).json()
+    assert cat["total"] >= 1  # 分类过滤（缓存题命中新分类）
 
 
 def test_review_invalid_tag_400(db):
@@ -744,23 +744,23 @@ def test_review_fallback_same_category(db):
 
     data = client.get("/api/review", params={"tag": "MySQL"}).json()  # 无 MySQL 题
     assert data["fallback"] is True
-    assert data["fallback_category"] == "后端基础"
+    assert data["fallback_category"] == "数据库与中间件"  # MySQL 所在新分类
     stems = [i["stem"] for i in data["items"]]
-    assert "Java 并发题" in stems and "Redis 题" in stems
-    assert "RAG 题" not in stems  # 其他分类不混入
+    assert "Redis 题" in stems  # 回退到同分类（数据库与中间件）题目
+    assert "Java 并发题" not in stems and "RAG 题" not in stems  # 其他分类不混入
 
 
 def test_review_paper_fallback_uses_category_questions(db):
     """复习卷在该标签无题时用分类回退题作素材生成（LLM 失败降级不 500）。"""
     from app.web.routes import _review_paper_cache
 
-    add_today_question(db, stem="Java 并发题", tags=["Java"])
+    add_today_question(db, stem="Redis 缓存题", tags=["Redis"])
     llm = FakeLLM([{"paper": "## 讲义", "recommended_ids": []}])
     client = make_client(db, llm)
 
     data = client.get("/api/review/paper", params={"tag": "MySQL"}).json()
     assert "讲义" in data["paper_html"]
-    assert llm.calls  # 素材来自分类回退题，仍会生成
+    assert llm.calls  # 素材来自分类回退题（数据库与中间件），仍会生成
     with db:
         _review_paper_cache.clear()
 
@@ -783,7 +783,7 @@ def test_review_tags_aggregates_weak_tags(db):
     assert by_tag["RAG"] == 2
     assert by_tag["缓存"] == 1
     assert by_tag["Agent"] == 0
-    assert len(tags) == 68  # 全部词表标签
+    assert len(tags) == 74  # 全部词表标签
     # 有计数的排最前
     counts = [t["count"] for t in tags]
     assert counts[0] == 2 and counts[1] == 1
@@ -793,7 +793,7 @@ def test_review_tags_aggregates_weak_tags(db):
 def test_review_tags_empty_db(db):
     client = make_client(db, FakeLLM([]))
     tags = client.get("/api/review/tags").json()
-    assert len(tags) == 68
+    assert len(tags) == 74
     assert all(t["count"] == 0 for t in tags)
 
 
@@ -806,7 +806,7 @@ def test_tag_categories_structure(db):
     assert [c["name"] for c in cats] == [name for name, _ in TAG_CATEGORIES]
     flat = [t for c in cats for t in c["tags"]]
     assert flat == list(TAG_VOCABULARY)
-    assert len(flat) == 68
+    assert len(flat) == 74
 
 
 # --- 题库浏览 ---
@@ -838,8 +838,8 @@ def test_bank_filter_type_and_category(db):
     assert by_type["total"] == 1
     assert by_type["items"][0]["stem"] == "设计题"
 
-    by_cat = client.get("/api/bank", params={"category": "后端基础"}).json()
-    assert by_cat["total"] == 2  # Java/缓存 均在"后端基础"分类
+    by_cat = client.get("/api/bank", params={"category": "Java"}).json()
+    assert by_cat["total"] == 1  # Java 题在新分类"Java"
 
 
 def test_bank_invalid_params(db):
