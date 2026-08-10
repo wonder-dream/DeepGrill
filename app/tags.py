@@ -69,6 +69,14 @@ TAG_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "GIL",
         "asyncio",
         "FastAPI",
+        "Go",
+        "操作系统",
+        "Linux",
+        "Docker",
+        "K8s",
+        "Git",
+        "数据库",
+        "安全",
     )),
     ("通用", (
         "系统设计",
@@ -78,6 +86,8 @@ TAG_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "设计模式",
         "项目深挖",
         "场景题",
+        "前端",
+        "测试",
     )),
 )
 

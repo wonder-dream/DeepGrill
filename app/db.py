@@ -45,6 +45,7 @@ def init_db(db_url: str) -> None:
         if db_url.startswith("sqlite"):
             event.listen(_engine, "connect", _enable_sqlite_foreign_keys)
             event.listen(_engine, "connect", _enable_sqlite_wal)
+            event.listen(_engine, "connect", _enable_sqlite_busy_timeout)
         SQLModel.metadata.create_all(_engine)
         if db_url.startswith("sqlite"):
             _migrate_selected_at(_engine)
@@ -54,6 +55,7 @@ def init_db(db_url: str) -> None:
             _migrate_attempt_quality(_engine)
             _migrate_cleanup_empty_sessions(_engine)
             _migrate_session_user(_engine)
+            _migrate_token_expires_at(_engine)
     except SQLAlchemyError as e:
         raise StorageError(f"cannot init database {db_url}: {e}") from e
     _factory = sessionmaker(bind=_engine, class_=DBSession, expire_on_commit=False)
@@ -114,6 +116,21 @@ def _migrate_session_user(engine: Engine) -> None:
             conn.execute(text("ALTER TABLE sessions ADD COLUMN user_id INTEGER"))
 
 
+def _migrate_token_expires_at(engine: Engine) -> None:
+    """幂等迁移：user_tokens 表补 expires_at 列，旧 token 回填 created_at + 30 天（B3）。"""
+    with engine.begin() as conn:
+        cols = [row[1] for row in conn.execute(text("PRAGMA table_info(user_tokens)"))]
+        if "expires_at" in cols:
+            return
+        conn.execute(text("ALTER TABLE user_tokens ADD COLUMN expires_at DATETIME"))
+        conn.execute(
+            text(
+                "UPDATE user_tokens SET expires_at = datetime(created_at, '+30 days') "
+                "WHERE expires_at IS NULL"
+            )
+        )
+
+
 def _migrate_embedding(engine: Engine) -> None:
     """轻量迁移：旧库 questions 表补 embedding 列（NULL 由首次去重自动补算）。"""
     with engine.begin() as conn:
@@ -168,6 +185,13 @@ def _enable_sqlite_wal(dbapi_connection, connection_record) -> None:
     """多用户并发读写：WAL 模式（读不阻塞写，20 用户规模更稳）。"""
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.close()
+
+
+def _enable_sqlite_busy_timeout(dbapi_connection, connection_record) -> None:
+    """WAL 下并发写仍可能冲突：busy_timeout 让写等待而非立即报 locked（原为 500）。"""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA busy_timeout = 5000")
     cursor.close()
 
 

@@ -1,4 +1,5 @@
 """多用户认证与数据隔离测试（阶段 A）。"""
+import hashlib
 import pytest
 from datetime import datetime
 from fastapi.testclient import TestClient
@@ -96,6 +97,33 @@ def test_register_quota_full_409(db):
     assert register(c, "overflow").status_code == 409
 
 
+def test_concurrent_register_single_owner(db):
+    """并发注册（双线程）→ 仅 1 个 owner，无双 owner 竞态（B4）。"""
+    import threading
+
+    results = []
+    barrier = threading.Barrier(2)
+
+    def reg(name):
+        barrier.wait()
+        c = bare_client()
+        resp = register(c, name)
+        results.append((name, resp.status_code, resp.json().get("user", {}).get("role")))
+
+    threads = [threading.Thread(target=reg, args=(n,)) for n in ("carol", "dave")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(results) == 2
+    roles = [r[2] for r in results]
+    assert roles.count("owner") == 1  # 只有一个 owner（另一个是 user）
+    with get_session() as s:
+        owners = len(s.scalars(select(User).where(User.role == "owner")).all())
+    assert owners == 1
+
+
 def test_login_success_and_wrong_password(db):
     c = bare_client()
     register(c, "alice", "pass1234")
@@ -145,10 +173,39 @@ def test_me_and_logout(db):
     assert c.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"}).status_code == 401
 
 
+def test_token_expiry_401_and_lazy_cleanup(db):
+    """过期 token：401 且过期行被惰性删除（user_tokens 不无限增长）。"""
+    from datetime import timedelta
+
+    from app.models import UserToken
+
+    c = bare_client()
+    token = register(c, "alice").json()["token"]
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with get_session() as s:
+        row = s.scalars(select(UserToken).where(UserToken.token_hash == token_hash)).one()
+        row.expires_at = datetime.now() - timedelta(seconds=1)  # 强制过期
+        commit(s)
+
+    assert c.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"}).status_code == 401
+    with get_session() as s:
+        assert s.scalars(
+            select(UserToken).where(UserToken.token_hash == token_hash)
+        ).first() is None  # 过期行已删除
+
+
+def test_token_not_expired_still_valid(db):
+    """未过期 token 正常放行（expires_at 在将来）。"""
+    c = bare_client()
+    token = register(c, "alice").json()["token"]
+    assert c.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+
 def test_unauthorized_401(db):
     c = bare_client()
     assert c.get("/api/today").status_code == 401
     assert c.get("/api/bank").status_code == 401
+    assert c.get("/api/questions/1").status_code == 401  # 题目详情匿名不可读（D2）
     assert c.post("/api/sessions", json={"question_id": 1, "kind": "open"}).status_code == 401
 
 

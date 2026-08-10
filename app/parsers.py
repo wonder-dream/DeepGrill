@@ -59,10 +59,10 @@ def _extract_with_mineru(path: Path) -> str:
         return md_files[-1].read_text(encoding="utf-8", errors="replace")
 
 
-def _convert_doc_to_docx(path: Path, soffice: str) -> Path:
-    conv_dir = Path(tempfile.mkdtemp(prefix="libreoffice_conv_"))
+def _convert_doc_to_docx(path: Path, soffice: str, out_dir: Path) -> Path:
+    """LibreOffice 转 docx；输出目录由调用方管理（TemporaryDirectory，用完即清）。"""
     result = subprocess.run(
-        [soffice, "--headless", "--convert-to", "docx", "--outdir", str(conv_dir), str(path)],
+        [soffice, "--headless", "--convert-to", "docx", "--outdir", str(out_dir), str(path)],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -73,7 +73,7 @@ def _convert_doc_to_docx(path: Path, soffice: str) -> Path:
         raise RuntimeError(
             f"LibreOffice 转换失败：{result.stdout[-1000:]}{result.stderr[-1000:]}"
         )
-    out = conv_dir / f"{path.stem}.docx"
+    out = out_dir / f"{path.stem}.docx"
     if not out.exists():
         raise RuntimeError("LibreOffice 未产出 docx")
     return out
@@ -98,8 +98,9 @@ def extract_text(filename: str, data: bytes) -> str:
             f.write(data)
             tmp_doc = Path(f.name)
         try:
-            docx = _convert_doc_to_docx(tmp_doc, soffice)
-            text = _extract_with_mineru(docx)
+            with tempfile.TemporaryDirectory(prefix="libreoffice_conv_") as tmp:
+                docx = _convert_doc_to_docx(tmp_doc, soffice, Path(tmp))
+                text = _extract_with_mineru(docx)
         finally:
             tmp_doc.unlink(missing_ok=True)
     else:  # pdf / docx

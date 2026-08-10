@@ -181,6 +181,7 @@ class UserToken(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id", index=True)
     token_hash: str = Field(unique=True)
+    expires_at: Optional[datetime] = None  # 过期时间（30 天）；旧数据由迁移回填
     created_at: datetime = Field(default_factory=datetime.now)
 
 

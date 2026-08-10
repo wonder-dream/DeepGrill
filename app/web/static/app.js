@@ -22,6 +22,7 @@ const state = {
   calendarMode: "today",
   uploadType: "direct",
   resumeToken: null,
+  resumeCandidates: [],
   reviewRecommended: new Set(),
   calViews: {},
   calYear: null,
@@ -104,18 +105,35 @@ async function api(path, options) {
     opts.headers || {},
     state.token ? { Authorization: `Bearer ${state.token}` } : {}
   );
-  const resp = await fetch(path, opts);
-  if (resp.status === 401) {
-    state.token = null;
-    localStorage.removeItem("token");
-    showAuth();
-    throw new Error("登录已过期，请重新登录");
+  const method = (opts.method || "GET").toUpperCase();
+  const retries = method === "GET" ? 2 : 0; // 仅幂等 GET 重试（POST 重试会重复触发判分轮次）
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    let resp;
+    try {
+      resp = await fetch(path, opts);
+    } catch (e) {
+      if (attempt < retries) {
+        await sleep(500 * (attempt + 1));
+        continue;
+      }
+      throw new Error("网络错误，请检查连接");
+    }
+    if (resp.status === 401) {
+      state.token = null;
+      localStorage.removeItem("token");
+      showAuth();
+      throw new Error("登录已过期，请重新登录");
+    }
+    if (!resp.ok && attempt < retries && resp.status >= 500) {
+      await sleep(500 * (attempt + 1));
+      continue;
+    }
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      throw new Error(body.detail || body.error || `HTTP ${resp.status}`);
+    }
+    return resp.json();
   }
-  if (!resp.ok) {
-    const body = await resp.json().catch(() => ({}));
-    throw new Error(body.detail || body.error || `HTTP ${resp.status}`);
-  }
-  return resp.json();
 }
 
 function fillCategoryOptions(categorySelect) {
@@ -347,9 +365,21 @@ async function submitAnswer() {
 }
 
 async function pollResult() {
+  let fails = 0;
   for (let i = 0; i < 120; i++) {
     await sleep(1000);
-    const s = await api(`/api/sessions/${state.sessionId}`);
+    let s;
+    try {
+      s = await api(`/api/sessions/${state.sessionId}`);
+      fails = 0;
+    } catch (e) {
+      if (++fails >= 5) {
+        $("#answer-status").textContent = `查询失败：${e.message}，请稍后刷新查看`;
+        $("#answer-submit").disabled = false;
+        return;
+      }
+      continue; // 瞬时错误（代理 502/网络抖动）不中断轮询
+    }
     if (s.status === "done") {
       renderResult(s.judgment);
       show("result");
@@ -594,12 +624,15 @@ async function loadReviewHome() {
 async function loadReview(tag) {
   state.reviewTag = tag;
   try {
-    const items = await api(`/api/review?tag=${encodeURIComponent(tag)}`);
-    state.reviewItems = items;
+    const data = await api(`/api/review?tag=${encodeURIComponent(tag)}`);
+    state.reviewItems = data.items || [];
     const list = $("#review-list");
     const entry = $("#review-entry");
     entry.innerHTML = "";
     $("#review-title").textContent = `薄弱点复习：${tag}`;
+    if (data.fallback) {
+      entry.innerHTML = `<p class="meta">该标签暂无题目，展示「${escapeHtml(data.fallback_category || "")}」分类相关题目</p>`;
+    }
     $("#review-back").classList.remove("hidden");
     $("#review-filter").classList.remove("hidden");
     $("#review-paper-card").classList.remove("hidden");
@@ -943,6 +976,17 @@ $("#calendar-close").addEventListener("click", () => {
   $("#calendar-panel").classList.add("hidden");
 });
 $("#daily-run").addEventListener("click", runDaily);
+$("#logout-btn").addEventListener("click", async () => {
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+  } catch (e) {
+    // 网络失败也照常本地登出（token 一并清除）
+  }
+  state.token = null;
+  localStorage.removeItem("token");
+  resetPerUserState();
+  showAuth();
+});
 
 // 上传页（题目列表 / 面经文本 / 简历）
 const UPLOAD_DESC = {
@@ -1145,6 +1189,7 @@ async function pollResumeCandidates(token) {
   setUploadStatus("解析超时，请稍后在题库查看或重试", true);
 }
 function renderCandidates(items) {
+  state.resumeCandidates = items;
   setUploadStatus(`解析完成，共 ${items.length} 题，请校对后确认入库。`);
   const list = $("#candidate-list");
   list.innerHTML = "";
@@ -1163,8 +1208,11 @@ function renderCandidates(items) {
   $("#upload-candidates").classList.remove("hidden");
 }
 $("#candidate-confirm").addEventListener("click", async () => {
-  const items = Array.from(document.querySelectorAll(".candidate-stem")).map((ta) => ({
+  const textareas = Array.from(document.querySelectorAll(".candidate-stem"));
+  const items = textareas.map((ta, idx) => ({
     stem: ta.value.trim(),
+    tags: (state.resumeCandidates[idx] || {}).tags || [],
+    difficulty: (state.resumeCandidates[idx] || {}).difficulty || 1,
   }));
   const valid = items.filter((i) => i.stem.length >= 6);
   if (!valid.length) {
@@ -1185,7 +1233,40 @@ $("#candidate-confirm").addEventListener("click", async () => {
   }
 });
 
-// 数据备份：导入（导出为 <a download> 直链）
+// 数据备份：导出（fetch blob 带 Authorization，裸 <a href> 会 401）；导入为 zip 文件
+$("#export-btn").addEventListener("click", async (e) => {
+  e.preventDefault();
+  try {
+    const resp = await fetch("/api/export", {
+      headers: state.token ? { Authorization: `Bearer ${state.token}` } : {},
+    });
+    if (resp.status === 401) {
+      state.token = null;
+      localStorage.removeItem("token");
+      resetPerUserState();
+      showAuth();
+      return;
+    }
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      uiToast(body.detail || body.error || `HTTP ${resp.status}`, true);
+      return;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const cd = resp.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="?([^";]+)"?/);
+    a.download = m ? m[1] : "interview_backup.zip";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    uiToast("导出失败：" + err.message, true);
+  }
+});
 $("#import-pick").addEventListener("click", () => $("#import-file").click());
 $("#import-file").addEventListener("change", async (e) => {
   const file = e.target.files[0];
@@ -1299,7 +1380,13 @@ $("#calendar-grid").addEventListener("click", (e) => {
   if (!cell || !cell.dataset.date) return;
   const date = cell.dataset.date;
   if (state.calendarMode === "today") {
-    loadToday(date);
+    const todayStr = fmtDate(
+      new Date().getFullYear(),
+      new Date().getMonth() + 1,
+      new Date().getDate()
+    );
+    // 点「今天」不带 date 参数（服务端按自身时区取今日，避免浏览器/服务器时区差导致空列表）
+    loadToday(date === todayStr ? undefined : date);
     renderCalendar();
     return;
   }
@@ -1377,9 +1464,27 @@ $("#detail-back").addEventListener("click", () => {
 });
 $("#detail-delete").addEventListener("click", deleteCurrentAttempt);
 
+// 切换用户时重置所有用户态（登录/登出/401 过期均调用，防跨用户残留）
+function resetPerUserState() {
+  state.reviewRecommended = new Set();
+  state.reviewTag = null;
+  state.resumeToken = null;
+  state.resumeCandidates = [];
+  state.bankPage = 1;
+  state.rangeFrom = null;
+  state.rangeTo = null;
+  state.todayDate = null;
+  state.editingQuestion = null;
+  state.historyGroups = [];
+  $("#review-paper").innerHTML = "";
+  $("#upload-candidates").classList.add("hidden");
+  $("#question-modal").classList.add("hidden");
+}
+
 // --- 认证：登录/注册 ---
 function showAuth() {
   state.user = null;
+  resetPerUserState();
   applyRoleUI();
   document.querySelectorAll(".view").forEach((v) => v.classList.add("hidden"));
   $("#view-auth").classList.remove("hidden");
@@ -1428,6 +1533,7 @@ $("#auth-submit").addEventListener("click", async () => {
     state.token = body.token;
     localStorage.setItem("token", body.token);
     state.user = body.user;
+    resetPerUserState();
     applyRoleUI();
     $("#auth-username").value = "";
     $("#auth-password").value = "";
@@ -1449,21 +1555,31 @@ async function initAuth() {
     showAuth();
     return;
   }
-  try {
-    const me = await api("/api/auth/me");
-    state.user = me;
-    applyRoleUI();
-    loadTagCategories();
-    renderCalendar();
-    const initial = location.hash.slice(1);
-    if (HASHABLE.has(initial)) {
-      show(initial);
-      if (initial === "review") loadReviewHome();
-    } else {
-      show("today");
+  // 网络抖动/服务器繁忙时退避重试，不直接丢登录页（登录已过期由 api() 内 401 分支处理）
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const me = await api("/api/auth/me");
+      state.user = me;
+      applyRoleUI();
+      loadTagCategories();
+      renderCalendar();
+      const initial = location.hash.slice(1);
+      if (HASHABLE.has(initial)) {
+        show(initial);
+        if (initial === "review") loadReviewHome();
+      } else {
+        show("today");
+      }
+      return;
+    } catch (e) {
+      if (String(e.message || "").includes("登录已过期")) return;
+      if (attempt === 2) {
+        showAuth();
+        $("#auth-error").textContent = "连接服务器失败，请检查网络后刷新重试";
+        return;
+      }
+      await sleep(1500 * (attempt + 1));
     }
-  } catch (e) {
-    showAuth();
   }
 }
 

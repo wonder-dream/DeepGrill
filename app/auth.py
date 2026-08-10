@@ -8,6 +8,7 @@ import hmac
 import os
 import re
 import secrets
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
@@ -15,6 +16,8 @@ from .db import commit, get_session
 from .models import User, UserToken
 
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**14, 8, 1
+
+TOKEN_TTL_DAYS = 30  # token 有效期（天），过期惰性删除
 
 MAX_USERS = int(os.environ.get("MAX_USERS", "20"))  # 注册名额（不含 owner）
 
@@ -67,6 +70,7 @@ def create_token(user_id: int) -> str:
             UserToken(
                 user_id=user_id,
                 token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                expires_at=datetime.now() + timedelta(days=TOKEN_TTL_DAYS),
             )
         )
         commit(session)
@@ -82,6 +86,10 @@ def user_from_token(token: str) -> User | None:
             select(UserToken).where(UserToken.token_hash == token_hash)
         ).first()
         if row is None:
+            return None
+        if row.expires_at is not None and row.expires_at < datetime.now():
+            session.delete(row)  # 惰性清理：过期 token 删行
+            commit(session)
             return None
         return session.get(User, row.user_id)
 

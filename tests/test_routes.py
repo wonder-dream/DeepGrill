@@ -56,7 +56,7 @@ def make_config():
     )
 
 
-def make_client(db, llm, runner=None, embedder=None, user_role="owner", **overrides):
+def make_client(db, llm, runner=None, embedder=None, user_role="owner", username="testuser", **overrides):
     """测试客户端：自动创建测试用户（owner）+ token 带在请求头（多用户鉴权后适配）。"""
     from app.auth import create_token, hash_password
     from app.models import User
@@ -70,11 +70,11 @@ def make_client(db, llm, runner=None, embedder=None, user_role="owner", **overri
     )
     with get_session() as session:
         user = session.scalars(
-            select(User).where(User.username == "testuser")
+            select(User).where(User.username == username)
         ).first()
         if user is None:
             user = User(
-                username="testuser",
+                username=username,
                 password_hash=hash_password("testpass1"),
                 role=user_role,
             )
@@ -268,6 +268,38 @@ def test_judgment_reference_used_flag(db):
     body = client.get(f"/api/sessions/{sid2}").json()
     assert body["status"] == "done"
     assert body["judgment"]["reference_used"] is True
+
+
+def test_reference_retrieval_user_isolation(db):
+    """判分参考检索跨用户隔离（A3）：B 作答不得注入 A 的高分回答。"""
+    high = {
+        "scores": {"accuracy": 90, "completeness": 85, "clarity": 85, "depth": 85},
+        "review": "优秀", "reference_answer": "参考答案", "weak_tags": ["RAG"],
+    }
+    seed = add_today_question(db, stem="讲一下 KV Cache 的原理", tags=["KV Cache"])
+    other = add_today_question(db, stem="请讲讲 KV Cache 的实现", tags=["KV Cache"])
+    embedder = FakeEmbedder(
+        vectors={
+            "讲一下 KV Cache 的原理": vec(1),
+            "请讲讲 KV Cache 的实现": vec(1),
+        }
+    )
+    llm = FakeLLM([high, high])
+    alice = make_client(db, llm, embedder=embedder, user_role="user", username="alice")
+    bob = make_client(db, llm, embedder=embedder, user_role="user", username="bob")
+
+    sid1 = alice.post("/api/sessions", json={"question_id": seed.id, "kind": "open"}).json()["session_id"]
+    alice.post(f"/api/sessions/{sid1}/answer", json={"answer": "A 独有的高分回答机密内容"})
+
+    sid2 = bob.post("/api/sessions", json={"question_id": other.id, "kind": "open"}).json()["session_id"]
+    bob.post(f"/api/sessions/{sid2}/answer", json={"answer": "B 自己的回答"})
+    body = bob.get(f"/api/sessions/{sid2}").json()
+    assert body["status"] == "done"
+    assert body["judgment"]["reference_used"] is False  # B 的判分未注入 A 的高分参考
+    bob_prompt = " ".join(
+        m.get("content", "") for m in llm.calls[1] if m["role"] == "user"
+    )
+    assert "A 独有的高分回答机密内容" not in bob_prompt
 
 
 def test_history_contains_unanswered_today_question(db):
@@ -495,7 +527,7 @@ def test_review_returns_matching_questions(db):
     session_id = client.post("/api/sessions", json={"question_id": done_q.id, "kind": "open"}).json()["session_id"]
     client.post(f"/api/sessions/{session_id}/answer", json={"answer": "回答"})
 
-    items = client.get("/api/review", params={"tag": "RAG"}).json()
+    items = client.get("/api/review", params={"tag": "RAG"}).json()["items"]
     assert [i["stem"] for i in items] == ["未做的 RAG 题", "已做的 RAG 题"]  # 未做优先
     assert items[0]["done"] is False
     assert items[1]["done"] is True
@@ -587,7 +619,9 @@ def test_review_excludes_other_tags(db):
     add_today_question(db, stem="Java 题", tags=["Java"])
     add_today_question(db, stem="RAG 检索题", tags=["RAG", "检索"])
     client = make_client(db, FakeLLM([]))
-    items = client.get("/api/review", params={"tag": "RAG"}).json()
+    data = client.get("/api/review", params={"tag": "RAG"}).json()
+    assert data["fallback"] is False
+    items = data["items"]
     assert len(items) == 2  # tags 数组含 "RAG" 元素的才命中，"Java 题"排除
     assert all("RAG" in i["tags"] for i in items)
 
@@ -600,7 +634,40 @@ def test_review_invalid_tag_400(db):
 
 def test_review_no_questions_empty(db):
     client = make_client(db, FakeLLM([]))
-    assert client.get("/api/review", params={"tag": "Agent"}).json() == []
+    data = client.get("/api/review", params={"tag": "Agent"}).json()
+    assert data["items"] == []
+    assert data["fallback"] is True  # 空库时分类回退也为空，但标记已尝试回退
+    assert data["fallback_category"] == "Agent 生态"
+
+
+def test_review_fallback_same_category(db):
+    """判分 weak_tags 指向题库无该标签的题 → 回退同分类题目（修复复习死胡同）。"""
+    add_today_question(db, stem="Java 并发题", tags=["Java"])
+    add_today_question(db, stem="Redis 题", tags=["Redis"])
+    add_today_question(db, stem="RAG 题", tags=["RAG"])
+    client = make_client(db, FakeLLM([]))
+
+    data = client.get("/api/review", params={"tag": "MySQL"}).json()  # 无 MySQL 题
+    assert data["fallback"] is True
+    assert data["fallback_category"] == "后端基础"
+    stems = [i["stem"] for i in data["items"]]
+    assert "Java 并发题" in stems and "Redis 题" in stems
+    assert "RAG 题" not in stems  # 其他分类不混入
+
+
+def test_review_paper_fallback_uses_category_questions(db):
+    """复习卷在该标签无题时用分类回退题作素材生成（LLM 失败降级不 500）。"""
+    from app.web.routes import _review_paper_cache
+
+    add_today_question(db, stem="Java 并发题", tags=["Java"])
+    llm = FakeLLM([{"paper": "## 讲义", "recommended_ids": []}])
+    client = make_client(db, llm)
+
+    data = client.get("/api/review/paper", params={"tag": "MySQL"}).json()
+    assert "讲义" in data["paper_html"]
+    assert llm.calls  # 素材来自分类回退题，仍会生成
+    with db:
+        _review_paper_cache.clear()
 
 
 def test_review_tags_aggregates_weak_tags(db):
@@ -621,7 +688,7 @@ def test_review_tags_aggregates_weak_tags(db):
     assert by_tag["RAG"] == 2
     assert by_tag["缓存"] == 1
     assert by_tag["Agent"] == 0
-    assert len(tags) == 58  # 全部词表标签
+    assert len(tags) == 68  # 全部词表标签
     # 有计数的排最前
     counts = [t["count"] for t in tags]
     assert counts[0] == 2 and counts[1] == 1
@@ -631,7 +698,7 @@ def test_review_tags_aggregates_weak_tags(db):
 def test_review_tags_empty_db(db):
     client = make_client(db, FakeLLM([]))
     tags = client.get("/api/review/tags").json()
-    assert len(tags) == 58
+    assert len(tags) == 68
     assert all(t["count"] == 0 for t in tags)
 
 
@@ -644,7 +711,7 @@ def test_tag_categories_structure(db):
     assert [c["name"] for c in cats] == [name for name, _ in TAG_CATEGORIES]
     flat = [t for c in cats for t in c["tags"]]
     assert flat == list(TAG_VOCABULARY)
-    assert len(flat) == 58
+    assert len(flat) == 68
 
 
 # --- 题库浏览 ---
@@ -879,8 +946,47 @@ def test_upload_resume_generates_candidates(db):
             _resume_candidates.pop(token, None)
 
 
+def test_upload_resume_confirm_cross_user_404(db):
+    """resume 候选 token 绑定创建者：他人 confirm 一律 404（B7 越权拦截）。"""
+    from app.web.routes import _resume_candidates
+
+    content = "# 简历\n\n项目一：Agent 系统"
+    llm = FakeLLM([[
+        {"type": "project", "stem": "讲一下 Agent 系统的技术难点和取舍", "tags": ["Agent"],
+         "difficulty": 3, "good_criteria": ["真实"], "bad_criteria": ["编造"]},
+    ]])
+    alice = make_client(db, llm, user_role="owner", username="alice")
+    bob = make_client(db, FakeLLM([]), user_role="owner", username="bob")
+    body = alice.post("/api/upload", json={
+        "filename": "简历.md", "content": content, "type": "resume",
+    }).json()
+    token = body["token"]
+    try:
+        for _ in range(100):
+            data = alice.get(f"/api/upload/candidates/{token}").json()
+            if data["status"] in ("done", "failed"):
+                break
+            time.sleep(0.05)
+        assert data["status"] == "done"
+        resp = bob.post("/api/upload/confirm", json={
+            "token": token,
+            "items": [{"stem": data["items"][0]["stem"]}],
+        })
+        assert resp.status_code == 404
+        with db:
+            assert token in _resume_candidates  # 未消费：alice 自己仍可确认
+        ok = alice.post("/api/upload/confirm", json={
+            "token": token,
+            "items": [{"stem": data["items"][0]["stem"]}],
+        })
+        assert ok.status_code == 200
+    finally:
+        with db:
+            _resume_candidates.pop(token, None)
+
+
 def test_upload_resume_confirm_imports(db):
-    """简历候选确认：编辑后的题干入库（project 题），重复题被去重拒收。"""
+    """简历候选确认：编辑后的题干入库（project 题，保留候选 tags/difficulty），重复题被去重拒收。"""
     from app.web.routes import _resume_candidates
 
     content = "# 简历\n\n项目一：Agent 系统"
@@ -899,12 +1005,13 @@ def test_upload_resume_confirm_imports(db):
             if data["status"] in ("done", "failed"):
                 break
             time.sleep(0.05)
-        edited = data["items"][0]["stem"] + "？请说明设计取舍。"
+        cand = data["items"][0]
+        edited = cand["stem"] + "？请说明设计取舍。"
         resp = client.post("/api/upload/confirm", json={
             "token": token,
             "items": [
-                {"stem": edited},
-                {"stem": data["items"][0]["stem"]},  # 与已入库题重复 → dedup 拒收
+                {"stem": edited, "tags": cand["tags"], "difficulty": cand["difficulty"]},
+                {"stem": cand["stem"]},  # 与已入库题重复 → dedup 拒收
             ],
         })
         assert resp.status_code == 200
@@ -912,12 +1019,15 @@ def test_upload_resume_confirm_imports(db):
             from sqlalchemy import text as _t
             rows = []
             for n in range(100):  # confirm 为后台任务，轮询等待入库完成
-                rows = db.exec(_t("SELECT stem FROM questions WHERE source_id = :i"),
+                rows = db.exec(_t("SELECT stem, tags, difficulty FROM questions WHERE source_id = :i"),
                                params={"i": body["source_id"]}).all()
                 if rows:
                     break
                 time.sleep(0.05)
-            assert sorted(r[0] for r in rows) == sorted([edited, data["items"][0]["stem"]])
+            assert sorted(r[0] for r in rows) == sorted([edited, cand["stem"]])
+            by_stem = {r[0]: r for r in rows}
+            assert by_stem[edited][1] == '["Agent"]'  # 候选标签保留（JSON 文本）
+            assert by_stem[edited][2] == 3            # 候选难度保留
     finally:
         with db:
             _resume_candidates.pop(token, None)
@@ -1137,6 +1247,41 @@ def test_friendly_upload_error_kinds():
     assert "其他奇怪错误" in _friendly_upload_error(RuntimeError("其他奇怪错误"))
 
 
+def test_upload_parse_serialized(monkeypatch, db):
+    """并发二进制上传：MinerU 解析串行（Semaphore），解析最大并发恒为 1（防 OOM）。"""
+    from app.web.routes import _upload_tasks
+    import threading
+
+    state = {"active": 0, "max": 0}
+    lock = threading.Lock()
+
+    def fake_extract(filename, data):
+        with lock:
+            state["active"] += 1
+            state["max"] = max(state["max"], state["active"])
+        time.sleep(0.15)
+        with lock:
+            state["active"] -= 1
+        return "Q: 讲一下 HashMap 底层原理"
+
+    monkeypatch.setattr("app.web.routes.extract_text", fake_extract)
+    client = make_client(db, FakeLLM([]))
+    t1 = client.post("/api/upload", json={
+        "filename": "a.pdf", "content_base64": base64.b64encode(b"a").decode(), "type": "direct",
+    }).json()["token"]
+    t2 = client.post("/api/upload", json={
+        "filename": "b.pdf", "content_base64": base64.b64encode(b"b").decode(), "type": "direct",
+    }).json()["token"]
+    try:
+        assert _poll_upload_status(client, t1)["status"] == "done"
+        assert _poll_upload_status(client, t2)["status"] == "done"
+        assert state["max"] == 1  # 两个解析请求被信号量串行化
+    finally:
+        with db:
+            _upload_tasks.pop(t1, None)
+            _upload_tasks.pop(t2, None)
+
+
 def test_upload_binary_pdf_direct(monkeypatch, db):
     """PDF 二进制上传：解析完成后按内容识别为 direct 模式入库。"""
     from app.web.routes import _upload_tasks
@@ -1331,3 +1476,44 @@ def test_import_backup_invalid(db):
     assert client.post("/api/import", json={
         "content_base64": base64.b64encode(buf.getvalue()).decode(),
     }).status_code == 400
+
+
+def test_import_backup_rejects_old_single_user_format(db):
+    """旧单用户备份（无 users/user_tokens/user_picks）→ 400 拒绝（B8）。"""
+    import base64
+    import io
+    import sqlite3
+    import zipfile
+
+    tmp = sqlite3.connect(":memory:")
+    for t in ("questions", "sources", "sessions", "attempts", "judgments", "task_logs"):
+        tmp.execute(f"CREATE TABLE {t} (id INTEGER PRIMARY KEY)")
+    tmp.commit()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("interview.db", tmp.serialize())
+
+    client = make_client(db, FakeLLM([]))
+    resp = client.post("/api/import", json={
+        "content_base64": base64.b64encode(buf.getvalue()).decode(),
+    })
+    assert resp.status_code == 400
+    assert "用户数据" in resp.json()["detail"]
+
+
+def test_default_embedder_factory_singleton():
+    """默认 embedder 工厂返回同一实例（防并发答题/上传重复加载 bge-m3 打满 4C8G）。"""
+    from app.web.routes import _default_embedder_factory
+
+    factory = _default_embedder_factory()
+    assert factory() is factory()
+
+
+def test_sqlite_busy_timeout_set(db):
+    """连接级 PRAGMA busy_timeout=5000 生效（WAL 下并发写等待而非立即报 locked）。"""
+    from sqlalchemy import text as _t
+
+    from app.db import engine
+
+    with engine().connect() as conn:
+        assert conn.execute(_t("PRAGMA busy_timeout")).scalar() == 5000

@@ -18,7 +18,7 @@ from pathlib import Path
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import cast, func, select, String
+from sqlalchemy import cast, func, or_, select, String
 
 from .. import db
 from ..auth import (
@@ -61,6 +61,24 @@ from ..tags import TAG_CATEGORIES, TAG_VOCABULARY
 from . import static_dir
 
 logger = logging.getLogger(__name__)
+
+_shared_embedder = None
+
+
+def _default_embedder_factory():
+    """默认 embedder 工厂：进程内共享单例（lazy 加载）。
+
+    并发答题/上传共用一份 bge-m3（~2.3GB），避免每次判分参考检索都
+    新建实例导致 4C8G 内存打满、服务卡死（代理层表现为 502）。
+    """
+
+    def factory() -> Embedder:
+        global _shared_embedder
+        if _shared_embedder is None:
+            _shared_embedder = Embedder()
+        return _shared_embedder
+
+    return factory
 
 
 def require_user(authorization: str = Header(default="")) -> User:
@@ -128,11 +146,15 @@ def _ensure_today_picks(session, user_id: int) -> list[UserPick]:
 _inflight: set[int] = set()
 _inflight_lock = threading.Lock()
 
+_register_lock = threading.Lock()  # 注册串行：防并发注册双 owner / 超名额竞态（B4）
+
 _resume_candidates: dict[str, dict] = {}
 _resume_lock = threading.Lock()
 
 _upload_tasks: dict[str, dict] = {}
 _upload_lock = threading.Lock()
+
+_parse_semaphore = threading.Semaphore(1)  # 二进制解析串行（MinerU 进程数 GB 内存，防并发 OOM）
 
 _review_paper_cache: dict[str, dict] = {}
 _review_paper_lock = threading.Lock()
@@ -162,7 +184,7 @@ def create_app(
 ) -> FastAPI:
     """构建应用；llm_factory(role)/daily_runner/embedder_factory 可注入（测试用 Fake）。"""
     llm_factory = llm_factory or _default_llm_factory(config)
-    embedder_factory = embedder_factory or (lambda: Embedder())
+    embedder_factory = embedder_factory or _default_embedder_factory()
     daily_runner = daily_runner or (
         lambda: _run_daily_pipeline(config, llm_factory)
     )
@@ -173,7 +195,10 @@ def create_app(
 
     @app.get("/", include_in_schema=False)
     async def index():
-        return FileResponse(Path(static_dir) / "index.html")
+        return FileResponse(
+            Path(static_dir) / "index.html",
+            headers={"Cache-Control": "no-store"},  # index.html 永不过期缓存，防止旧 HTML 配新 JS 白屏
+        )
 
     @app.middleware("http")
     async def auth_rate_limit_middleware(request: Request, call_next):
@@ -199,25 +224,26 @@ def create_app(
         err = validate_username(username) or validate_password(password)
         if err:
             raise HTTPException(status_code=400, detail=err)
-        with db.get_session() as session:
-            exists = session.scalars(
-                select(User).where(User.username == username)
-            ).first()
-            if exists is not None:
-                raise HTTPException(status_code=409, detail="用户名已存在")
-            first = session.scalars(select(User).limit(1)).first() is None
-            if not first and user_count() >= MAX_USERS:
-                raise HTTPException(status_code=409, detail="注册名额已满（20 人）")
-            user = User(
-                username=username,
-                password_hash=hash_password(password),
-                role="owner" if first else "user",
-            )
-            session.add(user)
-            db.commit(session)
-            session.refresh(user)
-            if first:
-                db.backfill_owner_data(session, user.id)
+        with _register_lock:  # 查重 + owner 判定 + 名额 + 建用户原子化（防并发竞态）
+            with db.get_session() as session:
+                exists = session.scalars(
+                    select(User).where(User.username == username)
+                ).first()
+                if exists is not None:
+                    raise HTTPException(status_code=409, detail="用户名已存在")
+                first = session.scalars(select(User).limit(1)).first() is None
+                if not first and user_count() >= MAX_USERS:
+                    raise HTTPException(status_code=409, detail="注册名额已满（20 人）")
+                user = User(
+                    username=username,
+                    password_hash=hash_password(password),
+                    role="owner" if first else "user",
+                )
+                session.add(user)
+                db.commit(session)
+                session.refresh(user)
+                if first:
+                    db.backfill_owner_data(session, user.id)
         token = create_token(user.id)
         return {
             "token": token,
@@ -318,7 +344,7 @@ def create_app(
             return payload
 
     @app.get("/api/questions/{question_id}")
-    def question_detail(question_id: int):
+    def question_detail(question_id: int, user: User = Depends(require_user)):
         with db.get_session() as session:
             q = session.get(Question, question_id)
             if q is None:
@@ -682,14 +708,7 @@ def create_app(
         if tag not in TAG_VOCABULARY:
             raise HTTPException(status_code=400, detail=f"invalid tag: {tag}")
         with db.get_session() as session:
-            questions = list(
-                session.scalars(
-                    select(Question)
-                    .where(cast(Question.tags, String).like(f'%"{tag}"%'))
-                    .order_by(Question.created_at.desc())
-                    .limit(30)
-                )
-            )
+            questions, fallback, fallback_category = _review_questions(session, tag)
             latest = _latest_judgment_by_question(session, user.id)
             items = []
             for q in questions:
@@ -709,14 +728,19 @@ def create_app(
                     item["total_score"] = j.total_score if j.status != STATUS_FAILED else None
                 items.append(item)
             items.sort(key=lambda i: (i["done"], -i["id"]))  # 未做优先，组内新题在前
-            return items
+            return {
+                "items": items,
+                "fallback": fallback,
+                "fallback_category": fallback_category,
+            }
 
     @app.get("/api/review/paper")
     def review_paper(tag: str, user: User = Depends(require_user)):
         """薄弱点复习卷 v2：LLM 生成针对性复习讲义（markdown 转 HTML）+ 推荐练习题目。
 
         同步生成（10-30s）；用户+标签级内存缓存（1 小时 TTL）；LLM 失败降级返回
-        空讲义 + error 提示（不 500），可稍后重试。
+        空讲义 + error 提示（不 500），可稍后重试。该标签无题时回退同分类题目
+        （fallback 语义与 /api/review 一致，讲义仍按原标签主题生成）。
         """
         if tag not in TAG_VOCABULARY:
             raise HTTPException(status_code=400, detail=f"invalid tag: {tag}")
@@ -726,14 +750,7 @@ def create_app(
             if cached is not None and time.time() - cached["ts"] < _review_paper_ttl:
                 return cached["payload"]
         with db.get_session() as session:
-            questions = list(
-                session.scalars(
-                    select(Question)
-                    .where(cast(Question.tags, String).like(f'%"{tag}"%'))
-                    .order_by(Question.created_at.desc())
-                    .limit(30)
-                )
-            )
+            questions, fallback, fallback_category = _review_questions(session, tag)
         if not questions:
             return {"paper_html": "", "recommended_ids": []}
         materials = "\n".join(
@@ -920,9 +937,15 @@ def create_app(
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 )
             }
-            required = {"questions", "sources", "sessions", "attempts", "judgments", "task_logs"}
+            required = {
+                "questions", "sources", "sessions", "attempts", "judgments", "task_logs",
+                "users", "user_tokens", "user_picks",
+            }
             if not required.issubset(tables):
-                raise HTTPException(status_code=400, detail="备份库缺少必要表，无法恢复")
+                raise HTTPException(
+                    status_code=400,
+                    detail="备份不含用户数据（非多用户备份），拒绝导入",
+                )
         finally:
             check_conn.close()
             tmp_check.unlink(missing_ok=True)
@@ -980,7 +1003,7 @@ def create_app(
             if not data:
                 raise HTTPException(status_code=400, detail="文件内容为空")
             token = _start_binary_upload(
-                filename, data, up_type, body.get("count"), llm_factory, embedder_factory
+                filename, data, up_type, body.get("count"), llm_factory, embedder_factory, user.id
             )
             return {"mode": "parsing", "token": token}
         if len(content.encode("utf-8")) > 20 * 1024 * 1024:
@@ -990,7 +1013,7 @@ def create_app(
         if up_type == "resume":
             count = _clamp_resume_count(body.get("count"))
             source = _import_resume(content)
-            token = _start_resume_parse(source.id, count, llm_factory)
+            token = _start_resume_parse(source.id, count, llm_factory, user.id)
             return {"mode": "resume", "token": token, "source_id": source.id}
         if up_type == "facejing" or (up_type == "auto" and not _is_direct_format(content)):
             source = _import_facejing(content, filename)
@@ -1034,16 +1057,20 @@ def create_app(
 
     @app.post("/api/upload/confirm")
     def upload_confirm(body: dict, background: BackgroundTasks, user: User = Depends(require_owner)):
-        """简历候选确认：用户编辑后的题 → 校验 → 去重 → 入库（background 内跑 embedding dedup）。"""
+        """简历候选确认：用户编辑后的题 → 校验 → 去重 → 入库（background 内跑 embedding dedup）。
+
+        token 绑定创建者 user_id：他人 confirm 一律 404（B7 越权拦截）。
+        """
         token = str(body.get("token", ""))
         items = body.get("items", [])
         if not isinstance(items, list) or not items:
             raise HTTPException(status_code=400, detail="no items")
         with _resume_lock:
-            entry = _resume_candidates.pop(token, None)
-            if entry is None:
+            entry = _resume_candidates.get(token)
+            if entry is None or entry.get("user_id") != user.id:
                 raise HTTPException(status_code=404, detail="token not found")
             source_id = entry["source_id"]
+            _resume_candidates.pop(token, None)
         background.add_task(_confirm_project_questions, source_id, items, embedder_factory)
         return {"status": "importing", "source_id": source_id}
 
@@ -1074,7 +1101,7 @@ def _run_answer_job(
                 config.llm.judge_model,
                 judge_llm,
                 session_id=session_id,
-                reference=_reference_for(question, embedder_factory),
+                reference=_reference_for(question, embedder_factory, row.user_id),
                 max_level=_max_level(session_id),
             )
             with db.get_session() as session:
@@ -1092,7 +1119,7 @@ def _run_answer_job(
             )
             result = chain.next_round(answer)
             if result["finished"]:
-                chain.finish(reference=_reference_for(question, embedder_factory))
+                chain.finish(reference=_reference_for(question, embedder_factory, row.user_id))
         else:
             judgment = judge(
                 question,
@@ -1100,7 +1127,7 @@ def _run_answer_job(
                 config.llm.judge_model,
                 judge_llm,
                 session_id=session_id,
-                reference=_reference_for(question, embedder_factory),
+                reference=_reference_for(question, embedder_factory, row.user_id),
             )
             with db.get_session() as session:
                 session.add(judgment)
@@ -1115,8 +1142,11 @@ def _run_answer_job(
             _inflight.discard(session_id)
 
 
-def _reference_for(question, embedder_factory) -> str | None:
-    """判分前检索库内同类高分回答片段；无候选/失败返回 None（judge 降级不注入）。"""
+def _reference_for(question, embedder_factory, user_id: int) -> str | None:
+    """判分前检索库内同类高分回答片段；只检索该用户自己的高分回答（跨用户泄漏修复）。
+
+    无候选/失败返回 None（judge 降级不注入）。
+    """
     try:
         from ..retrieval import HIGH_SCORE, build_reference
 
@@ -1127,6 +1157,7 @@ def _reference_for(question, embedder_factory) -> str | None:
                     .join(Session, Session.question_id == Question.id)
                     .join(Judgment, Judgment.session_id == Session.id)
                     .where(Judgment.total_score >= HIGH_SCORE)
+                    .where(Session.user_id == user_id)
                     .distinct()
                 )
             )
@@ -1348,25 +1379,31 @@ def _tag_direct_questions(source_id: int, llm_factory) -> None:
 
 
 def _import_facejing(content: str, filename: str) -> Source:
-    """面经模式：内容写入 data/uploads/ 并作为 manual 源导入。"""
+    """面经模式：内容写入 data/uploads/ 并作为 manual 源导入；source 入库后删除文件。"""
     from ..crawler.importer import import_file
 
     uploads = Path("data/uploads")
     uploads.mkdir(parents=True, exist_ok=True)
     path = uploads / f"{hashlib.sha256(content.encode('utf-8')).hexdigest()[:12]}.md"
     path.write_text(content, encoding="utf-8")
-    return import_file(path, "manual")
+    try:
+        return import_file(path, "manual")
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def _import_resume(content: str) -> Source:
-    """简历模式：内容写入 data/uploads/resume_*.md（文件名前缀识别 resume 类型）并导入。"""
+    """简历模式：内容写入 data/uploads/resume_*.md（文件名前缀识别 resume 类型）并导入；读后删。"""
     from ..crawler.importer import import_file
 
     uploads = Path("data/uploads")
     uploads.mkdir(parents=True, exist_ok=True)
     path = uploads / f"resume_{hashlib.sha256(content.encode('utf-8')).hexdigest()[:12]}.md"
     path.write_text(content, encoding="utf-8")
-    return import_file(path, "resume")
+    try:
+        return import_file(path, "resume")
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def _clamp_resume_count(value) -> int:
@@ -1376,8 +1413,8 @@ def _clamp_resume_count(value) -> int:
         return 5
 
 
-def _start_resume_parse(source_id: int, count: int, llm_factory) -> str:
-    """后台线程解析简历 → project 候选题（内存 token 态，重启丢失可接受）。"""
+def _start_resume_parse(source_id: int, count: int, llm_factory, user_id: int) -> str:
+    """后台线程解析简历 → project 候选题（内存 token 态，重启丢失可接受）；token 绑定创建者 user_id。"""
     from ..pipeline.generate import generate_project_questions
 
     token = secrets.token_hex(8)
@@ -1385,6 +1422,7 @@ def _start_resume_parse(source_id: int, count: int, llm_factory) -> str:
         _resume_candidates[token] = {
             "status": "running",
             "source_id": source_id,
+            "user_id": user_id,
             "questions": [],
             "error": "",
         }
@@ -1424,7 +1462,7 @@ def _friendly_upload_error(e: Exception) -> str:
 
 
 def _start_binary_upload(
-    filename: str, data: bytes, up_type, count, llm_factory, embedder_factory
+    filename: str, data: bytes, up_type, count, llm_factory, embedder_factory, user_id: int
 ) -> str:
     """二进制文件（pdf/docx/doc）后台任务：提取文本 → 按 type 走现有流程。
 
@@ -1436,11 +1474,12 @@ def _start_binary_upload(
 
     def run() -> None:
         try:
-            text = extract_text(filename, data)
+            with _parse_semaphore:  # 只锁 extract_text（MinerU 内存大户），LLM 生成不排队
+                text = extract_text(filename, data)
             if up_type == "resume":
                 count_n = _clamp_resume_count(count)
                 source = _import_resume(text)
-                cand_token = _start_resume_parse(source.id, count_n, llm_factory)
+                cand_token = _start_resume_parse(source.id, count_n, llm_factory, user_id)
                 with _upload_lock:
                     _upload_tasks[token] = {
                         "status": "done",
@@ -1479,17 +1518,17 @@ def _start_binary_upload(
 
 
 def _confirm_project_questions(source_id: int, items: list[dict], embedder_factory) -> None:
-    """简历候选确认入库：构造 project 题（默认 criteria）→ 与库内 embedding 去重 → 入库。"""
+    """简历候选确认入库：构造 project 题（保留候选 tags/difficulty）→ 与库内 embedding 去重 → 入库。"""
     try:
         from ..pipeline.dedup import dedup
         from ..pipeline.generate import DEFAULT_BAD_CRITERIA, DEFAULT_GOOD_CRITERIA
 
-        stems = [
-            str(i.get("stem", "")).strip()
+        valid = [
+            i
             for i in items
             if isinstance(i, dict) and str(i.get("stem", "")).strip()
         ]
-        if not stems:
+        if not valid:
             logger.warning("confirm: no valid stems for source %s", source_id)
             return
         with db.get_session() as session:
@@ -1498,13 +1537,13 @@ def _confirm_project_questions(source_id: int, items: list[dict], embedder_facto
             Question(
                 source_id=source_id,
                 type=QuestionType.project,
-                stem=s,
-                tags=[],
-                difficulty=1,
+                stem=str(i["stem"]).strip(),
+                tags=[t for t in (i.get("tags") or []) if isinstance(t, str)][:5],
+                difficulty=_clamp_difficulty(i.get("difficulty")),
                 good_criteria=list(DEFAULT_GOOD_CRITERIA),
                 bad_criteria=list(DEFAULT_BAD_CRITERIA),
             )
-            for s in stems
+            for i in valid
         ]
         kept = dedup(questions, pool, embedder_factory())
         with db.get_session() as session:
@@ -1541,6 +1580,41 @@ def _db_url() -> str:
     from ..main import DEFAULT_DB_URL
 
     return f"sqlite:///{DEFAULT_DB_URL}"
+
+
+def _review_questions(session, tag: str, limit: int = 30):
+    """按标签查复习题目；该标签无题时回退到同分类（TAG_CATEGORIES）标签的题目。
+
+    返回 (questions, fallback, fallback_category)：fallback=True 表示已回退，
+    前端据此提示「该标签暂无题目，展示相关分类题目」（判分 weak_tags 可能指向
+    题库无该标签的题，此前复习列表空 + 复习卷死胡同）。
+    """
+    questions = list(
+        session.scalars(
+            select(Question)
+            .where(cast(Question.tags, String).like(f'%"{tag}"%'))
+            .order_by(Question.created_at.desc())
+            .limit(limit)
+        )
+    )
+    if questions:
+        return questions, False, None
+    category = next(
+        (name for name, tags in TAG_CATEGORIES if tag in tags), None
+    )
+    if category is None:
+        return questions, False, None
+    cat_tags = list(dict(TAG_CATEGORIES)[category])
+    patterns = [f'%"{t}"%' for t in cat_tags]
+    questions = list(
+        session.scalars(
+            select(Question)
+            .where(or_(*(cast(Question.tags, String).like(p) for p in patterns)))
+            .order_by(Question.created_at.desc())
+            .limit(limit)
+        )
+    )
+    return questions, True, category
 
 
 def _has_finished_session(session, question_id: int, user_id: int) -> bool:

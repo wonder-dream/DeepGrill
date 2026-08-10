@@ -96,7 +96,7 @@ body {
   gap: 6px;
 }
 
-.sidebar nav button, .sidebar-daily, .sidebar-upload {
+.sidebar nav button, .sidebar-daily, .sidebar-upload, .sidebar-logout {
   border: 1px solid transparent;
   background: transparent;
   color: var(--ink);
@@ -134,10 +134,19 @@ body {
 }
 .sidebar-upload:hover { border-color: var(--red); color: var(--red); }
 
+.sidebar-logout {
+  margin-top: 8px;
+  border: 1px solid var(--line-dark);
+  text-align: center;
+  font-weight: 500;
+  font-size: 13px;
+}
+.sidebar-logout:hover { border-color: var(--red); color: var(--red); }
+
 /* 收起态 */
 .sidebar.collapsed { width: 48px; }
 .sidebar.collapsed .sidebar-head { justify-content: center; border-bottom: 1px solid var(--line-dark); }
-.sidebar.collapsed h1, .sidebar.collapsed nav, .sidebar.collapsed .sidebar-daily, .sidebar.collapsed .sidebar-upload { display: none; }
+.sidebar.collapsed h1, .sidebar.collapsed nav, .sidebar.collapsed .sidebar-daily, .sidebar.collapsed .sidebar-upload, .sidebar.collapsed .sidebar-logout { display: none; }
 .sidebar.collapsed #sidebar-toggle { border: none; }
 
 main { flex: 1; max-width: 660px; margin: 28px auto; padding: 0 20px 60px; min-width: 0; }
@@ -718,7 +727,8 @@ details summary:hover { color: var(--red); }
   body.sidebar-open .sidebar.collapsed h1,
   body.sidebar-open .sidebar.collapsed nav,
   body.sidebar-open .sidebar.collapsed .sidebar-daily,
-  body.sidebar-open .sidebar.collapsed .sidebar-upload { display: flex; }
+  body.sidebar-open .sidebar.collapsed .sidebar-upload,
+  body.sidebar-open .sidebar.collapsed .sidebar-logout { display: flex; }
   body.sidebar-open .sidebar.collapsed #sidebar-toggle { border: 1px solid var(--line-dark); }
   main { margin: 64px auto 40px; padding: 0 14px 60px; max-width: 100%; }
   #calendar-panel {
