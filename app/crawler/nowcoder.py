@@ -145,6 +145,7 @@ def parse_list_response(payload: dict) -> list[dict]:
                 "title": title,
                 "url": _DISCUSS_URL.format(id=moment["id"]),
                 "content": content,
+                "created_at": moment.get("createdAt"),
             }
         )
     return entries

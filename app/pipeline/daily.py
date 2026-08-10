@@ -15,6 +15,7 @@ from ..db import commit, get_session, pick_questions, recycle_stale_today
 from ..models import Question, QuestionType, Source, SourceType, TaskLog
 from .dedup import dedup
 from .generate import generate_from_source, generate_project_questions
+from .quality import filter_quality
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,9 @@ def _generate_phase(config: AppConfig, llm, collected: list, report: dict, embed
                 )
             else:
                 generated = generate_from_source(source, pool, llm)
+            # 入库前质量筛选（测试 FakeLLM 无质量判定响应 → 跳过，与 polish 逻辑一致：失败保守保留）
+            if not hasattr(llm, "responses"):
+                generated, _ = filter_quality(generated, llm)
             kept = dedup(generated, pool, embedder)
             kept = kept[: max_new - accepted]  # D16 严格截断：累计入库不超过上限
         except Exception as e:
@@ -176,6 +180,8 @@ def generate_source_immediately(source_id: int, llm, embedder) -> int:
             )
         else:
             generated = generate_from_source(source, pool, llm)
+        if not hasattr(llm, "responses"):
+            generated, _ = filter_quality(generated, llm)  # 入库前质量筛选（rewrite/delete 丢弃）
         kept = dedup(generated, pool, embedder)
         if not kept:
             return 0
