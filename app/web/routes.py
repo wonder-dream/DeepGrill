@@ -1042,7 +1042,16 @@ def create_app(
             _db.init_db(_db_url_fn())
         with db.get_session() as session:
             total = session.scalars(select(func.count(Question.id))).one()
-        return {"restored": True, "questions": total}
+        new_token = None
+        with db.get_session() as session:
+            imported_user = session.scalars(
+                select(User).where(User.username == user.username)
+            ).first()
+            if imported_user is not None:
+                from ..auth import create_token
+
+                new_token = create_token(imported_user.id)  # 备份库中同用户 → 补新 token 保持登录态
+        return {"restored": True, "questions": total, "new_token": new_token}
 
     # --- 用户上传题目（格式：题目列表 / 面经文本 / 简历；支持 pdf/docx/doc 二进制） ---
 

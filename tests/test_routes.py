@@ -1596,6 +1596,54 @@ def test_import_backup_rejects_old_single_user_format(db):
     assert "用户数据" in resp.json()["detail"]
 
 
+def test_import_backup_keeps_login_for_same_user(tmp_path):
+    """导入备份含当前用户 → 返回新 token，刷新后登录态保持（体验修复）。"""
+    import base64
+    import io
+    import sqlite3
+    import zipfile
+
+    from app.auth import hash_password
+    from app.db import close as _close
+    from app.db import get_session as _gs
+    from app.db import init_db as _init
+    from app.models import Source, SourceType
+
+    real_db = tmp_path / "real.db"
+    other_db = tmp_path / "other.db"
+    _init(f"sqlite:///{real_db}")
+    try:
+        client = make_client(None, FakeLLM([]))  # 创建 testuser（owner）
+        _close()
+        _init(f"sqlite:///{other_db}")
+        with _gs() as s:
+            s.add(User(username="testuser", password_hash=hash_password("testpass1"), role="owner"))
+            commit(s)
+            src = Source(type=SourceType.manual, source_hash="bh", cleaned_text="x")
+            s.add(src)
+            commit(s)
+            s.refresh(src)
+            s.add(Question(source_id=src.id, type=QuestionType.knowledge,
+                           stem="恢复题", tags=[], good_criteria=[], bad_criteria=[]))
+            commit(s)
+        _close()
+        _init(f"sqlite:///{real_db}")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.write(other_db, "interview.db")
+        resp = client.post("/api/import", json={
+            "content_base64": base64.b64encode(buf.getvalue()).decode(),
+        })
+        assert resp.status_code == 200
+        new_token = resp.json().get("new_token")
+        assert new_token
+        assert client.get("/api/auth/me", headers={
+            "Authorization": f"Bearer {new_token}",
+        }).status_code == 200
+    finally:
+        _close()
+
+
 def test_default_embedder_factory_singleton():
     """默认 embedder 工厂返回同一实例（防并发答题/上传重复加载 bge-m3 打满 4C8G）。"""
     from app.web.routes import _default_embedder_factory

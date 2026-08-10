@@ -1057,12 +1057,16 @@ function sleep(ms) {
 document.querySelectorAll("nav button[data-view]").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.body.classList.remove("sidebar-open");
-    if (btn.dataset.view === "review") {
+    const target = btn.dataset.view;
+    if (target === "review") {
       state.reviewTag = null;
       show("review");
       loadReviewHome();
+    } else if (target === "bank") {
+      state.bankPage = 1; // 导航重新进入题库：回到第一页（刷新/后退走 hash 恢复不受影响）
+      show("bank");
     } else {
-      show(btn.dataset.view);
+      show(target);
     }
   });
 });
@@ -1395,6 +1399,11 @@ $("#import-file").addEventListener("change", async (e) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content_base64: btoa(bin) }),
     });
+    if (resp.new_token) {
+      // 导入库含当前用户 → 用新 token 保持登录态（否则刷新后 401 退出）
+      state.token = resp.new_token;
+      localStorage.setItem("token", resp.new_token);
+    }
     uiToast(`恢复成功：题库 ${resp.questions} 题，页面即将刷新`);
     setTimeout(() => location.reload(), 1200);
   } catch (err) {
