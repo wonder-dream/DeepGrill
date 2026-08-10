@@ -36,18 +36,17 @@ MAX_CHARS = 800   # 单块上限（超长按句子边界截断）
 BATCH = 32
 DISTILL_BATCH = 20
 
-DISTILL_PROMPT = """将以下文字改写为**高密度知识要点**（用于面试知识库）：
+DISTILL_PROMPT = """将以下文字逐条改写为**高密度知识要点**（用于面试知识库）：
 
 要求：
 1. 只保留技术性知识点、定义、结论与关键细节，删除叙事、背景故事、口语表达、类比、感慨、重复
 2. 不得添加原文没有的新知识（宁缺毋滥，不确定的删掉）
 3. 代码、术语、数字原样保留
-4. 输出紧凑要点，控制在 150-400 字
+4. 每条输出紧凑要点，控制在 150-400 字
 
-原文：
-{content}
+{numbered}
 
-只输出 JSON，不要其他文字：{{"content": "改写后的知识要点"}}"""
+只输出 JSON，不要其他文字：{{"items": [{{"index": 序号, "content": "改写后的知识要点"}}]}}"""
 
 
 def split_chunks(text: str, title: str) -> list[str]:
@@ -91,23 +90,35 @@ def split_chunks(text: str, title: str) -> list[str]:
 
 
 def distill_chunks(chunks: list[str], llm) -> list[str]:
-    """LLM 蒸馏：逐批改写为高密度知识要点；失败块保留原文（降级不丢）。"""
-    out: list[str] = []
+    """LLM 蒸馏：每批一次调用（输出 JSON 数组按 index 对齐）；缺失/失败块保留原文（降级不丢）。"""
+    out: list[str] = [""] * len(chunks)
     for i in range(0, len(chunks), DISTILL_BATCH):
         batch = chunks[i : i + DISTILL_BATCH]
-        for j, c in enumerate(batch):
-            try:
-                parsed = llm.complete(
-                    [{"role": "user", "content": DISTILL_PROMPT.format(content=c[:MAX_CHARS * 2] * 2)}],
-                    json_schema={},
-                )
-                distilled = parsed.get("content") if isinstance(parsed, dict) else None
-                if isinstance(distilled, str) and distilled.strip():
-                    out.append(distilled.strip())
+        numbered = "\n".join(f"{j + 1}. {c}" for j, c in enumerate(batch))
+        try:
+            parsed = llm.complete(
+                [{"role": "user", "content": DISTILL_PROMPT.format(numbered=numbered)}],
+                json_schema={},
+            )
+            items = parsed.get("items", []) if isinstance(parsed, dict) else []
+            by_idx = {}
+            for item in items:
+                if not isinstance(item, dict):
                     continue
-            except Exception as e:
-                logger.warning("蒸馏块失败（保留原文）：%s", str(e)[:100])
-            out.append(c)  # 降级：保留原文
+                idx = item.get("index")
+                content = item.get("content")
+                try:
+                    idx = int(idx)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(content, str) and content.strip():
+                    by_idx[idx] = content.strip()
+            for j, c in enumerate(batch):
+                out[i + j] = by_idx.get(j + 1, c)  # 缺失降级保留原文
+        except Exception as e:
+            logger.warning("蒸馏批次 %d 失败（全部保留原文）：%s", i // DISTILL_BATCH + 1, str(e)[:100])
+            for j, c in enumerate(batch):
+                out[i + j] = c
     return out
 
 

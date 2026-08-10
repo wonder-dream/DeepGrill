@@ -143,20 +143,33 @@ def test_split_chunks_paragraph_and_code():
 
 
 def test_distill_chunks_rewrites_and_falls_back(db):
-    """蒸馏：LLM 改写为要点；失败块保留原文（降级不丢）。"""
+    """蒸馏：每批一次调用输出 JSON 数组；缺失/失败的块保留原文（降级不丢）。"""
     from tests.fakes import FakeLLM
 
     from scripts.import_knowledge import distill_chunks
 
     llm = FakeLLM([
-        {"content": "高密度要点 1"},
-        Exception("llm down"),  # 该块蒸馏失败 → 保留原文
-        {"content": "高密度要点 3"},
+        {"items": [
+            {"index": 1, "content": "高密度要点 1"},
+            {"index": 3, "content": "高密度要点 3"},
+        ]},  # index 2 缺失 → 保留原文
     ])
     out = distill_chunks(["原文1", "原文2", "原文3"], llm)
     assert out[0] == "高密度要点 1"
-    assert out[1] == "原文2"  # 失败降级
+    assert out[1] == "原文2"  # 缺失降级
     assert out[2] == "高密度要点 3"
+    assert len(llm.calls) == 1  # 批处理：3 块 1 次调用
+
+
+def test_distill_chunks_batch_failure_falls_back(db):
+    """整批失败 → 全部保留原文。"""
+    from tests.fakes import FakeLLM
+
+    from scripts.import_knowledge import distill_chunks
+
+    llm = FakeLLM([Exception("llm down")])
+    out = distill_chunks(["原文A", "原文B"], llm)
+    assert out == ["原文A", "原文B"]
 
 
 def test_import_file_distill_rebuilds(db, tmp_path, monkeypatch):
@@ -188,12 +201,15 @@ def test_import_file_distill_rebuilds(db, tmp_path, monkeypatch):
 
         def complete(self, messages, json_schema=None, timeout=None):
             self.calls += 1
-            return {"content": f"蒸馏后的要点{self.calls}"}
+            return {"items": [
+                {"index": 1, "content": "蒸馏后的要点1"},
+                {"index": 2, "content": "蒸馏后的要点2"},
+            ]}
 
     llm = FakeLLM()
     new, skipped = import_file(doc, FakeEmbed(), llm=llm, distill=True)
     assert new == 2
-    assert llm.calls == 2  # 两块各蒸馏一次
+    assert llm.calls == 1  # 批处理：两块一次调用
     with get_session() as s:
         rows = s.scalars(select(KC)).all()
         assert len(rows) == 2
