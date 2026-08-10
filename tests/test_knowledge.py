@@ -117,15 +117,72 @@ def test_search_multi_takes_max_score_per_chunk(db):
     assert hits[0][1] == "Redis 持久化"
 
 
+def test_knowledge_for_condense_filters_and_condenses(db):
+    """相关性自评：LLM 判定只保留相关块并提炼要点。"""
+    from app.web.routes import _knowledge_for
+
+    _add_chunk(db, 0, "GMP 调度模型 P 队列 work stealing", version=1)
+    _add_chunk(db, 1, "Redis 持久化 RDB", version=1)
+    from tests.fakes import FakeLLM
+
+    llm = FakeLLM([{"kept": [1], "condensed": "GMP：G/M/P 三者职责与协作（来源 [kamacoder/go/gmp]）"}])
+
+    class FakeEmb:
+        def encode(self, texts):
+            import numpy as np
+
+            return [np.asarray(_vec(0), dtype=np.float32) for _ in texts]
+
+    out = _knowledge_for("Go 的 GMP 调度模型", ["Go"], lambda: FakeEmb(), llm=llm)
+    assert out is not None
+    assert "GMP" in out
+    assert "Redis" not in out  # 未保留块不注入
+
+
+def test_knowledge_for_all_irrelevant_returns_none(db):
+    """全部不相关 → 不注入（kept 空数组 → None）。"""
+    from app.web.routes import _knowledge_for
+
+    _add_chunk(db, 0, "GMP 调度模型", version=1)
+    from tests.fakes import FakeLLM
+
+    llm = FakeLLM([{"kept": [], "condensed": ""}])
+
+    class FakeEmb:
+        def encode(self, texts):
+            import numpy as np
+
+            return [np.asarray(_vec(0), dtype=np.float32) for _ in texts]
+
+    assert _knowledge_for("Redis 缓存穿透", ["Redis"], lambda: FakeEmb(), llm=llm) is None
+
+
+def test_knowledge_for_condense_failure_falls_back(db):
+    """自评/精炼失败 → 降级为原文拼接（现状行为，不阻塞判分）。"""
+    from app.web.routes import _knowledge_for
+
+    _add_chunk(db, 0, "GMP 调度模型 P 队列", version=1)
+    from tests.fakes import FakeLLM
+
+    llm = FakeLLM([Exception("llm down")])
+
+    class FakeEmb:
+        def encode(self, texts):
+            import numpy as np
+
+            return [np.asarray(_vec(0), dtype=np.float32) for _ in texts]
+
+    out = _knowledge_for("Go GMP", ["Go"], lambda: FakeEmb(), llm=llm)
+    assert out is not None
+    assert "GMP 调度模型" in out  # 原文块降级注入
+
+
 def test_search_multi_text_coverage_rescue(db):
     """文本覆盖度救回：向量相似度低但含查询关键词的块经混合分命中。"""
     import numpy as np
 
     from app.models import KnowledgeChunk as KC
 
-    # 块 A：向量与 query 正交（相似度 0，过不了阈值），但内容含关键词 "GMP"
-    v_a = np.asarray([0.0] * DIM, dtype=np.float32)
-    v_a[1] = 1.0  # 与 _vec(0) 相似度 0
     with get_session() as s:
         s.add(KC(title="GMP", content="GMP 调度模型 P 队列 work stealing", source_hash="h-gmp",
                  embedding=np.asarray(_vec(1), dtype=np.float32).tobytes()))
@@ -133,9 +190,8 @@ def test_search_multi_text_coverage_rescue(db):
                  embedding=np.asarray(_vec(0), dtype=np.float32).tobytes()))
         commit(s)
     idx = KnowledgeIndex()
-    # 多查询：query1=_vec(0)（命中"无关"块），query2=_vec(2)（无命中）——均不含 GMP 块
-    # 用文本路验证：query_texts 含 GMP 关键词 + 向量路召回候选后混合排序
-    hits = idx.search_multi([_vec(1), _vec(0)], ["GMP", "调度"], k=3)
+    # 文本路：query_texts 含 GMP 关键词，GMP 块向量与查询正交（向量路召回不到）→ 文本路救回
+    hits = idx.search_multi([_vec(0), _vec(1)], ["GMP", "调度"], k=3)
     contents = [c for _, c in hits]
     assert "GMP 调度模型 P 队列 work stealing" in contents
 

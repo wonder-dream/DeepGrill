@@ -821,7 +821,7 @@ def create_app(
             f"- [id={q.id}]（难度 {q.difficulty}/5）{q.stem}"
             for q in questions[:8]
         )
-        knowledge = _knowledge_for(tag, None, embedder_factory)
+        knowledge = _knowledge_for(tag, None, embedder_factory, llm=llm_factory("generate"))
         if knowledge:
             materials += "\n\n【知识资料（供讲义要点核对）】\n" + knowledge
         try:
@@ -1169,7 +1169,7 @@ def _run_answer_job(
             row = session.get(Session, session_id)
             question = session.get(Question, row.question_id)
         judge_llm = llm_factory("judge")
-        knowledge = _knowledge_for(question.stem, question.tags, embedder_factory)
+        knowledge = _knowledge_for(question.stem, question.tags, embedder_factory, llm=judge_llm)
         if row.status == SessionStatus.finished:
             # 判分失败重试：从 attempts 重建 transcript 直接重判，不再续答
             judgment = judge(
@@ -1225,8 +1225,31 @@ def _run_answer_job(
             _inflight.discard(session_id)
 
 
-def _knowledge_for(stem: str, tags, embedder_factory, k: int = 5) -> str | None:
-    """判分/追问/复习卷前检索知识库（多查询 + 混合检索）；无知识/失败返回 None（调用方不注入）。"""
+_KNOWLEDGE_CANDIDATE_K = 8  # 自评阶段候选块数（比注入多，供 LLM 筛选）
+_KNOWLEDGE_CONDENSED_MAX = 1200  # 提炼要点上限
+
+KNOWLEDGE_CONDENSE_PROMPT = """你是知识筛选器。给定一道面试题和若干候选知识块，判断每块与题目是否相关（主题一致、能支撑判分），并对相关块提炼本题要点。
+
+题目：{stem}
+
+候选知识块：
+{numbered}
+
+要求：
+1. 逐块判断相关性：与题目主题一致、包含可支撑判分/追问的知识点 = 相关；仅字面巧合/主题无关 = 不相关
+2. 只保留相关块，从保留块中提炼"本题相关要点"（保留技术结论与关键细节，删除无关内容）
+3. 要点中标注每块出处（如 [kamacoder/go/gmp]），总长不超过 {max_chars} 字
+4. 全部不相关时 kept 输出空数组
+
+只输出 JSON，不要其他文字：{{"kept": [相关块序号], "condensed": "提炼后的要点"}}"""
+
+
+def _knowledge_for(stem: str, tags, embedder_factory, k: int = 5, llm=None) -> str | None:
+    """判分/追问/复习卷前检索知识库（多查询 + 混合检索 + 相关性自评/精炼）。
+
+    - 检索候选 _KNOWLEDGE_CANDIDATE_K 块 → LLM 自评相关 + 提炼要点（合并一次调用）
+    - 全部不相关/无知识/失败 → 返回 None（不注入）；LLM 失败降级为原文拼接（现状）
+    """
     try:
         from ..retrieval import format_knowledge, knowledge_search_multi
 
@@ -1234,9 +1257,34 @@ def _knowledge_for(stem: str, tags, embedder_factory, k: int = 5) -> str | None:
         query_texts = [stem] + tag_list
         embedder = embedder_factory()
         query_vecs = embedder.encode(query_texts)
-        chunks = knowledge_search_multi(query_vecs, query_texts, k)
+        chunks = knowledge_search_multi(query_vecs, query_texts, max(k, _KNOWLEDGE_CANDIDATE_K))
         if not chunks:
             return None
+        if llm is not None:
+            try:
+                numbered = "\n".join(
+                    f"[{i}]（{title}）\n{content}" for i, (title, content) in enumerate(chunks, 1)
+                )
+                parsed = llm.complete(
+                    [{"role": "user", "content": KNOWLEDGE_CONDENSE_PROMPT.format(
+                        stem=stem, numbered=numbered, max_chars=_KNOWLEDGE_CONDENSED_MAX,
+                    )}],
+                    json_schema={},
+                )
+                kept = parsed.get("kept", []) if isinstance(parsed, dict) else []
+                condensed = parsed.get("condensed") if isinstance(parsed, dict) else ""
+                kept_ids = [
+                    i for i in kept if isinstance(i, int) and 1 <= i <= len(chunks)
+                ]
+                if kept_ids and isinstance(condensed, str) and condensed.strip():
+                    return condensed[:_KNOWLEDGE_CONDENSED_MAX * 2]
+                if kept_ids and not (isinstance(condensed, str) and condensed.strip()):
+                    # 判相关但未提炼：退回保留块的原文拼接
+                    return format_knowledge([chunks[i - 1] for i in kept_ids])
+                if isinstance(parsed, dict) and not kept_ids:
+                    return None  # 全部不相关：不注入
+            except Exception as e:
+                logger.warning("knowledge condense failed, fallback to raw: %s", e)
         return format_knowledge(chunks)
     except Exception as e:
         logger.warning("knowledge retrieval failed, skip injection: %s", e)
