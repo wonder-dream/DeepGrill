@@ -37,14 +37,19 @@ def fetch(url: str) -> str:
 
 
 def list_question_links(cat_url: str) -> list[tuple[str, str]]:
-    """目录页 → [(slug, title)]：提取正文区的题目链接（.html），过滤非题目页。"""
+    """目录页 → [(slug, title)]：提取正文区的题目链接（.html），slug 为相对路径（支持多级，如 llm/intro/xxx）。"""
     html = fetch(BASE + cat_url)
     soup = BeautifulSoup(html, "html.parser")
     links = []
     seen = set()
     for a in soup.select("a[href*='.html']"):
         href = a.get("href", "")
-        slug = href.split("/")[-1].replace(".html", "")
+        if not href.startswith("/"):
+            continue  # 站外/相对根链接跳过
+        slug = href.split(".html")[0].lstrip("/")
+        cat_prefix = cat_url.strip("/")
+        if slug.startswith(cat_prefix + "/"):
+            slug = slug[len(cat_prefix) + 1 :]  # 去分类前缀，保留子路径（llm/intro/xxx）
         title = a.get_text(strip=True)
         if not slug or not title or slug in seen:
             continue
@@ -120,13 +125,14 @@ def main() -> None:
 
     ok = skipped = failed = 0
     for slug, title in links:
-        out = cat_dir / f"{slug}.md"
+        out = cat_dir / f"{slug}.md"  # 多级路径自动建子目录
         if out.exists() and not args.force:
             skipped += 1
             continue
         try:
-            html = fetch(f"{BASE}/{args.cat}/{slug}.html")
+            html = fetch(f"{BASE}/{args.cat}/{slug}.html")  # slug 无分类前缀，fetch 需补回
             markdown = extract_article(html)
+            out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(markdown, encoding="utf-8")
             manifest[slug] = title
             ok += 1

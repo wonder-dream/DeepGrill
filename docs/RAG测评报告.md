@@ -65,3 +65,20 @@
 | **第二阶段（自评+精炼）** | **87.5%（7/8）** | 12.5%（1/8） | **0%** |
 
 **结论**：相关性自评 + 精炼显著提升注入质量（胜率 50%→87.5%，落败清零）；误命中在注入前被拦截，语义相关命中被保留并精炼。
+
+---
+
+## 增补：卡码全分类扩展抓取（2026-08-10）
+
+**抓取**：java 65 页 / base 71 页 / llm 78 页（llm 为多级路径 `llm/intro|app|...`，脚本已支持）→ 知识库 **2394 块**（base 514 / java 560 / llm 1093 / go 172 / harness 88），version=5。
+
+**主题命中验证**（检索 top1 全部精准）：
+- Redis 持久化 → `base/redis-persistence-rdb-aof`
+- HashMap put → `java/hashmap-put`
+- TCP 三次握手 → `base/tcp-three-way-handshake`
+- JVM 内存结构 → `java/jvm-memory-structure`
+- 缓存穿透/击穿/雪崩 → `base/redis-cache-stampeding-*`
+
+**负样本语义变化**：知识库覆盖题库主题后，Redis/MySQL/Java 题命中对应主题块是**正确行为**（此前"命中即误命中"定义已过时）；抽查 10 例 9 例主题相关，仅 1 例（Explain type→llm）为语义兜底——由第二阶段自评拦截兜底。
+
+**正样本**：Go 题 Hit@5 98.4%（知识库扩大后仍高），MRR 0.904。
