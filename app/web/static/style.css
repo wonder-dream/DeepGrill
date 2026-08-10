@@ -799,21 +799,6 @@ details summary:hover { color: var(--red); }
   color: #fff;
   font-weight: 600;
 }
-.calendar-cell.has-history::after {
-  content: "";
-  position: absolute;
-  bottom: 3px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--red);
-}
-.calendar-cell.range-start.has-history::after,
-.calendar-cell.range-end.has-history::after {
-  background: #fff;
-}
 .calendar-hint { font-size: 12px; margin: 10px 0 0; text-align: center; }
 
 .filter-bar input[type="date"] {

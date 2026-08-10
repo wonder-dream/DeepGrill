@@ -795,6 +795,23 @@ async function loadDetail(questionId) {
   show("detail");
 }
 
+async function restoreDetailSession() {
+  const raw = sessionStorage.getItem("detail_state");
+  if (!raw) return false;
+  const qid = Number(raw);
+  if (!Number.isInteger(qid)) {
+    sessionStorage.removeItem("detail_state");
+    return false;
+  }
+  try {
+    await loadDetail(qid);
+    return true;
+  } catch (e) {
+    sessionStorage.removeItem("detail_state"); // 题目已删除等：放弃恢复
+    return false;
+  }
+}
+
 async function deleteCurrentAttempt() {
   const idx = state.detailAttempts.findIndex(
     (a) => a.session_id === state.detailSessionId
@@ -852,6 +869,7 @@ function renderAttempt(a) {
 }
 
 async function loadReviewHome() {
+  sessionStorage.removeItem("review_paper_tag"); // 回到复习首页：不再自动恢复复习卷
   let tags;
   try {
     tags = await api("/api/review/tags");
@@ -911,6 +929,12 @@ async function loadReview(tag) {
     $("#review-paper-btn").disabled = false;
     $("#review-paper-btn").textContent = "生成复习卷";
     renderReviewItems();
+    scrollTop();
+    updateHash();
+    // 刷新后自动恢复已生成的复习卷（后端 user:tag 缓存 1h，命中则秒回）
+    if (sessionStorage.getItem("review_paper_tag") === tag) {
+      loadReviewPaper();
+    }
   } catch (err) {
     uiToast(err.message, true);
   }
