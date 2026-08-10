@@ -129,6 +129,11 @@ def import_file(path: Path, embedder, llm=None, distill: bool = False) -> tuple[
     返回 (新增块数, 跳过块数)。
     """
     text = path.read_text(encoding="utf-8", errors="replace")
+    try:
+        rel = path.resolve().relative_to(KNOWLEDGE_DIR.resolve())
+        title = str(rel.with_suffix("")).replace("\\", "/")  # 子目录层级作 title（如 kamacoder/go/go_gmp_model）
+    except ValueError:
+        title = path.stem  # --file 外部路径：退回文件名
     chunks = split_chunks(text, path.stem)
     if distill:
         if llm is None:
@@ -145,7 +150,7 @@ def import_file(path: Path, embedder, llm=None, distill: bool = False) -> tuple[
         }
         if distill:  # 重建语义：删除同源旧块
             old = session.scalars(
-                select(KnowledgeChunk).where(KnowledgeChunk.title == path.stem)
+                select(KnowledgeChunk).where(KnowledgeChunk.title == title)
             ).all()
             for o in old:
                 session.delete(o)
@@ -156,7 +161,7 @@ def import_file(path: Path, embedder, llm=None, distill: bool = False) -> tuple[
         if h in existing:
             continue
         new_chunks.append(KnowledgeChunk(
-            title=path.stem,
+            title=title,
             content=c,
             source_hash=h,
         ))
@@ -211,12 +216,12 @@ def main() -> None:
         if not KNOWLEDGE_DIR.is_dir():
             sys.exit(f"目录不存在: {KNOWLEDGE_DIR}（请创建并放入八股文 md/txt）")
         files = sorted(
-            p for p in KNOWLEDGE_DIR.iterdir()
+            p for p in KNOWLEDGE_DIR.rglob("*")
             if p.is_file() and p.suffix.lower() in (".md", ".txt")
         )
-    if not files:
-        logger.info("没有可导入的文档")
-        return
+        if not files:
+            logger.info("没有可导入的文档")
+            return
 
     total_new = 0
     for f in files:

@@ -309,7 +309,7 @@ def knowledge_search_multi(
 
 
 def _extract_query_terms(query_texts: list[str]) -> list[str]:
-    """查询关键词：短片段（tags，≤8 字符无空格）整体作词；长句只提英文数字 token。
+    """查询关键词：短片段（tags，≤8 字符无空格）整体作词；长句只提英文数字 token（≥3 字符，滤过泛词）。
 
     文本路 LIKE 匹配用（中文无需分词，短词直接匹配；长句整句匹配无意义）。
     """
@@ -323,7 +323,7 @@ def _extract_query_terms(query_texts: list[str]) -> list[str]:
             if text not in terms:
                 terms.append(text)
         else:
-            for tok in re.findall(r"[A-Za-z][A-Za-z0-9_]{1,}", text):
+            for tok in re.findall(r"[A-Za-z][A-Za-z0-9_]{2,}", text):  # ≥3 字符，滤 "go"/"io" 等过泛词
                 if tok not in terms:
                     terms.append(tok)
     return terms
