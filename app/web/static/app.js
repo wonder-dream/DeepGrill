@@ -16,6 +16,7 @@ const state = {
   tagCategories: null,
   allTags: [],
   bankPage: 1,
+  bankPageSize: 20,
   rangeFrom: null,
   rangeTo: null,
   todayDate: null,
@@ -188,7 +189,7 @@ async function loadTagCategories() {
 async function loadBank() {
   const params = new URLSearchParams({
     page: state.bankPage,
-    page_size: 20,
+    page_size: state.bankPageSize,
   });
   const typeFilter = $("#filter-bank-type").value;
   const categoryFilter = $("#filter-bank-category").value;
@@ -254,6 +255,24 @@ async function loadBank() {
   $("#bank-page-info").textContent = `第 ${data.page} / ${totalPages} 页`;
   $("#bank-prev").disabled = data.page <= 1;
   $("#bank-next").disabled = data.page >= totalPages;
+  const goto = $("#bank-goto");
+  goto.max = String(totalPages);
+  goto.value = "";
+  scrollTop();
+  updateHash();
+}
+
+function gotoBankPage() {
+  const input = $("#bank-goto");
+  const n = Number(input.value);
+  const total = Number(input.max) || 1;
+  if (!Number.isInteger(n) || n < 1 || n > total) {
+    uiToast(`请输入 1-${total} 的页码`, true);
+    return;
+  }
+  if (n === state.bankPage) return;
+  state.bankPage = n;
+  loadBank();
 }
 
 async function loadToday(date) {
@@ -1503,13 +1522,6 @@ $("#calendar-grid").addEventListener("click", (e) => {
     // 点「今天」不带 date 参数（服务端按自身时区取今日，避免浏览器/服务器时区差导致空列表）
     loadToday(date === todayStr ? undefined : date);
     renderCalendar();
-    return;
-  }
-  if (state.calendarMode === "bank") {
-    // 题库页点击日期 → 历史页筛选该日
-    setRange(date, date);
-    show("history");
-    applyFilters();
     return;
   }
   if (!state.rangeFrom || state.rangeTo) {
