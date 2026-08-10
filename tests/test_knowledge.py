@@ -140,3 +140,61 @@ def test_split_chunks_paragraph_and_code():
     assert any("```python" in c and c.rstrip().endswith("```") for c in chunks)  # 代码块完整
     assert len(chunks) >= 3
     assert para1 in chunks
+
+
+def test_distill_chunks_rewrites_and_falls_back(db):
+    """蒸馏：LLM 改写为要点；失败块保留原文（降级不丢）。"""
+    from tests.fakes import FakeLLM
+
+    from scripts.import_knowledge import distill_chunks
+
+    llm = FakeLLM([
+        {"content": "高密度要点 1"},
+        Exception("llm down"),  # 该块蒸馏失败 → 保留原文
+        {"content": "高密度要点 3"},
+    ])
+    out = distill_chunks(["原文1", "原文2", "原文3"], llm)
+    assert out[0] == "高密度要点 1"
+    assert out[1] == "原文2"  # 失败降级
+    assert out[2] == "高密度要点 3"
+
+
+def test_import_file_distill_rebuilds(db, tmp_path, monkeypatch):
+    """蒸馏导入：先删同源旧块再导入（重建语义，防残留重复）。"""
+    from pathlib import Path
+
+    from sqlalchemy import select
+
+    from app.models import KnowledgeChunk as KC
+    from scripts.import_knowledge import import_file
+
+    doc = Path(tmp_path) / "agent.md"
+    doc.write_text(("段落内容。" * 40) + "\n\n" + ("要点内容。" * 40), encoding="utf-8")
+
+    class FakeEmbed:
+        def encode(self, texts):
+            import numpy as np
+
+            return [np.asarray([0.1] * 8, dtype=np.float32) for _ in texts]
+
+    with get_session() as s:
+        s.add(KC(title="agent", content="旧块", source_hash="old-h",
+                 embedding=b"old"))
+        commit(s)
+
+    class FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, json_schema=None, timeout=None):
+            self.calls += 1
+            return {"content": f"蒸馏后的要点{self.calls}"}
+
+    llm = FakeLLM()
+    new, skipped = import_file(doc, FakeEmbed(), llm=llm, distill=True)
+    assert new == 2
+    assert llm.calls == 2  # 两块各蒸馏一次
+    with get_session() as s:
+        rows = s.scalars(select(KC)).all()
+        assert len(rows) == 2
+        assert all(r.content.startswith("蒸馏后的要点") for r in rows)  # 旧块已删除重建

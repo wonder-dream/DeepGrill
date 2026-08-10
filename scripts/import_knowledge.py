@@ -1,10 +1,13 @@
 """知识库导入（RAG）：扫描 data/knowledge/ 的 md/txt → 切块 → bge-m3 向量化 → 入库 → version+1。
 
 跑法：
-    uv run python scripts/import_knowledge.py            # 全量扫描导入
+    uv run python scripts/import_knowledge.py             # 全量扫描导入
     uv run python scripts/import_knowledge.py --file a.md # 只导入指定文件（可多次）
+    uv run python scripts/import_knowledge.py --distill   # LLM 蒸馏（讲解文 → 高密度知识点）
 
 - 切块：段落优先（空行分隔），500-800 字/块；代码块（```）边界完整保留不切断
+- --distill：LLM 逐批蒸馏（保留技术要点、删叙事/口语/类比，不添加新知识；失败降级保留原文）；
+  蒸馏前删除该文档旧块（重建语义，防残留重复）；适合讲解型/叙事型文档（信息密度低）
 - 幂等：内容 hash 去重，重复导入跳过；可反复执行
 - 导入成功后 knowledge_meta.version +1，FAISS 索引下次查询自动重建（无需重启）
 """
@@ -21,6 +24,7 @@ from sqlalchemy import select
 from app.config import load_config, secret_value
 from app.db import commit, get_session, init_db
 from app.embed import Embedder, _to_bytes
+from app.llm.llm_client import LLMClient
 from app.models import KnowledgeChunk, KnowledgeMeta
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -30,6 +34,20 @@ KNOWLEDGE_DIR = Path("data/knowledge")
 MIN_CHARS = 100   # 小于该长度的块丢弃（碎片）
 MAX_CHARS = 800   # 单块上限（超长按句子边界截断）
 BATCH = 32
+DISTILL_BATCH = 20
+
+DISTILL_PROMPT = """将以下文字改写为**高密度知识要点**（用于面试知识库）：
+
+要求：
+1. 只保留技术性知识点、定义、结论与关键细节，删除叙事、背景故事、口语表达、类比、感慨、重复
+2. 不得添加原文没有的新知识（宁缺毋滥，不确定的删掉）
+3. 代码、术语、数字原样保留
+4. 输出紧凑要点，控制在 150-400 字
+
+原文：
+{content}
+
+只输出 JSON，不要其他文字：{{"content": "改写后的知识要点"}}"""
 
 
 def split_chunks(text: str, title: str) -> list[str]:
@@ -72,10 +90,40 @@ def split_chunks(text: str, title: str) -> list[str]:
     return [c for c in chunks if len(c) >= MIN_CHARS]
 
 
-def import_file(path: Path, embedder) -> tuple[int, int]:
-    """导入单个文档：切块 → 向量化 → 入库（hash 幂等）。返回 (新增块数, 跳过块数)。"""
+def distill_chunks(chunks: list[str], llm) -> list[str]:
+    """LLM 蒸馏：逐批改写为高密度知识要点；失败块保留原文（降级不丢）。"""
+    out: list[str] = []
+    for i in range(0, len(chunks), DISTILL_BATCH):
+        batch = chunks[i : i + DISTILL_BATCH]
+        for j, c in enumerate(batch):
+            try:
+                parsed = llm.complete(
+                    [{"role": "user", "content": DISTILL_PROMPT.format(content=c[:MAX_CHARS * 2] * 2)}],
+                    json_schema={},
+                )
+                distilled = parsed.get("content") if isinstance(parsed, dict) else None
+                if isinstance(distilled, str) and distilled.strip():
+                    out.append(distilled.strip())
+                    continue
+            except Exception as e:
+                logger.warning("蒸馏块失败（保留原文）：%s", str(e)[:100])
+            out.append(c)  # 降级：保留原文
+    return out
+
+
+def import_file(path: Path, embedder, llm=None, distill: bool = False) -> tuple[int, int]:
+    """导入单个文档：切块 →（可选蒸馏）→ 向量化 → 入库（hash 幂等）。
+
+    distill=True 时先删除该文档（同 title）旧块再导入（重建语义，防残留重复）。
+    返回 (新增块数, 跳过块数)。
+    """
     text = path.read_text(encoding="utf-8", errors="replace")
     chunks = split_chunks(text, path.stem)
+    if distill:
+        if llm is None:
+            raise ValueError("distill 模式需要 llm")
+        chunks = distill_chunks(chunks, llm)
+        logger.info("文件 %s：蒸馏后 %d 块", path.name, len(chunks))
     logger.info("文件 %s：切块 %d", path.name, len(chunks))
     with get_session() as session:
         existing = {
@@ -84,6 +132,13 @@ def import_file(path: Path, embedder) -> tuple[int, int]:
                 select(KnowledgeChunk.source_hash)
             ).all()
         }
+        if distill:  # 重建语义：删除同源旧块
+            old = session.scalars(
+                select(KnowledgeChunk).where(KnowledgeChunk.title == path.stem)
+            ).all()
+            for o in old:
+                session.delete(o)
+            commit(session)
     new_chunks = []
     for c in chunks:
         h = hashlib.sha256(c.encode("utf-8")).hexdigest()
@@ -120,11 +175,20 @@ def bump_version() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", type=str, default=None, help="只导入指定文件（默认扫描 data/knowledge/）")
+    parser.add_argument("--distill", action="store_true",
+                        help="LLM 蒸馏为高密度知识点（讲解/叙事型文档推荐；重建该文档旧块）")
     args = parser.parse_args()
 
     init_db("sqlite:///data/interview.db")
-    load_config(Path("config.yaml"))  # 仅确保配置存在（embedder 不需要 key）
+    cfg = load_config(Path("config.yaml"))
     embedder = Embedder()
+    llm = None
+    if args.distill:
+        llm = LLMClient(
+            cfg.llm.generate_model,
+            cfg.llm.base_url,
+            secret_value(cfg.llm.api_key_env),
+        )
 
     files = []
     if args.file:
@@ -146,7 +210,7 @@ def main() -> None:
     total_new = 0
     for f in files:
         try:
-            new, _ = import_file(f, embedder)
+            new, _ = import_file(f, embedder, llm=llm, distill=args.distill)
             total_new += new
         except Exception as e:
             logger.warning("文件 %s 导入失败：%s", f.name, str(e)[:120])
