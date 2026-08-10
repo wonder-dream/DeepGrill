@@ -1796,6 +1796,9 @@ $("#detail-delete").addEventListener("click", deleteCurrentAttempt);
 
 // 切换用户时重置所有用户态（登录/登出/401 过期均调用，防跨用户残留）
 function resetPerUserState() {
+  sessionStorage.removeItem("answer_state");
+  sessionStorage.removeItem("detail_state");
+  sessionStorage.removeItem("review_paper_tag");
   state.reviewRecommended = new Set();
   state.reviewTag = null;
   state.resumeToken = null;

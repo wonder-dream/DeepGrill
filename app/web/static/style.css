@@ -117,7 +117,6 @@ body {
   padding-left: 10px;
 }
 .sidebar-daily {
-  margin-top: auto;
   border: 1px solid var(--ink);
   color: #fff;
   background: var(--ink);
@@ -127,7 +126,6 @@ body {
 .sidebar-daily:hover { opacity: 0.88; color: #fff; background: var(--ink); }
 
 .sidebar-upload {
-  margin-top: 8px;
   border: 1px solid var(--line-dark);
   text-align: center;
   font-weight: 500;
@@ -135,7 +133,6 @@ body {
 .sidebar-upload:hover { border-color: var(--red); color: var(--red); }
 
 .sidebar-logout {
-  margin-top: 8px;
   border: 1px solid var(--line-dark);
   text-align: center;
   font-weight: 500;
@@ -143,10 +140,18 @@ body {
 }
 .sidebar-logout:hover { border-color: var(--red); color: var(--red); }
 
+/* 底部操作组：每日更新/上传/退出始终贴底（普通用户无每日/上传时退出也在底部） */
+.sidebar-actions {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 /* 收起态 */
 .sidebar.collapsed { width: 48px; }
 .sidebar.collapsed .sidebar-head { justify-content: center; border-bottom: 1px solid var(--line-dark); }
-.sidebar.collapsed h1, .sidebar.collapsed nav, .sidebar.collapsed .sidebar-daily, .sidebar.collapsed .sidebar-upload, .sidebar.collapsed .sidebar-logout { display: none; }
+.sidebar.collapsed h1, .sidebar.collapsed nav, .sidebar.collapsed .sidebar-actions { display: none; }
 .sidebar.collapsed #sidebar-toggle { border: none; }
 
 main { flex: 1; max-width: 880px; margin: 28px auto; padding: 0 20px 60px; min-width: 0; }
@@ -480,7 +485,7 @@ h2 {
   line-height: 1.5;
 }
 
-#view-today .question-card p {
+.question-card p {
   font-size: 15px;
   font-weight: 500;
   margin: 8px 0 2px;
@@ -887,9 +892,7 @@ details summary:hover { color: var(--red); }
   body.sidebar-open .sidebar.collapsed { width: 240px; }
   body.sidebar-open .sidebar.collapsed h1,
   body.sidebar-open .sidebar.collapsed nav,
-  body.sidebar-open .sidebar.collapsed .sidebar-daily,
-  body.sidebar-open .sidebar.collapsed .sidebar-upload,
-  body.sidebar-open .sidebar.collapsed .sidebar-logout { display: flex; }
+  body.sidebar-open .sidebar.collapsed .sidebar-actions { display: flex; }
   body.sidebar-open .sidebar.collapsed #sidebar-toggle { border: 1px solid var(--line-dark); }
   main { margin: 64px auto 40px; padding: 0 14px 60px; max-width: 100%; }
   #calendar-panel {
