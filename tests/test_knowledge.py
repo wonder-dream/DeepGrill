@@ -228,7 +228,7 @@ def test_knowledge_search_concurrent(db):
 
 
 def test_split_chunks_paragraph_and_code():
-    """切块：段落分隔 + 代码块完整保留（代码块 ≥ MIN_CHARS 不被碎片过滤）。"""
+    """无 ## 结构 → 退化为段落切块（代码块完整保留）。"""
     from scripts.import_knowledge import split_chunks
 
     para1 = "第一段内容。" * 30  # 超 MIN_CHARS 不被过滤
@@ -239,6 +239,28 @@ def test_split_chunks_paragraph_and_code():
     assert any("```python" in c and c.rstrip().endswith("```") for c in chunks)  # 代码块完整
     assert len(chunks) >= 3
     assert para1 in chunks
+
+
+def test_split_chunks_semantic_by_headers():
+    """语义切块：## 小节独立成块，块首保留小节标题。"""
+    from scripts.import_knowledge import split_chunks
+
+    q = "# 问题标题\n\n简述题目。\n\n## 简要回答\n" + "核心答案要点。" * 40 + "\n\n## 详细回答\n" + "详细展开内容。" * 80 + "\n\n## 知识扩展\n\n## 追问\n" + "追问一内容。" * 30
+    chunks = split_chunks(q, "t")
+    assert any("## 简要回答" in c for c in chunks)  # 小节独立（前导并入首节）+ 标题保留
+    assert any(c.startswith("## 详细回答") for c in chunks)
+    assert any(c.startswith("## 追问") for c in chunks)
+    assert not any("## 知识扩展" in c and len(c) < 20 for c in chunks)  # 空节跳过
+
+
+def test_split_chunks_semantic_long_section_split():
+    """语义切块：长小节（>800 字）节内按段落/句子切。"""
+    from scripts.import_knowledge import split_chunks
+
+    long = "## 详细回答\n" + ("展开段落内容。" * 100 + "\n\n") * 10  # ~1600 字
+    chunks = split_chunks(long, "t")
+    assert len(chunks) >= 2  # 长节被切分
+    assert all(len(c) <= 1000 for c in chunks)
 
 
 def test_distill_chunks_rewrites_and_falls_back(db):

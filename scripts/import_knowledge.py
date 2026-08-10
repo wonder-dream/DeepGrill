@@ -49,9 +49,8 @@ DISTILL_PROMPT = """将以下文字逐条改写为**高密度知识要点**（�
 只输出 JSON，不要其他文字：{{"items": [{{"index": 序号, "content": "改写后的知识要点"}}]}}"""
 
 
-def split_chunks(text: str, title: str) -> list[str]:
-    """段落优先切块：空行分段；含代码块的段在代码块边界切，保证 ``` 完整。"""
-    lines = text.split("\n")
+def _split_section(text: str) -> list[str]:
+    """单小节切块：按空行分段 + 超长按句子边界切（保留代码块完整）。"""
     chunks: list[str] = []
     buf: list[str] = []
     in_code = False
@@ -63,7 +62,7 @@ def split_chunks(text: str, title: str) -> list[str]:
         if block:
             chunks.append(block)
 
-    for line in lines:
+    for line in text.split("\n"):
         if line.strip().startswith("```"):
             if not in_code:
                 flush()  # 代码块开始前先刷出前面的段落
@@ -76,7 +75,6 @@ def split_chunks(text: str, title: str) -> list[str]:
             flush()
             continue
         buf.append(line)
-        # 缓冲超长（非代码段）按句子边界切
         if not in_code and len("\n".join(buf)) > MAX_CHARS:
             block = "\n".join(buf)
             cut = max(block.rfind("。", 0, MAX_CHARS), block.rfind(".", 0, MAX_CHARS), block.rfind("\n", 0, MAX_CHARS))
@@ -86,7 +84,69 @@ def split_chunks(text: str, title: str) -> list[str]:
             else:
                 flush()
     flush()
-    return [c for c in chunks if len(c) >= MIN_CHARS]
+    return chunks
+
+
+def split_chunks(text: str, title: str) -> list[str]:
+    """语义切块：按 ## 标题切分语义单元（小节独立成块，块首保留小节标题）。
+
+    - 每个 `## 小节` 独立成块（嵌套 ## 自动独立）；块首保留 `## 标题` 行
+    - 短节独立保留（≥50 字，语义单元完整）；空节跳过
+    - 长节（>800 字）节内按段落/句子切
+    - 无 `##` 结构（讲解文等）→ 退化为段落切块（原行为）
+    """
+    lines = text.split("\n")
+    sections: list[tuple[str | None, list[str]]] = []  # (小节标题, 内容行)
+    cur_title: str | None = None
+    cur_body: list[str] = []
+    preamble: list[str] = []  # 首个 ## 之前的行（# 标题 + 简述）
+
+    for line in lines:
+        if line.startswith("## "):
+            if cur_body or cur_title is not None:
+                sections.append((cur_title, cur_body))
+            cur_title = line
+            cur_body = []
+        else:
+            if cur_title is None:
+                preamble.append(line)
+            else:
+                cur_body.append(line)
+    if cur_title is not None or cur_body:
+        sections.append((cur_title, cur_body))
+
+    chunks: list[str] = []
+    # 前导部分（# 标题 + 简述）：并入首个小节（有 ## 时）或独立（无 ## 时）
+    if not sections:
+        return _split_section(text)  # 无 ## 结构：段落切块退化
+    # 前导内容：若仅 # 标题 + 简述，追加到第一个小节块首（价值低不独立成块）
+    preamble_block = "\n".join(preamble).strip()
+
+    for i, (t, body) in enumerate(sections):
+        body_text = "\n".join(body).strip()
+        if not body_text:
+            continue  # 空小节（如知识图解）
+        # 前导内容合并进第一个小节（若小节本身较短）或独立
+        if i == 0 and preamble_block:
+            block = f"{preamble_block}\n\n{t}\n{body_text}" if t else f"{preamble_block}\n{body_text}"
+        else:
+            block = f"{t}\n{body_text}" if t else body_text
+        if len(block) > MAX_CHARS:
+            parts = _split_section(block)
+            chunks.extend(parts)
+        else:
+            chunks.append(block)
+
+    # 短节过滤：<50 字的小节内容并入相邻块（防碎片），独立小节（含标题行）放宽
+    final: list[str] = []
+    for c in chunks:
+        if len(c) >= MIN_CHARS:
+            final.append(c)
+        elif final:
+            final[-1] = final[-1] + "\n\n" + c  # 碎片并入前块
+        else:
+            final.append(c)
+    return final
 
 
 def distill_chunks(chunks: list[str], llm) -> list[str]:
@@ -193,9 +253,22 @@ def main() -> None:
     parser.add_argument("--file", type=str, default=None, help="只导入指定文件（默认扫描 data/knowledge/）")
     parser.add_argument("--distill", action="store_true",
                         help="LLM 蒸馏为高密度知识点（讲解/叙事型文档推荐；重建该文档旧块）")
+    parser.add_argument("--rebuild", action="store_true",
+                        help="清空全部知识块后全量重导（切块策略变更后重做 chunk 用）")
     args = parser.parse_args()
 
     init_db("sqlite:///data/interview.db")
+    if args.rebuild:
+        from app.models import KnowledgeChunk as _KC
+
+        with get_session() as s:
+            for c in s.scalars(select(_KC)).all():
+                s.delete(c)
+            meta = s.get(KnowledgeMeta, 1)
+            if meta is not None:
+                meta.version = 0
+            commit(s)
+        logger.info("已清空知识库（--rebuild），开始全量重导")
     cfg = load_config(Path("config.yaml"))
     embedder = Embedder()
     llm = None
