@@ -634,27 +634,36 @@ def create_app(
         keyword = q.strip().lower() if q else ""
 
         with db.get_session() as session:
-            stmt = select(Question)
+            # 筛选/排序/分页全部下推 SQL：Python 层全量过滤 2293 行在 GIL 下并发膨胀（单请求 65ms → 10 并发 ~1s）
+            filters = []
             if qtype is not None:
-                stmt = stmt.where(Question.type == qtype)
+                filters.append(Question.type == qtype)
             if difficulty is not None:
-                stmt = stmt.where(Question.difficulty == difficulty)
-            questions = list(session.scalars(stmt))
+                filters.append(Question.difficulty == difficulty)
             if keyword:
-                questions = [
-                    x for x in questions
-                    if keyword in (x.stem or "").lower()
-                    or any(keyword in t.lower() for t in (x.tags or []))
-                ]
+                filters.append(
+                    or_(
+                        Question.stem.ilike(f"%{keyword}%"),
+                        _tags_contains(keyword),
+                    )
+                )
             if cat_tags is not None:
-                questions = [
-                    q for q in questions
-                    if any(t in cat_tags for t in (q.tags or []))
-                ]
-            questions.sort(key=lambda q: q.id, reverse=True)
-            total = len(questions)
+                filters.append(
+                    or_(*(_tags_exists(t) for t in cat_tags))
+                )
+            total = session.scalar(
+                select(func.count()).select_from(Question).where(*filters)
+            )
+            rows = session.execute(
+                select(
+                    Question.id, Question.stem, Question.type, Question.difficulty, Question.tags
+                )
+                .where(*filters)
+                .order_by(Question.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            ).all()
             total_pages = (total + page_size - 1) // page_size
-            page_items = questions[(page - 1) * page_size : page * page_size]
             latest = _latest_judgment_by_question(session, user.id)
             items = [
                 {
@@ -665,7 +674,7 @@ def create_app(
                     "tags": q.tags,
                     "done": q.id in latest,
                 }
-                for q in page_items
+                for q in rows
             ]
         return {
             "total": total,
@@ -1582,6 +1591,23 @@ def _db_url() -> str:
     return f"sqlite:///{DEFAULT_DB_URL}"
 
 
+def _tags_exists(tag: str):
+    """tags JSON 数组精确包含 tag 的 EXISTS 子查询。
+
+    用 json_each 解析 JSON 值匹配（兼容 SQLAlchemy 默认 ensure_ascii 的 \\uXXXX 转义存储），
+    替代 cast(tags, String).like —— 后者对中文标签永远匹配不上（历史遗留 bug，
+    曾导致复习「该标签暂无题目」死胡同；ASCII 标签不受影响所以未暴露）。
+    """
+    je = func.json_each(Question.tags).table_valued("value")
+    return select(1).where(je.c.value == tag).exists()
+
+
+def _tags_contains(keyword: str):
+    """tags JSON 数组任一元素模糊包含 keyword 的 EXISTS 子查询（大小写不敏感）。"""
+    je = func.json_each(Question.tags).table_valued("value")
+    return select(1).where(je.c.value.ilike(f"%{keyword}%")).exists()
+
+
 def _review_questions(session, tag: str, limit: int = 30):
     """按标签查复习题目；该标签无题时回退到同分类（TAG_CATEGORIES）标签的题目。
 
@@ -1592,7 +1618,7 @@ def _review_questions(session, tag: str, limit: int = 30):
     questions = list(
         session.scalars(
             select(Question)
-            .where(cast(Question.tags, String).like(f'%"{tag}"%'))
+            .where(_tags_exists(tag))
             .order_by(Question.created_at.desc())
             .limit(limit)
         )
@@ -1605,11 +1631,10 @@ def _review_questions(session, tag: str, limit: int = 30):
     if category is None:
         return questions, False, None
     cat_tags = list(dict(TAG_CATEGORIES)[category])
-    patterns = [f'%"{t}"%' for t in cat_tags]
     questions = list(
         session.scalars(
             select(Question)
-            .where(or_(*(cast(Question.tags, String).like(p) for p in patterns)))
+            .where(or_(*(_tags_exists(t) for t in cat_tags)))
             .order_by(Question.created_at.desc())
             .limit(limit)
         )

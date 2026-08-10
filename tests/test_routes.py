@@ -626,6 +626,28 @@ def test_review_excludes_other_tags(db):
     assert all("RAG" in i["tags"] for i in items)
 
 
+def test_review_chinese_tag_matches(db):
+    """中文标签精确匹配（json_each 修复）：LIKE cast 对 \\uXXXX 转义存储匹配不上。"""
+    q1 = add_today_question(db, stem="缓存穿透题", tags=["缓存"])
+    add_today_question(db, stem="Java 题", tags=["Java"])
+    client = make_client(db, FakeLLM([]))
+    data = client.get("/api/review", params={"tag": "缓存"}).json()
+    assert data["fallback"] is False  # 不是回退：确实命中中文标签题
+    assert [i["id"] for i in data["items"]] == [q1.id]
+    assert data["items"][0]["tags"] == ["缓存"]
+
+
+def test_bank_search_chinese_tag(db):
+    """题库中文标签搜索（json_each 修复）：关键词搜中文标签能命中。"""
+    add_today_question(db, stem="缓存一致性设计", tags=["缓存"], status_today=False)
+    add_today_question(db, stem="纯题干题", tags=["Java"], status_today=False)
+    client = make_client(db, FakeLLM([]))
+    hit = client.get("/api/bank", params={"q": "缓存"}).json()
+    assert hit["total"] == 1  # 题干命中（纯题干题无缓存标签）
+    cat = client.get("/api/bank", params={"category": "后端基础", "page_size": 50}).json()
+    assert cat["total"] >= 2  # 分类过滤（中文标签 Java/缓存）都命中
+
+
 def test_review_invalid_tag_400(db):
     client = make_client(db, FakeLLM([]))
     resp = client.get("/api/review", params={"tag": "深度不足"})

@@ -6,6 +6,7 @@
 - 向量序列化：numpy float32 bytes（~4KB/题）
 """
 import logging
+import threading
 
 import numpy as np
 
@@ -28,11 +29,12 @@ def from_bytes(blob: bytes) -> np.ndarray:
 
 
 class Embedder:
-    """bge-m3 封装；lazy 加载，设备自动选择（GPU 优先）。"""
+    """bge-m3 封装；lazy 加载（加载加锁防并发首载双份，~2.3GB/份），设备自动选择（GPU 优先）。"""
 
     def __init__(self, model_name: str = DEFAULT_MODEL):
         self._model_name = model_name
         self._model = None
+        self._load_lock = threading.Lock()
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         """文本 → L2 归一化向量；空输入返回 []。"""
@@ -54,15 +56,19 @@ class Embedder:
 
     def _load(self):
         if self._model is None:
-            try:
-                from sentence_transformers import SentenceTransformer
+            with self._load_lock:  # 并发首次 encode：只加载一份模型（双份 ~4.6GB 会打满 4C8G）
+                if self._model is None:
+                    try:
+                        from sentence_transformers import SentenceTransformer
 
-                logger.info("loading embedding model %s (首次加载需下载模型)", self._model_name)
-                self._model = SentenceTransformer(self._model_name)
-            except Exception as e:
-                raise EmbedError(
-                    f"cannot load embedding model {self._model_name}: {e}"
-                ) from e
+                        logger.info(
+                            "loading embedding model %s (首次加载需下载模型)", self._model_name
+                        )
+                        self._model = SentenceTransformer(self._model_name)
+                    except Exception as e:
+                        raise EmbedError(
+                            f"cannot load embedding model {self._model_name}: {e}"
+                        ) from e
         return self._model
 
 

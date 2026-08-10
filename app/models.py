@@ -1,9 +1,34 @@
+﻿import json as _json
 from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import BLOB, JSON, CheckConstraint, Column
+from sqlalchemy import BLOB, CheckConstraint, Column, Text
+from sqlalchemy.types import TypeDecorator
 from sqlmodel import Field, Relationship, SQLModel
+
+
+class JSONUtf8(TypeDecorator):
+    """JSON 列统一类型：中文不转义存储（ensure_ascii=False）。
+
+    否则库里存 \\uXXXX（如 "缓存" → "\\u7f13\\u5b58"），
+    cast(tags, String).like 等 SQL 文本匹配对中文永远匹配不上（历史遗留 bug）。
+    """
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return _json.dumps(value, ensure_ascii=False)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            return value
+        return _json.loads(value)
 
 
 class SourceType(str, Enum):
@@ -74,10 +99,10 @@ class Question(SQLModel, table=True):
     source_id: int = Field(foreign_key="sources.id")
     type: QuestionType
     stem: str
-    tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    tags: list[str] = Field(default_factory=list, sa_column=Column(JSONUtf8))
     difficulty: int = Field(default=1)
-    good_criteria: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    bad_criteria: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    good_criteria: list[str] = Field(default_factory=list, sa_column=Column(JSONUtf8))
+    bad_criteria: list[str] = Field(default_factory=list, sa_column=Column(JSONUtf8))
     status: QuestionStatus = QuestionStatus.pending
     selected_at: Optional[datetime] = None  # 被选为今日待做的时刻（历史按此分组）
     embedding: Optional[bytes] = None  # bge-m3 向量（float32 BLOB），去重/检索用
@@ -135,11 +160,11 @@ class Judgment(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     session_id: int = Field(foreign_key="sessions.id")
-    scores: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    scores: dict = Field(default_factory=dict, sa_column=Column(JSONUtf8))
     total_score: Optional[int] = None
     review: str = ""
     reference_answer: str = ""
-    weak_tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    weak_tags: list[str] = Field(default_factory=list, sa_column=Column(JSONUtf8))
     model: str = ""
     created_at: datetime = Field(default_factory=datetime.now)
 
@@ -194,3 +219,5 @@ class UserPick(SQLModel, table=True):
     user_id: int = Field(foreign_key="users.id", index=True)
     question_id: int = Field(foreign_key="questions.id")
     picked_at: datetime = Field(default_factory=datetime.now)
+
+
