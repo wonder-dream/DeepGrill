@@ -290,6 +290,23 @@ def test_light_tier_partial_two_rounds_finish(db):
     assert len(attempts(db, s.id)) == 2
 
 
+def test_medium_tier_partial_two_rounds_finish(db):
+    """中挖档（3 星）：partial 同层缺口最多追 2 次后收尾，不无限同层追问。"""
+    s, q = add_session(db)
+    q.difficulty = 3
+    commit(db)
+    llm = FakeLLM([
+        {"action": "continue", "followup": "追缺口1", "quality": "partial", "completeness": "partial", "level": 3},
+        {"action": "continue", "followup": "追缺口2", "quality": "partial", "completeness": "partial", "level": 3},
+        VALID_JUDGMENT,
+    ])
+    chain = ChainSession(s.id, q, llm, judge_model="m", target_level=4)
+    assert chain.next_round("答了一部分")["finished"] is False
+    r2 = chain.next_round("补了一点")["finished"] is True  # 连续 2 轮 partial → 收尾
+    assert r2 is True
+    assert len(attempts(db, s.id)) == 2
+
+
 def test_judgment_persisted_with_session(db):
     s, q = add_session(db)
     llm = FakeLLM([FINISH, VALID_JUDGMENT])

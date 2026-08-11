@@ -55,6 +55,7 @@ L5 横向联系/知识广度
    - 浅挖档（1-2 星）：completeness=complete 且 quality=correct → 直接 finish（最多追问一次轻拓展即可收尾）；partial → 追 1 轮缺口后收尾；wrong/unsure → 最多再给 1 次机会确认后收尾，绝不深挖
    - 中挖档（3 星）：completeness=complete 且 quality=correct → 可再追 1-2 轮权衡/边界拓展（不超过 L4）后收尾；partial → 追缺口；wrong/unsure → 最多再给 1 次机会确认后收尾
    - 深挖档（4-5 星）：completeness=complete 且 quality=correct → 继续加深一层追问，直到达到目标深度 L{target_level} 即收尾；partial → 同层追挖缺口；wrong/unsure → 连续 2 次答不出即收尾
+3. level 标注规则：level 指**本轮追问问题**所处的深度阶梯（概念=L1、原理=L2、权衡=L3、边界/反例=L4、横向联系=L5），按问题本身的深度如实标注，**与候选人回答好坏无关**——即使候选人答不出来，问题问的是边界就是 L4
 
 只输出 JSON，不要其他文字：
 {{"action": "continue" 或 "finish", "followup": "下一轮追问或收尾语", "quality": "correct|partial|wrong|unsure", "completeness": "complete|partial|incomplete", "level": 本轮追问所在层级 1-5}}"""
@@ -179,8 +180,14 @@ class ChainSession:
             if quality == "partial" and prev_quality == "partial":
                 return True  # 只追 1 轮缺口
             return False
+        if tier == "medium":
+            if quality == "partial" and prev_quality == "partial":
+                return True  # 同层缺口最多追 2 次
+            if completeness == "complete" and self._max_level >= self._target_level:
+                return True
+            return False
         if completeness == "complete" and self._max_level >= self._target_level:
-            return True  # 中挖/深挖：达标即收
+            return True  # 深挖档：达标即收
         return False
 
     def _last_quality(self) -> str | None:
