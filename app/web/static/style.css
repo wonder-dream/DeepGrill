@@ -110,6 +110,13 @@ body[data-layout="topbar"] #calendar-panel {
   margin: 28px 20px 28px 0;
 }
 body[data-layout="topbar"] .sidebar.collapsed { width: 100%; }
+/* 顶栏模式下切换器移到右下（右上被顶栏操作按钮占用） */
+body[data-layout="topbar"] .layout-switcher,
+body[data-layout="focus"] .layout-switcher {
+  top: auto;
+  right: 10px;
+  bottom: 10px;
+}
 
 /* ---- 布局 3：单栏专注（focus） ---- */
 body[data-layout="focus"] .sidebar,
@@ -125,7 +132,8 @@ body[data-layout="focus"] .view-panel {
   margin: 0 auto;
 }
 body[data-layout="focus"] .summary-card { padding-top: 20px; }
-body[data-layout="focus"] .hamburger { display: none !important; }
+body[data-layout="focus"] .hamburger,
+body[data-layout="focus"] #calendar-toggle { display: none !important; }
 @media (max-width: 768px) {
   body[data-layout="focus"] main { margin: 64px auto 40px; }
 }
