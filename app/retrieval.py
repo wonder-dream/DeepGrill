@@ -99,7 +99,7 @@ def _text_score(query_stem: str, q: Question) -> float:
     if not gram_q or not gram_h:
         return 0.0
     overlap = len(gram_q & gram_h) / len(gram_q)
-    tags = set(q.tags or [])
+    tags = set(getattr(q, "_tags", []) or [])
     tag_hit = 1.0 if tags & set(query_stem.split()) else 0.0
     return max(overlap, 0.3 * tag_hit)
 

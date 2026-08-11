@@ -1,4 +1,7 @@
-"""M12 每日流水线：采集→生成→去重→入库→选题；D16 上限、D8 配额、阶段隔离。
+"""M12 每日流水线：采集→生成→去重→入库；D16 上限、阶段隔离。
+
+今日选题由用户首次打开今日页时按需懒加载（每用户池 + 个性化推荐），
+流水线不再负责选题（_pick_phase 已移除）。
 
 唯一串联所有模块的地方，也是错误隔离的最后一道边界：run_daily 永不抛错，
 任何异常记录到报告与 TaskLog（调度器视角永远正常返回）。
@@ -9,9 +12,10 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from .. import db
 from ..config import AppConfig
 from ..crawler import github, importer, nowcoder
-from ..db import commit, get_session, pick_questions, recycle_stale_today
+from ..db import commit, get_session
 from ..models import Question, QuestionType, Source, SourceType, TaskLog
 from .dedup import dedup
 from .generate import generate_from_source, generate_project_questions
@@ -79,7 +83,6 @@ def _run_daily(config: AppConfig, sources: list[SourceProvider], llm, embedder) 
     try:
         collected = _collect_phase(sources, report)
         _generate_phase(config, llm, collected, report, embedder)
-        _pick_phase(config, report)
     except Exception as e:
         report["errors"].append(f"daily pipeline failed: {e}")
         logger.exception("daily pipeline failed")
@@ -152,6 +155,9 @@ def _generate_phase(config: AppConfig, llm, collected: list, report: dict, embed
         with get_session() as session:
             session.add_all(kept)
             commit(session)
+            for q in kept:  # 生成侧候选标签 → question_tags 关联
+                db.set_question_tags(session, q.id, getattr(q, "_pending_tags", []))
+            commit(session)
         done_source_ids.add(source.id)
         accepted += len(kept)
         report["new_questions"] = accepted
@@ -188,27 +194,12 @@ def generate_source_immediately(source_id: int, llm, embedder) -> int:
         with get_session() as session:
             session.add_all(kept)
             commit(session)
+            for q in kept:  # 生成侧候选标签 → question_tags 关联
+                db.set_question_tags(session, q.id, getattr(q, "_pending_tags", []))
+            commit(session)
         return len(kept)
     finally:
         _run_lock.release()
-
-
-def _pick_phase(config: AppConfig, report: dict) -> None:
-    """D8 配额选题：knowledge > design > project，不足配额取实际可选数。
-
-    选题前先回收昨日及更早未完成的 today 题回 pending 池（今日列表按日期过滤）。
-    """
-    daily = config.daily
-    picked = []
-    with get_session() as session:
-        recycle_stale_today(session)
-        for qtype, limit in (
-            (QuestionType.knowledge, daily.knowledge_limit),
-            (QuestionType.design, daily.design_limit),
-            (QuestionType.project, daily.project_limit),
-        ):
-            picked.extend(pick_questions(session, limit, qtype))
-    report["today_questions"] = picked
 
 
 def _write_task_log(report: dict) -> None:

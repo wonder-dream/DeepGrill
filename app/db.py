@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from functools import wraps
 
-from sqlalchemy import create_engine, event, func, or_, select, text
+from sqlalchemy import create_engine, delete, event, func, or_, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
@@ -15,7 +15,6 @@ from sqlmodel import SQLModel
 from .errors import DuplicateSource, StorageError
 from .models import (
     Question,
-    QuestionStatus,
     QuestionType,
     Session,
     SessionStatus,
@@ -31,7 +30,7 @@ _import_lock = threading.Lock()
 
 
 def init_db(db_url: str) -> None:
-    """连接 SQLite 并建表；任何 sqlite 异常包装为 StorageError。
+    """连接 SQLite 并建表（绿地重建：新库无历史迁移）。
 
     重建时先 dispose 旧引擎（防止旧连接句柄锁住数据库文件，Windows 上替换文件会失败）。
     """
@@ -47,19 +46,12 @@ def init_db(db_url: str) -> None:
             event.listen(_engine, "connect", _enable_sqlite_wal)
             event.listen(_engine, "connect", _enable_sqlite_busy_timeout)
         SQLModel.metadata.create_all(_engine)
-        if db_url.startswith("sqlite"):
-            _migrate_selected_at(_engine)
-            _migrate_backfill_today_selected_at(_engine)
-            _migrate_embedding(_engine)
-            _migrate_attempt_level(_engine)
-            _migrate_attempt_quality(_engine)
-            _migrate_cleanup_empty_sessions(_engine)
-            _migrate_session_user(_engine)
-            _migrate_token_expires_at(_engine)
-            _migrate_knowledge_meta(_engine)
     except SQLAlchemyError as e:
         raise StorageError(f"cannot init database {db_url}: {e}") from e
     _factory = sessionmaker(bind=_engine, class_=DBSession, expire_on_commit=False)
+    from .tags import reload_tags
+
+    reload_tags()  # 词表种子：DB 空时写入 13 分类/81 标签，非空则从 DB 重建（幂等）
 
 
 def close() -> None:
@@ -81,106 +73,6 @@ def engine() -> Engine:
     if _engine is None:
         init_db(db_url())
     return _engine
-
-
-def _migrate_selected_at(engine: Engine) -> None:
-    """轻量迁移：旧库 questions 表补 selected_at 列，回填已选今日题目。"""
-    with engine.begin() as conn:
-        cols = [row[1] for row in conn.execute(text("PRAGMA table_info(questions)"))]
-        if "selected_at" in cols:
-            return
-        conn.execute(text("ALTER TABLE questions ADD COLUMN selected_at DATETIME"))
-        conn.execute(
-            text("UPDATE questions SET selected_at = created_at WHERE status = 'today'")
-        )
-
-
-def _migrate_backfill_today_selected_at(engine: Engine) -> None:
-    """幂等修复：status='today' 但 selected_at 为 NULL 的题补齐（历史/今日不同步兜底）。
-
-    根因：selected_at 迁移后曾有旧代码运行 pick_questions（只设 status 不设 selected_at）。
-    """
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "UPDATE questions SET selected_at = created_at "
-                "WHERE status = 'today' AND selected_at IS NULL"
-            )
-        )
-
-
-def _migrate_session_user(engine: Engine) -> None:
-    """多用户迁移：sessions 表补 user_id 列（旧单用户数据由注册 owner 时回填）。"""
-    with engine.begin() as conn:
-        cols = [row[1] for row in conn.execute(text("PRAGMA table_info(sessions)"))]
-        if "user_id" not in cols:
-            conn.execute(text("ALTER TABLE sessions ADD COLUMN user_id INTEGER"))
-
-
-def _migrate_token_expires_at(engine: Engine) -> None:
-    """幂等迁移：user_tokens 表补 expires_at 列，旧 token 回填 created_at + 30 天（B3）。"""
-    with engine.begin() as conn:
-        cols = [row[1] for row in conn.execute(text("PRAGMA table_info(user_tokens)"))]
-        if "expires_at" in cols:
-            return
-        conn.execute(text("ALTER TABLE user_tokens ADD COLUMN expires_at DATETIME"))
-        conn.execute(
-            text(
-                "UPDATE user_tokens SET expires_at = datetime(created_at, '+30 days') "
-                "WHERE expires_at IS NULL"
-            )
-        )
-
-
-def _migrate_knowledge_meta(engine: Engine) -> None:
-    """幂等迁移：knowledge_meta 初始化版本行（create_all 建表，此处补 id=1 行）。"""
-    with engine.begin() as conn:
-        n = conn.execute(text("SELECT COUNT(*) FROM knowledge_meta")).scalar()
-        if n == 0:
-            conn.execute(text("INSERT INTO knowledge_meta (id, version) VALUES (1, 0)"))
-
-
-def _migrate_embedding(engine: Engine) -> None:
-    """轻量迁移：旧库 questions 表补 embedding 列（NULL 由首次去重自动补算）。"""
-    with engine.begin() as conn:
-        cols = [row[1] for row in conn.execute(text("PRAGMA table_info(questions)"))]
-        if "embedding" in cols:
-            return
-        conn.execute(text("ALTER TABLE questions ADD COLUMN embedding BLOB"))
-
-
-def _migrate_attempt_level(engine: Engine) -> None:
-    """轻量迁移：旧库 attempts 表补 level 列（深挖追问层级，旧数据为 NULL）。"""
-    with engine.begin() as conn:
-        cols = [row[1] for row in conn.execute(text("PRAGMA table_info(attempts)"))]
-        if "level" in cols:
-            return
-        conn.execute(text("ALTER TABLE attempts ADD COLUMN level INTEGER"))
-
-
-def _migrate_attempt_quality(engine: Engine) -> None:
-    """轻量迁移：旧库 attempts 表补 quality 列（回答质量轨迹，旧数据为 NULL）。"""
-    with engine.begin() as conn:
-        cols = [row[1] for row in conn.execute(text("PRAGMA table_info(attempts)"))]
-        if "quality" in cols:
-            return
-        conn.execute(text("ALTER TABLE attempts ADD COLUMN quality VARCHAR"))
-
-
-def _migrate_cleanup_empty_sessions(engine: Engine) -> None:
-    """幂等清理：删除既无回答（attempts）也无判分（judgments）的空壳会话。
-
-    修复前"每次点击题目卡片都新建会话"产生的空壳（如首题 17 会话），
-    启动时自动清理；只删无子行会话，不受 FK 影响。
-    """
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                "DELETE FROM sessions "
-                "WHERE id NOT IN (SELECT DISTINCT session_id FROM attempts) "
-                "AND id NOT IN (SELECT DISTINCT session_id FROM judgments)"
-            )
-        )
 
 
 def _enable_sqlite_foreign_keys(dbapi_connection, connection_record) -> None:
@@ -260,112 +152,184 @@ def _wrap_storage(func):
 
 
 @_wrap_storage
-def backfill_owner_data(session: DBSession, user_id: int) -> None:
-    """首个用户（owner）注册时回填旧单用户数据：sessions 归属 + 今日题转 picks。"""
-    from sqlalchemy import update
+def list_today_questions(session: DBSession, user_id: int) -> list[Question]:
+    """今日题目（每用户池单轨）：该用户 picked_at 属今天的题。
 
-    session.execute(
-        update(Session).where(Session.user_id.is_(None)).values(user_id=user_id)
-    )
-    today_qs = list(
-        session.scalars(
-            select(Question).where(Question.status == QuestionStatus.today)
-        )
-    )
-    for q in today_qs:
-        session.add(
-            UserPick(
-                user_id=user_id,
-                question_id=q.id,
-                picked_at=q.selected_at or datetime.now(),
-            )
-        )
-    commit(session)
-
-
-@_wrap_storage
-def list_today_questions(session: DBSession) -> list[Question]:
-    """今日题目：status=today 且被选为今日（selected_at 属今天）的题。
-
-    昨日及更早未完成的题不在此列（由 recycle_stale_today 回收回 pending 池）。
+    昨日及更早的 picks 自然不在今日列表（按日期过滤）；未完成的题明天自动回到候选。
     """
     stmt = (
         select(Question)
-        .where(Question.status == QuestionStatus.today)
-        .where(Question.selected_at >= _today_start())
+        .join(UserPick, UserPick.question_id == Question.id)
+        .where(UserPick.user_id == user_id, UserPick.picked_at >= _today_start())
         .order_by(Question.created_at)
     )
     return list(session.scalars(stmt))
 
 
 @_wrap_storage
-def list_questions_by_date(session: DBSession, date_str: str) -> list[Question]:
-    """按被选为今日题目的日期（selected_at 落于当日零点~次日零点）查题，不限 status。
+def list_questions_by_date(
+    session: DBSession, user_id: int, date_str: str
+) -> list[Question]:
+    """按选题日期（picked_at 落于当日零点~次日零点）查该用户选的题。
 
-    供今日页日历单选回看某一天的题目（含被回收回 pending 的未完成题）。
+    供今日页日历单选回看某一天的题目（含未完成的题，历史记录不因回收消失）。
     """
     day = datetime.strptime(date_str, "%Y-%m-%d")
     start = day.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
     stmt = (
         select(Question)
-        .where(Question.selected_at >= start, Question.selected_at < end)
+        .join(UserPick, UserPick.question_id == Question.id)
+        .where(UserPick.user_id == user_id, UserPick.picked_at >= start, UserPick.picked_at < end)
         .order_by(Question.created_at)
     )
     return list(session.scalars(stmt))
-
-
-@_wrap_storage
-def recycle_stale_today(session: DBSession) -> int:
-    """回收昨日及更早被选为今日、但未完成的题回 pending 池（今日列表按日期过滤后不再展示，
-    回池后可在后续选题中再次被选中）；已完成（有 finished 会话）的题保持 today 不回池。"""
-    stmt = (
-        select(Question)
-        .where(Question.status == QuestionStatus.today)
-        .where(or_(Question.selected_at.is_(None), Question.selected_at < _today_start()))
-    )
-    stale = list(session.scalars(stmt))
-    recycled = 0
-    for q in stale:
-        finished = (
-            session.scalars(
-                select(Session)
-                .where(
-                    Session.question_id == q.id,
-                    Session.status == SessionStatus.finished,
-                )
-                .limit(1)
-            ).first()
-            is not None
-        )
-        if finished:
-            continue
-        q.status = QuestionStatus.pending
-        recycled += 1
-    if recycled:
-        commit(session)
-    return recycled
 
 
 def _today_start() -> datetime:
     return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def _weak_tag_weights(
+    session: DBSession, user_id: int, top: int = 5
+) -> dict[str, int]:
+    """聚合该用户全部判分的薄弱点（weak_tags）→ 出现次数 topN。"""
+    from collections import Counter
+
+    from .models import Judgment
+
+    rows = session.scalars(
+        select(Judgment)
+        .join(Session, Judgment.session_id == Session.id)
+        .where(Session.user_id == user_id)
+    ).all()
+    counter: Counter = Counter()
+    for j in rows:
+        for t in (j.weak_tags or []):
+            counter[t] += 1
+    return dict(counter.most_common(top))
+
+
+def _rank_recommend(
+    session: DBSession, candidates: list[Question], user_id: int
+) -> list[Question]:
+    """个性化推荐 = 岗位/语言权重 + 薄弱标签加权 + 多样性摊开 + 按序兜底：
+
+    1. 题岗位分（focus × 分类 roles/lang，见 _role_score）
+    2. 叠加薄弱标签权重（出现次数 top5）
+    3. 每薄弱标签取命中它的第一题（摊开不同薄弱点），再按总分序补齐
+    4. 非本岗/非本语言题不阻断：得分 0 的候选按 created_at 兜底排在最后
+    """
+    from .models import QuestionTag, Tag, TagCategory, User
+
+    weights = _weak_tag_weights(session, user_id)
+    user = session.get(User, user_id)
+    focus = user.focus if user is not None else None
+    focus_lang = user.focus_lang if user is not None else None
+
+    rows = session.execute(
+        select(QuestionTag.question_id, Tag.name, TagCategory.lang, TagCategory.roles)
+        .join(Tag, QuestionTag.tag_id == Tag.id)
+        .join(TagCategory, Tag.category_id == TagCategory.id)
+        .where(QuestionTag.question_id.in_([q.id for q in candidates]))
+    ).all()
+    # 题 → (lang 命中, role 命中, 标签名列表)
+    q_info: dict[int, tuple[int, int, list[str]]] = {}
+    for qid, name, lang, roles in rows:
+        cat_roles = tuple(roles or ())
+        lang_hit = 1 if (focus_lang and lang == focus_lang) else 0
+        role_hit = 1 if (focus and focus in cat_roles) else 0
+        entry = q_info.setdefault(qid, [0, 0, []])
+        entry[0] = max(entry[0], lang_hit)
+        entry[1] = max(entry[1], role_hit)
+        entry[2].append(name)
+
+    def _score(q: Question) -> int:
+        lang_hit, role_hit, _names = q_info.get(q.id, (0, 0, []))
+        if focus == "backend":
+            if focus_lang and lang_hit:
+                return 4 + (2 if role_hit else 0)  # 我的语言 + 后端域最高
+            if not focus_lang and role_hit:
+                return 4  # 未指定语言：所有后端语言题均等
+            if role_hit:
+                return 2  # 其他语言的后端题
+            return 0
+        if focus and role_hit:
+            return 3  # 非 backend 岗位：岗位域题
+        return 0
+
+    def _weak(q: Question) -> int:
+        if not weights:
+            return 0
+        return max((weights.get(t, 0) for t in q_info.get(q.id, (0, 0, []))[2]), default=0)
+
+    def _names(q: Question) -> list[str]:
+        return q_info.get(q.id, (0, 0, []))[2]
+
+    scored = sorted(
+        candidates,
+        key=lambda q: (-_score(q), -_weak(q), q.created_at),
+    )
+    picked: list[Question] = []
+    taken: set[int] = set()
+    for tag in weights:  # 薄弱标签多样性：每标签取 1 题（按上述总分序）
+        for q in scored:
+            if q.id not in taken and tag in _names(q):
+                picked.append(q)
+                taken.add(q.id)
+                break
+    for q in scored:
+        if q.id not in taken:
+            picked.append(q)
+            taken.add(q.id)
+    return picked
+
+
 @_wrap_storage
 def pick_questions(
-    session: DBSession, limit: int, qtype: QuestionType | None = None
+    session: DBSession,
+    user_id: int,
+    limit: int,
+    qtype: QuestionType | None = None,
 ) -> list[Question]:
-    """从 pending 池按创建顺序取题并标记 today；qtype 用于按题型配额选取（D8）。"""
-    stmt = select(Question).where(Question.status == QuestionStatus.pending)
+    """每用户选题：从「我从未完成（无我的 finished 会话）且今天没选过」的题中，
+    按个性化推荐排序取 limit 题 → 写 user_picks；qtype 用于按题型配额选取（D8）。"""
+    done_qids = select(Session.question_id).where(
+        Session.user_id == user_id,
+        Session.status == SessionStatus.finished,
+    )
+    picked_today_qids = select(UserPick.question_id).where(
+        UserPick.user_id == user_id,
+        UserPick.picked_at >= _today_start(),
+    )
+    stmt = select(Question).where(
+        Question.id.not_in(done_qids),
+        Question.id.not_in(picked_today_qids),
+    )
     if qtype is not None:
         stmt = stmt.where(Question.type == qtype)
-    stmt = stmt.order_by(Question.created_at).limit(limit)
-    picked = list(session.scalars(stmt))
+    candidates = list(session.scalars(stmt.order_by(Question.created_at)))
+    picked = _rank_recommend(session, candidates, user_id)[:limit]
+    now = datetime.now()
     for q in picked:
-        q.status = QuestionStatus.today
-        q.selected_at = datetime.now()
+        session.add(UserPick(user_id=user_id, question_id=q.id, picked_at=now))
     commit(session)
     return picked
+
+
+@_wrap_storage
+def set_question_tags(session: DBSession, question_id: int, names: list[str]) -> None:
+    """覆写题目标签：删旧关联 + 按词表名写新关联（未命中词表的静默丢弃）。"""
+    from .models import QuestionTag, Tag
+
+    session.execute(delete(QuestionTag).where(QuestionTag.question_id == question_id))
+    if not names:
+        return
+    tag_ids = [t.id for t in session.scalars(select(Tag).where(Tag.name.in_(names))).all()]
+    if tag_ids:
+        session.add_all(
+            QuestionTag(question_id=question_id, tag_id=tid) for tid in tag_ids
+        )
 
 
 @_wrap_storage

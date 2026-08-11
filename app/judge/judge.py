@@ -179,7 +179,7 @@ def _build_messages(
     quality_trace: list[str] | None = None,
     knowledge: str | None = None,
 ) -> list[dict]:
-    tags = ", ".join(question.tags) if question.tags else "（无）"
+    tags = ", ".join(getattr(question, "_tags", []) or []) or "（无）"
     if reference:
         reference_section = (
             "以下为库内同类题的高分回答（仅作标准参照，评估回答质量时参考其要点，不要照抄）：\n"

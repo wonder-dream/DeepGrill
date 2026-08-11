@@ -142,21 +142,20 @@ def _validate_questions(
         tags = [t for t in raw_tags if isinstance(t, str) and t in TAG_VOCABULARY][
             :MAX_TAGS
         ]
-        questions.append(
-            Question(
-                source_id=source_id,
-                type=qtype,
-                stem=_truncate(stem, MAX_STEM_LEN),
-                tags=tags,
-                difficulty=_clamp_difficulty(item.get("difficulty")),
-                good_criteria=_criteria_list(
-                    item.get("good_criteria"), DEFAULT_GOOD_CRITERIA
-                ),
-                bad_criteria=_criteria_list(
-                    item.get("bad_criteria"), DEFAULT_BAD_CRITERIA
-                ),
-            )
+        q = Question(
+            source_id=source_id,
+            type=qtype,
+            stem=_truncate(stem, MAX_STEM_LEN),
+            difficulty=_clamp_difficulty(item.get("difficulty")),
+            good_criteria=_criteria_list(
+                item.get("good_criteria"), DEFAULT_GOOD_CRITERIA
+            ),
+            bad_criteria=_criteria_list(
+                item.get("bad_criteria"), DEFAULT_BAD_CRITERIA
+            ),
         )
+        q._pending_tags = tags  # 非持久属性：入库后由调用方写入 question_tags 关联
+        questions.append(q)
     return questions
 
 
