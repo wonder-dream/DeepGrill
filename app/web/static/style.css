@@ -33,38 +33,6 @@
   border-color: var(--red);
 }
 
-/* focus 布局：顶部极简导航条（默认隐藏，仅 focus 显示） */
-.focus-nav {
-  display: none;
-  position: sticky;
-  top: 0;
-  z-index: 55;
-  align-items: center;
-  gap: 18px;
-  padding: 10px 22px;
-  background: var(--card);
-  border-bottom: 1px solid var(--line-dark);
-}
-.focus-brand {
-  font-family: var(--serif);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 1px;
-}
-.focus-nav nav { display: flex; gap: 4px; }
-.focus-nav nav button {
-  border: none;
-  background: transparent;
-  color: var(--ink-soft);
-  font-size: 13px;
-  font-family: var(--sans);
-  padding: 4px 10px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.focus-nav nav button:hover { color: var(--red); }
-.focus-nav nav button.nav-active { color: var(--red); background: var(--red-soft); }
-
 /* ---- 布局 2：顶栏工作台（topbar） ---- */
 body[data-layout="topbar"] {
   flex-direction: column;
@@ -111,31 +79,10 @@ body[data-layout="topbar"] #calendar-panel {
 }
 body[data-layout="topbar"] .sidebar.collapsed { width: 100%; }
 /* 顶栏模式下切换器移到右下（右上被顶栏操作按钮占用） */
-body[data-layout="topbar"] .layout-switcher,
-body[data-layout="focus"] .layout-switcher {
+body[data-layout="topbar"] .layout-switcher {
   top: auto;
   right: 10px;
   bottom: 10px;
-}
-
-/* ---- 布局 3：单栏专注（focus） ---- */
-body[data-layout="focus"] .sidebar,
-body[data-layout="focus"] #calendar-panel { display: none; }
-body[data-layout="focus"] #focus-nav { display: flex; }
-body[data-layout="focus"] main {
-  max-width: 760px;
-  margin: 40px auto;
-  padding: 0 20px 60px;
-}
-body[data-layout="focus"] .view-panel {
-  max-width: 760px;
-  margin: 0 auto;
-}
-body[data-layout="focus"] .summary-card { padding-top: 20px; }
-body[data-layout="focus"] .hamburger,
-body[data-layout="focus"] #calendar-toggle { display: none !important; }
-@media (max-width: 768px) {
-  body[data-layout="focus"] main { margin: 64px auto 40px; }
 }
 
 * { box-sizing: border-box; }
@@ -1295,6 +1242,7 @@ details summary:hover { color: var(--red); }
 }
 .modal-foot button:hover { border-color: var(--red); color: var(--red); }
 #qm-error { color: var(--red); }
+
 
 
 

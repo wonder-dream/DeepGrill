@@ -60,8 +60,10 @@ function applyLayout(layout) {
 }
 
 (function initThemeLayout() {
-  const theme = localStorage.getItem("theme") || "retro";
-  const layout = localStorage.getItem("layout") || "classic";
+  const THEMES = ["aurora", "cyber", "glass", "brutal", "minimal"];
+  const LAYOUTS = ["classic", "topbar"];
+  const theme = THEMES.includes(localStorage.getItem("theme")) ? localStorage.getItem("theme") : "aurora";
+  const layout = LAYOUTS.includes(localStorage.getItem("layout")) ? localStorage.getItem("layout") : "classic";
   document.body.dataset.theme = theme;
   document.body.dataset.layout = layout;
   document.querySelectorAll(".theme-dot").forEach((btn) => {
