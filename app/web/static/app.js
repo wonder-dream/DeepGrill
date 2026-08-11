@@ -49,12 +49,28 @@ function applyTheme(theme) {
   });
 }
 
-(function initTheme() {
-  const saved = localStorage.getItem("theme") || "retro";
-  document.body.dataset.theme = saved;
+// --- 布局：body[data-layout] 切换（style.css 布局规则） ---
+
+function applyLayout(layout) {
+  document.body.dataset.layout = layout;
+  localStorage.setItem("layout", layout);
+  document.querySelectorAll(".layout-btn").forEach((btn) => {
+    btn.classList.toggle("layout-active", btn.dataset.layout === layout);
+  });
+}
+
+(function initThemeLayout() {
+  const theme = localStorage.getItem("theme") || "retro";
+  const layout = localStorage.getItem("layout") || "classic";
+  document.body.dataset.theme = theme;
+  document.body.dataset.layout = layout;
   document.querySelectorAll(".theme-dot").forEach((btn) => {
-    btn.classList.toggle("theme-active", btn.dataset.theme === saved);
+    btn.classList.toggle("theme-active", btn.dataset.theme === theme);
     btn.addEventListener("click", () => applyTheme(btn.dataset.theme));
+  });
+  document.querySelectorAll(".layout-btn").forEach((btn) => {
+    btn.classList.toggle("layout-active", btn.dataset.layout === layout);
+    btn.addEventListener("click", () => applyLayout(btn.dataset.layout));
   });
 })();
 

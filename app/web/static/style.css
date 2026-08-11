@@ -1,5 +1,135 @@
 ﻿/* 主题变量定义见 theme.css（6 套主题，body[data-theme] 切换） */
 
+/* 布局切换器（固定右上角，所有布局可见） */
+.layout-switcher {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  z-index: 70;
+  display: flex;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--card);
+  border: 1px solid var(--line-dark);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+}
+.layout-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-soft);
+  width: 28px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+}
+.layout-btn:hover { color: var(--red); }
+.layout-btn.layout-active {
+  color: var(--red);
+  background: var(--red-soft);
+  border-color: var(--red);
+}
+
+/* focus 布局：顶部极简导航条（默认隐藏，仅 focus 显示） */
+.focus-nav {
+  display: none;
+  position: sticky;
+  top: 0;
+  z-index: 55;
+  align-items: center;
+  gap: 18px;
+  padding: 10px 22px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line-dark);
+}
+.focus-brand {
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+.focus-nav nav { display: flex; gap: 4px; }
+.focus-nav nav button {
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-family: var(--sans);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.focus-nav nav button:hover { color: var(--red); }
+.focus-nav nav button.nav-active { color: var(--red); background: var(--red-soft); }
+
+/* ---- 布局 2：顶栏工作台（topbar） ---- */
+body[data-layout="topbar"] {
+  flex-direction: column;
+}
+body[data-layout="topbar"] .sidebar {
+  position: static;
+  width: 100%;
+  min-height: 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 24px;
+  border-right: none;
+  border-bottom: 1px solid var(--line-dark);
+  padding: 10px 20px;
+  overflow: visible;
+}
+body[data-layout="topbar"] .sidebar-head {
+  padding: 0;
+  border-bottom: none;
+  margin: 0;
+}
+body[data-layout="topbar"] #sidebar-toggle { display: none; }
+body[data-layout="topbar"] .sidebar nav { flex-direction: row; gap: 6px; }
+body[data-layout="topbar"] .theme-switcher {
+  margin: 0;
+  padding: 0;
+  border-top: none;
+}
+body[data-layout="topbar"] .sidebar-actions {
+  margin: 0 0 0 auto;
+  flex-direction: row;
+  gap: 8px;
+}
+body[data-layout="topbar"] .sidebar-actions button,
+body[data-layout="topbar"] .sidebar-actions a {
+  padding: 6px 12px;
+  text-align: center;
+}
+body[data-layout="topbar"] main { max-width: 1200px; }
+body[data-layout="topbar"] #calendar-panel {
+  position: sticky;
+  top: 10px;
+  margin: 28px 20px 28px 0;
+}
+body[data-layout="topbar"] .sidebar.collapsed { width: 100%; }
+
+/* ---- 布局 3：单栏专注（focus） ---- */
+body[data-layout="focus"] .sidebar,
+body[data-layout="focus"] #calendar-panel { display: none; }
+body[data-layout="focus"] #focus-nav { display: flex; }
+body[data-layout="focus"] main {
+  max-width: 760px;
+  margin: 40px auto;
+  padding: 0 20px 60px;
+}
+body[data-layout="focus"] .view-panel {
+  max-width: 760px;
+  margin: 0 auto;
+}
+body[data-layout="focus"] .summary-card { padding-top: 20px; }
+body[data-layout="focus"] .hamburger { display: none !important; }
+@media (max-width: 768px) {
+  body[data-layout="focus"] main { margin: 64px auto 40px; }
+}
+
 * { box-sizing: border-box; }
 
 html { -webkit-font-smoothing: antialiased; }
