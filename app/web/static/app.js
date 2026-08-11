@@ -954,6 +954,62 @@ function renderAttempt(a) {
     (j.reference_used ? "　（本判分参考了库内同类高分回答）" : "");
 }
 
+// --- 复习页主题自定义展示（岗位默认集 + 用户自定义 localStorage） ---
+
+const REVIEW_VISIBLE_KEY = "review_visible_tags";
+
+function focusDefaultVisibleTags() {
+  const u = state.user || {};
+  const visible = new Set();
+  for (const c of state.tagCategories || []) {
+    const roles = c.roles || [];
+    if (!roles.length) {
+      (c.tags || []).forEach((t) => visible.add(t)); // 通用分类：全岗位
+      continue;
+    }
+    if (!u.focus) {
+      (c.tags || []).forEach((t) => visible.add(t)); // 未设置岗位：全部
+      continue;
+    }
+    if (u.focus === "backend") {
+      if (c.lang && c.lang === u.focus_lang) {
+        (c.tags || []).forEach((t) => visible.add(t)); // 我的语言分类
+      } else if (c.lang === null && roles.includes("backend")) {
+        (c.tags || []).forEach((t) => visible.add(t)); // 语言无关后端分类
+      } else if (!u.focus_lang && roles.includes("backend")) {
+        (c.tags || []).forEach((t) => visible.add(t)); // 未选语言：全部后端
+      }
+    } else if (roles.includes(u.focus)) {
+      (c.tags || []).forEach((t) => visible.add(t));
+    }
+  }
+  return visible;
+}
+
+function loadVisibleTags() {
+  try {
+    const raw = localStorage.getItem(REVIEW_VISIBLE_KEY);
+    if (raw) return new Set(JSON.parse(raw));
+  } catch (e) { /* 损坏存储忽略 */ }
+  return focusDefaultVisibleTags();
+}
+
+function saveVisibleTags(set) {
+  localStorage.setItem(REVIEW_VISIBLE_KEY, JSON.stringify([...set]));
+}
+
+function clearVisibleTags() {
+  localStorage.removeItem(REVIEW_VISIBLE_KEY);
+}
+
+function focusLabel() {
+  const u = state.user || {};
+  const roleNames = { backend: "后端", ai_app: "AI应用", ai_infra: "AI基础设施", frontend: "前端", qa: "测试开发" };
+  if (!u.focus) return "全部岗位";
+  const base = roleNames[u.focus] || u.focus;
+  return u.focus === "backend" && u.focus_lang ? `${base}·${u.focus_lang}` : base;
+}
+
 async function loadReviewHome() {
   sessionStorage.removeItem("review_paper_tag"); // 回到复习首页：不再自动恢复复习卷
   let tags;
@@ -969,8 +1025,11 @@ async function loadReviewHome() {
   $("#review-title").textContent = "薄弱点复习";
   $("#review-back").classList.add("hidden");
   $("#review-filter").classList.add("hidden");
-  const weak = tags.filter((t) => t.count > 0);
+  const weak = tags.filter((t) => t.count > 0); // 薄弱点全显示（不受可见集影响）
   const rest = tags.filter((t) => t.count === 0);
+  const visible = loadVisibleTags();
+  const shown = rest.filter((t) => visible.has(t.tag));
+  const hiddenCount = rest.length - shown.length;
   let html = "";
   if (!weak.length) {
     html += '<div class="card"><p class="meta">暂无薄弱点数据，完成答题后这里会显示需要加强的题目标签</p></div>';
@@ -983,18 +1042,80 @@ async function loadReviewHome() {
       )
       .join("");
   }
-  html += '<p class="meta" style="margin-top:12px">全部主题：</p>';
-  html += rest
-    .map(
-      (t) =>
-        `<button class="weak-tag-entry" data-tag="${escapeHtml(t.tag)}">${escapeHtml(t.tag)}</button>`
-    )
-    .join("");
+  const hasCustom = localStorage.getItem(REVIEW_VISIBLE_KEY) !== null;
+  const scopeLabel = hasCustom ? "自定义主题" : `当前岗位 · ${focusLabel()}`;
+  html += `<p class="meta" style="margin-top:12px">${scopeLabel}` +
+    `<button id="rev-tags-open" class="rev-tags-open" title="自定义展示哪些主题">+</button>` +
+    `</p>`;
+  if (!shown.length) {
+    html += '<p class="meta">未选择展示主题，点「+」选择要在复习页展示的主题</p>';
+  } else {
+    html += shown
+      .map(
+        (t) =>
+          `<button class="weak-tag-entry" data-tag="${escapeHtml(t.tag)}">${escapeHtml(t.tag)}</button>`
+      )
+      .join("");
+  }
+  if (hiddenCount > 0) {
+    html += `<p class="meta">已隐藏 ${hiddenCount} 个主题</p>`;
+  }
   entry.innerHTML = html;
   entry.querySelectorAll(".weak-tag-entry").forEach((btn) => {
     btn.addEventListener("click", () => loadReview(btn.dataset.tag));
   });
+  $("#rev-tags-open").addEventListener("click", openReviewTagsModal);
 }
+
+// --- 自定义主题弹窗 ---
+
+function openReviewTagsModal() {
+  const box = $("#rev-tags-list");
+  const current = loadVisibleTags();
+  box.innerHTML = "";
+  for (const c of state.tagCategories || []) {
+    const group = document.createElement("div");
+    group.className = "rev-tags-group";
+    const head = document.createElement("div");
+    head.className = "rev-tags-group-head";
+    head.textContent = c.name;
+    group.appendChild(head);
+    const wrap = document.createElement("div");
+    wrap.className = "rev-tags-checks";
+    for (const t of c.tags || []) {
+      const label = document.createElement("label");
+      label.className = "rev-tags-check";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = t;
+      cb.checked = current.has(t);
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(t));
+      wrap.appendChild(label);
+    }
+    group.appendChild(wrap);
+    box.appendChild(group);
+  }
+  $("#rv-tags-modal2").classList.remove("hidden");
+}
+
+$("#rev-tags-save").addEventListener("click", () => {
+  const chosen = new Set(
+    [...document.querySelectorAll("#rev-tags-list input[type=checkbox]:checked")].map((cb) => cb.value)
+  );
+  saveVisibleTags(chosen);
+  $("#rv-tags-modal2").classList.add("hidden");
+  loadReviewHome();
+});
+
+$("#rev-tags-cancel").addEventListener("click", () => $("#rv-tags-modal2").classList.add("hidden"));
+
+$("#rev-tags-reset").addEventListener("click", () => {
+  clearVisibleTags();
+  $("#rv-tags-modal2").classList.add("hidden");
+  loadReviewHome();
+  uiToast("已重置为当前岗位默认主题");
+});
 
 async function loadReview(tag) {
   state.reviewTag = tag;

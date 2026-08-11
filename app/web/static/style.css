@@ -585,6 +585,41 @@ h2 {
 .weak-tag-entry:hover { border-color: var(--red); color: var(--red); }
 .weak-tag-entry .badge { margin-left: 4px; }
 
+.rev-tags-open {
+  border: 1px solid var(--line-dark);
+  background: var(--card);
+  color: var(--red);
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  margin-left: 8px;
+  cursor: pointer;
+  font-size: 15px;
+  vertical-align: middle;
+}
+.rev-tags-open:hover { border-color: var(--red); background: var(--red-soft); }
+
+.rv-tags-scroll { overflow: auto; max-height: 60vh; }
+.rev-tags-group { margin-bottom: 12px; }
+.rev-tags-group-head {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.rev-tags-checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.rev-tags-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.rev-tags-check input { accent-color: var(--red); }
+
 #answer-back, #detail-back, #review-back {
   margin-bottom: 12px;
   margin-left: 0;
@@ -1086,4 +1121,19 @@ details summary:hover { color: var(--red); }
 }
 .modal-card textarea { resize: vertical; }
 .modal-card input:focus, .modal-card textarea:focus, .modal-card select:focus { border-color: var(--red); }
+.modal-foot {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.modal-foot button {
+  border: 1px solid var(--line-dark);
+  background: var(--card);
+  color: var(--ink);
+  padding: 5px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.modal-foot button:hover { border-color: var(--red); color: var(--red); }
 #qm-error { color: var(--red); }

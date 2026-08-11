@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>面试助手</title>
   <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-  <link rel="stylesheet" href="/static/style.css?v=20260811v1">
+  <link rel="stylesheet" href="/static/style.css?v=20260811v2">
 </head>
 <body>
   <button id="sidebar-hamburger" class="hamburger" title="菜单">☰</button>
@@ -287,8 +287,7 @@
         <h2 id="review-title"></h2>
         <button id="review-back">返回</button>
       </div>
-      <div id="review-entry"></div>
-      <div class="card hidden" id="review-paper-card">
+      <div id="review-entry"></div>      <div class="card hidden" id="review-paper-card">
         <div class="question-head">
           <span class="badge badge-done">复习讲义</span>
           <button id="review-paper-btn" class="primary">生成复习卷</button>
@@ -358,6 +357,19 @@
       </div>
     </section>
   </main>
+
+  <div id="rv-tags-modal2" class="modal hidden">
+    <div class="modal-card">
+      <h2>自定义展示主题</h2>
+      <p class="meta">勾选要在复习页展示的主题；未勾选的主题将被隐藏</p>
+      <div class="rv-tags-scroll" id="rev-tags-list"></div>
+      <div class="modal-foot">
+        <button id="rev-tags-reset">重置为岗位默认</button>
+        <button id="rev-tags-cancel">取消</button>
+        <button id="rev-tags-save" class="primary">保存</button>
+      </div>
+    </div>
+  </div>
 
   <div id="focus-modal" class="modal hidden">
     <div class="modal-card">
@@ -459,7 +471,7 @@
   </div>
   <div id="ui-toast" class="hidden"></div>
 
-  <script src="/static/app.js?v=20260811v1"></script>
+  <script src="/static/app.js?v=20260811v2"></script>
 </body>
 </html>
 
