@@ -285,7 +285,7 @@ def _rank_recommend(
     return picked
 
 
-BAD_SCORE_THRESHOLD = 60  # 上次判分低于此阈值 = 表现不好，重新进入今日选题池（薄弱复习）
+BAD_SCORE_THRESHOLD = 70  # 上次判分低于此阈值 = 表现不好，重新进入今日选题池（薄弱复习）
 
 
 @_wrap_storage

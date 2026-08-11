@@ -19,7 +19,7 @@ from .models import Attempt, Judgment, KnowledgeChunk, KnowledgeMeta, Question, 
 
 logger = logging.getLogger(__name__)
 
-HIGH_SCORE = 80  # 高分阈值（total_score ≥ 80 视为高分回答）
+HIGH_SCORE = 70  # 高分阈值（total_score ≥ 70 视为高分回答）
 TOP_K = 3  # 参考注入条数
 REF_LEN_LIMIT = 500  # 每条参考截断字符数
 HYBRID_WEIGHT = 0.8  # hybrid 融合权重（评估标定：scripts/eval_retrieval.py，MRR 最优）
