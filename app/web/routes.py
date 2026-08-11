@@ -1,4 +1,4 @@
-"""M14 Web 路由层：请求编排与校验，业务委托下层模块；LLM 调用放后台任务 + 前端轮询。
+﻿"""M14 Web 路由层：请求编排与校验，业务委托下层模块；LLM 调用放后台任务 + 前端轮询。
 
 - AppError → 500 统一 JSON；未知异常 → 500 + 日志
 - 并发作答同一会话 → 409（in-flight 集合）
@@ -18,7 +18,7 @@ from pathlib import Path
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import cast, func, or_, select, String
+from sqlalchemy import cast, delete, func, or_, select, String, text
 
 from .. import db
 from ..auth import (
@@ -47,7 +47,6 @@ from ..models import (
     Attempt,
     Judgment,
     Question,
-    QuestionStatus,
     QuestionType,
     Session,
     SessionKind,
@@ -55,6 +54,7 @@ from ..models import (
     Source,
     SourceType,
     User,
+    UserFavorite,
     UserPick,
 )
 from ..tags import TAG_CATEGORIES, TAG_VOCABULARY
@@ -97,8 +97,29 @@ def require_owner(user: User = Depends(require_user)) -> User:
     return user
 
 
+def _validate_focus(focus, focus_lang) -> tuple[str | None, str | None]:
+    """校验岗位/语言方向：focus 为空则清空；focus_lang 仅 backend 有效，其他岗位忽略。"""
+    from ..tags import LANG_CPP, LANG_GO, LANG_JAVA, LANG_PYTHON, ROLE_BACKEND
+
+    if focus is None or str(focus).strip() == "":
+        return None, None
+    focus = str(focus).strip()
+    valid_roles = {ROLE_BACKEND, "frontend", "ai_app", "qa", "ai_infra"}
+    if focus not in valid_roles:
+        raise HTTPException(status_code=400, detail=f"invalid focus: {focus}")
+    if focus != ROLE_BACKEND:
+        return focus, None  # 非后端岗位忽略语言方向
+    if focus_lang is None or str(focus_lang).strip() == "":
+        return focus, None
+    focus_lang = str(focus_lang).strip()
+    valid_langs = {LANG_JAVA, LANG_PYTHON, LANG_GO, LANG_CPP}
+    if focus_lang not in valid_langs:
+        raise HTTPException(status_code=400, detail=f"invalid focus_lang: {focus_lang}")
+    return focus, focus_lang
+
+
 def _ensure_today_picks(session, user_id: int) -> list[UserPick]:
-    """今日选题懒加载：用户今天无 picks 时按 D8 配额从公共 pending 池选题（per-user，按天自然隔离）。"""
+    """今日选题懒加载：用户今天无 picks 时按 D8 配额个性化选题（每用户池 + 薄弱点加权，按天隔离）。"""
     from datetime import datetime as _dt
 
     today_start = _dt.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -112,28 +133,12 @@ def _ensure_today_picks(session, user_id: int) -> list[UserPick]:
     )
     if existing:
         return existing
-    picked_qids: list[int] = []
     for qtype, limit in (
         (QuestionType.knowledge, 3),
         (QuestionType.design, 2),
         (QuestionType.project, 1),
     ):
-        picked_qids.extend(
-            session.scalars(
-                select(Question.id)
-                .where(
-                    Question.status == QuestionStatus.pending,
-                    Question.type == qtype,
-                )
-                .order_by(Question.created_at)
-                .limit(limit)
-            ).all()
-        )
-    if picked_qids:
-        session.add_all(
-            UserPick(user_id=user_id, question_id=qid) for qid in picked_qids
-        )
-        db.commit(session)
+        db.pick_questions(session, user_id, limit, qtype)
     return list(
         session.scalars(
             select(UserPick).where(
@@ -224,6 +229,7 @@ def create_app(
         err = validate_username(username) or validate_password(password)
         if err:
             raise HTTPException(status_code=400, detail=err)
+        focus, focus_lang = _validate_focus(body.get("focus"), body.get("focus_lang"))
         with _register_lock:  # 查重 + owner 判定 + 名额 + 建用户原子化（防并发竞态）
             with db.get_session() as session:
                 exists = session.scalars(
@@ -231,24 +237,41 @@ def create_app(
                 ).first()
                 if exists is not None:
                     raise HTTPException(status_code=409, detail="用户名已存在")
-                first = session.scalars(select(User).limit(1)).first() is None
-                if not first and user_count() >= MAX_USERS:
+                has_owner = (
+                    session.scalars(select(User).where(User.role == "owner").limit(1)).first()
+                    is not None
+                )
+                if has_owner and user_count() >= MAX_USERS:
                     raise HTTPException(status_code=409, detail="注册名额已满（20 人）")
                 user = User(
                     username=username,
                     password_hash=hash_password(password),
-                    role="owner" if first else "user",
+                    role="owner" if not has_owner else "user",  # 无 owner 时补位，永不双生
+                    focus=focus,
+                    focus_lang=focus_lang,
                 )
                 session.add(user)
                 db.commit(session)
                 session.refresh(user)
-                if first:
-                    db.backfill_owner_data(session, user.id)
         token = create_token(user.id)
         return {
             "token": token,
-            "user": {"id": user.id, "username": user.username, "role": user.role},
+            "user": {"id": user.id, "username": user.username, "role": user.role,
+                     "focus": user.focus, "focus_lang": user.focus_lang},
         }
+
+    @app.put("/api/auth/profile")
+    def auth_update_profile(body: dict, user: User = Depends(require_user)):
+        """更新求职岗位/语言方向（只影响推荐排序，不阻断做题）。"""
+        focus, focus_lang = _validate_focus(body.get("focus"), body.get("focus_lang"))
+        with db.get_session() as session:
+            row = session.get(User, user.id)
+            row.focus = focus
+            row.focus_lang = focus_lang
+            db.commit(session)
+            session.refresh(row)
+        return {"id": row.id, "username": row.username, "focus": row.focus,
+                "focus_lang": row.focus_lang}
 
     @app.post("/api/auth/login")
     def auth_login(body: dict):
@@ -273,7 +296,8 @@ def create_app(
 
     @app.get("/api/auth/me")
     def auth_me(user: User = Depends(require_user)):
-        return {"id": user.id, "username": user.username, "role": user.role}
+        return {"id": user.id, "username": user.username, "role": user.role,
+                "focus": user.focus, "focus_lang": user.focus_lang}
 
     if enable_scheduler:
         from .. import scheduler
@@ -281,6 +305,9 @@ def create_app(
         @app.on_event("startup")
         def startup():
             db.init_db(_db_url())
+            from ..tags import reload_tags
+
+            reload_tags()  # 词表从 DB 加载（首次写入种子）
             scheduler.start_scheduler(config, daily_runner)
 
         @app.on_event("shutdown")
@@ -327,6 +354,7 @@ def create_app(
                 if q is not None
             ]
             payload = []
+            tag_map = _question_tag_map(session, [q.id for q in questions])
             for q in questions:
                 done = _has_finished_session(session, q.id, user.id)
                 active = _active_session_id(session, q.id, user.id)
@@ -336,7 +364,7 @@ def create_app(
                         "stem": q.stem,
                         "type": q.type.value,
                         "difficulty": q.difficulty,
-                        "tags": q.tags,
+                        "tags": tag_map.get(q.id, []),
                         "done": done,
                         "active_session_id": active,
                     }
@@ -354,9 +382,18 @@ def create_app(
                 "stem": q.stem,
                 "type": q.type.value,
                 "difficulty": q.difficulty,
-                "tags": q.tags,
+                "tags": _question_tag_map(session, [question_id]).get(question_id, []),
                 "good_criteria": q.good_criteria,
                 "bad_criteria": q.bad_criteria,
+                "favorited": (
+                    session.scalars(
+                        select(UserFavorite).where(
+                            UserFavorite.user_id == user.id,
+                            UserFavorite.question_id == question_id,
+                        )
+                    ).first()
+                    is not None
+                ),
             }
 
     @app.get("/api/questions/{question_id}/history")
@@ -399,7 +436,7 @@ def create_app(
                 "id": q.id,
                 "stem": q.stem,
                 "type": q.type.value,
-                "tags": q.tags,
+                "tags": _question_tag_map(session, [question_id]).get(question_id, []),
                 "attempts": attempts,
             }
 
@@ -568,6 +605,8 @@ def create_app(
             latest = _latest_judgment_by_question(session, user.id)
 
             groups: dict[str, list[dict]] = {}
+            qids = [p.question_id for p in picks if session.get(Question, p.question_id) is not None]
+            tag_map = _question_tag_map(session, qids)
             for p in picks:
                 q = session.get(Question, p.question_id)
                 if q is None:
@@ -579,7 +618,7 @@ def create_app(
                     "stem": q.stem,
                     "type": q.type.value,
                     "difficulty": q.difficulty,
-                    "tags": q.tags,
+                    "tags": tag_map.get(q.id, []),
                     "done": False,
                     "status": "not_answered",
                     "total_score": None,
@@ -711,7 +750,7 @@ def create_app(
             )
             rows = session.execute(
                 select(
-                    Question.id, Question.stem, Question.type, Question.difficulty, Question.tags
+                    Question.id, Question.stem, Question.type, Question.difficulty
                 )
                 .where(*filters)
                 .order_by(Question.id.desc())
@@ -719,6 +758,16 @@ def create_app(
                 .limit(page_size)
             ).all()
             total_pages = (total + page_size - 1) // page_size
+            qids = [q.id for q in rows]
+            tag_map = _question_tag_map(session, qids)
+            fav_ids = set(
+                session.scalars(
+                    select(UserFavorite.question_id).where(
+                        UserFavorite.user_id == user.id,
+                        UserFavorite.question_id.in_(qids),
+                    )
+                ).all()
+            ) if qids else set()
             latest = _latest_judgment_by_question(session, user.id)
             items = [
                 {
@@ -726,10 +775,99 @@ def create_app(
                     "stem": q.stem,
                     "type": q.type.value,
                     "difficulty": q.difficulty,
-                    "tags": q.tags,
+                    "tags": tag_map.get(q.id, []),
                     "done": q.id in latest,
+                    "favorited": q.id in fav_ids,
                 }
                 for q in rows
+            ]
+        return {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "items": items,
+        }
+
+    # --- 收藏 ---
+
+    @app.post("/api/favorites/{question_id}")
+    def favorite_question(question_id: int, user: User = Depends(require_user)):
+        """收藏题目（幂等：已收藏返回成功）。"""
+        with db.get_session() as session:
+            if session.get(Question, question_id) is None:
+                raise HTTPException(status_code=404, detail="question not found")
+            if (
+                session.scalars(
+                    select(UserFavorite).where(
+                        UserFavorite.user_id == user.id,
+                        UserFavorite.question_id == question_id,
+                    )
+                ).first()
+                is None
+            ):
+                session.add(UserFavorite(user_id=user.id, question_id=question_id))
+                db.commit(session)
+        return {"favorited": True}
+
+    @app.delete("/api/favorites/{question_id}")
+    def unfavorite_question(question_id: int, user: User = Depends(require_user)):
+        """取消收藏（幂等：未收藏返回成功）。"""
+        with db.get_session() as session:
+            fav = session.scalars(
+                select(UserFavorite).where(
+                    UserFavorite.user_id == user.id,
+                    UserFavorite.question_id == question_id,
+                )
+            ).first()
+            if fav is not None:
+                session.delete(fav)
+                db.commit(session)
+        return {"favorited": False}
+
+    @app.get("/api/favorites")
+    def favorite_questions(
+        page: int = 1,
+        page_size: int = 20,
+        q: str | None = None,
+        user: User = Depends(require_user),
+    ):
+        """我的收藏列表（分页，id 倒序）；q 关键词搜题干。"""
+        if page < 1 or not 1 <= page_size <= 50:
+            raise HTTPException(status_code=400, detail="invalid page or page_size")
+        with db.get_session() as session:
+            filters = [UserFavorite.user_id == user.id]
+            if q and q.strip():
+                filters.append(Question.stem.ilike(f"%{q.strip().lower()}%"))
+            total = session.scalar(
+                select(func.count())
+                .select_from(UserFavorite)
+                .join(Question, Question.id == UserFavorite.question_id)
+                .where(*filters)
+            )
+            rows = session.execute(
+                select(Question.id, Question.stem, Question.type, Question.difficulty)
+                .join(UserFavorite, UserFavorite.question_id == Question.id)
+                .where(*filters)
+                .order_by(UserFavorite.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            ).all()
+            total_pages = (total + page_size - 1) // page_size
+            qids = [r.id for r in rows]
+            tag_map = _question_tag_map(session, qids)
+            latest = _latest_judgment_by_question(session, user.id)
+            items = [
+                {
+                    "id": r.id,
+                    "stem": r.stem,
+                    "type": r.type.value,
+                    "difficulty": r.difficulty,
+                    "tags": tag_map.get(r.id, []),
+                    "done": r.id in latest,
+                    "favorited": True,
+                }
+                for r in rows
             ]
         return {
             "total": total,
@@ -743,9 +881,17 @@ def create_app(
 
     @app.get("/api/tags")
     def tag_categories():
-        """标签分类结构（前端筛选联动用）。"""
+        """标签分类结构（岗位/语言标注 + 标签，前端筛选联动用）。"""
+        from ..tags import CATEGORY_LANG, CATEGORY_ROLES
+
         return [
-            {"name": name, "tags": list(tags)} for name, tags in TAG_CATEGORIES
+            {
+                "name": name,
+                "lang": CATEGORY_LANG.get(name),
+                "roles": list(CATEGORY_ROLES.get(name, ())),
+                "tags": list(tags),
+            }
+            for name, tags in TAG_CATEGORIES
         ]
 
     @app.get("/api/review/tags")
@@ -774,6 +920,7 @@ def create_app(
         with db.get_session() as session:
             questions, fallback, fallback_category = _review_questions(session, tag)
             latest = _latest_judgment_by_question(session, user.id)
+            tag_map = _question_tag_map(session, [q.id for q in questions])
             items = []
             for q in questions:
                 item = {
@@ -781,7 +928,7 @@ def create_app(
                     "stem": q.stem,
                     "type": q.type.value,
                     "difficulty": q.difficulty,
-                    "tags": q.tags,
+                    "tags": tag_map.get(q.id, []),
                     "done": False,
                     "total_score": None,
                 }
@@ -874,7 +1021,10 @@ def create_app(
                 raw_tags = body.get("tags")
                 if not isinstance(raw_tags, list):
                     raise HTTPException(status_code=400, detail="tags 必须是列表")
-                row.tags = [t for t in raw_tags if isinstance(t, str)][:5]
+                valid = [t for t in raw_tags if isinstance(t, str) and t in TAG_VOCABULARY][:5]
+                _set_question_tags(session, question_id, valid)
+            if "reviewed" in body:
+                row.reviewed_at = datetime.now() if body["reviewed"] else None
             if "difficulty" in body:
                 d = body.get("difficulty")
                 if not isinstance(d, int) or not 1 <= d <= 5:
@@ -892,30 +1042,151 @@ def create_app(
             "id": row.id,
             "stem": row.stem,
             "difficulty": row.difficulty,
-            "tags": row.tags,
+            "tags": _question_tag_map(session, [question_id]).get(question_id, []),
         }
 
     @app.delete("/api/admin/questions/{question_id}")
     def admin_delete_question(
         question_id: int, user: User = Depends(require_owner)
     ):
-        """管理员删除题目：级联删全部会话（attempts/judgments）与用户 picks。"""
+        """管理员删除题目：一条 DELETE，会话链/收藏/标签关联 DB 级联清理。"""
         with db.get_session() as session:
             row = session.get(Question, question_id)
             if row is None:
                 raise HTTPException(status_code=404, detail="question not found")
-            rows = session.scalars(
-                select(Session).where(Session.question_id == question_id)
-            ).all()
-            for s in rows:
-                session.delete(s)
-            picks = session.scalars(
-                select(UserPick).where(UserPick.question_id == question_id)
-            ).all()
-            for p in picks:
-                session.delete(p)
             session.delete(row)
             db.commit(session)
+        return {"deleted": True}
+
+    # --- 标签/分类管理（词表数据库化，owner） ---
+
+    @app.get("/api/admin/tags/tree")
+    def admin_tags_tree(user: User = Depends(require_owner)):
+        """完整词表树（带 id，供审核页管理区）。"""
+        from ..models import Tag, TagCategory
+
+        with db.get_session() as session:
+            cats = list(session.scalars(select(TagCategory).order_by(TagCategory.id)))
+            items = list(session.scalars(select(Tag).order_by(Tag.id)))
+        by_cat: dict[int, list[dict]] = {}
+        for it in items:
+            by_cat.setdefault(it.category_id, []).append({"id": it.id, "name": it.name, "is_custom": it.is_custom})
+        return [
+            {"id": c.id, "name": c.name, "is_custom": c.is_custom, "tags": by_cat.get(c.id, [])}
+            for c in cats
+        ]
+
+    @app.get("/api/review/suggestions")
+    def review_suggestions(ids: str = "", user: User = Depends(require_user)):
+        """AI 审核参考（并入 questions 的建议快照）：?ids=1,2,3 → {suggestions: {qid: {...}}}。"""
+        qids = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+        if not qids:
+            return {"suggestions": {}}
+        with db.get_session() as session:
+            rows = session.execute(
+                select(
+                    Question.id,
+                    Question.suggested_category,
+                    Question.suggested_tags,
+                    Question.suggested_difficulty,
+                ).where(Question.id.in_(qids))
+            ).all()
+        return {
+            "suggestions": {
+                qid: {
+                    "suggested_category": cat or "",
+                    "suggested_tags": tags or [],
+                    "suggested_difficulty": diff,
+                }
+                for qid, cat, tags, diff in rows
+            }
+        }
+
+    @app.post("/api/admin/categories")
+    def admin_add_category(body: dict, user: User = Depends(require_owner)):
+        """新增分类（词表动态化）；可选指定岗位 roles 与语言 lang。"""
+        from ..models import TagCategory
+
+        name = str(body.get("name", "")).strip()
+        if not name or len(name) > 20:
+            raise HTTPException(status_code=400, detail="分类名需 1-20 字符")
+        raw_roles = body.get("roles")
+        if raw_roles is None:
+            roles: list[str] = []
+        elif isinstance(raw_roles, list) and all(isinstance(r, str) for r in raw_roles):
+            roles = raw_roles
+        else:
+            raise HTTPException(status_code=400, detail="roles 需为字符串数组")
+        lang = body.get("lang")
+        if lang is not None and not isinstance(lang, str):
+            raise HTTPException(status_code=400, detail="lang 需为字符串")
+        with db.get_session() as session:
+            if session.scalars(select(TagCategory).where(TagCategory.name == name)).first():
+                raise HTTPException(status_code=409, detail="分类已存在")
+            cat = TagCategory(name=name, is_custom=1, roles=roles, lang=lang)
+            session.add(cat)
+            db.commit(session)
+            session.refresh(cat)
+        from ..tags import reload_tags
+
+        reload_tags()
+        return {"id": cat.id, "name": cat.name, "roles": cat.roles, "lang": cat.lang}
+
+    @app.delete("/api/admin/categories/{category_id}")
+    def admin_delete_category(category_id: int, user: User = Depends(require_owner)):
+        """删除空分类（非空拒绝）；DB 级联删除其下标签（业务层 409 先拦非空）。"""
+        from ..models import Tag, TagCategory
+
+        with db.get_session() as session:
+            cat = session.get(TagCategory, category_id)
+            if cat is None:
+                raise HTTPException(status_code=404, detail="category not found")
+            if session.scalars(select(Tag).where(Tag.category_id == category_id).limit(1)).first():
+                raise HTTPException(status_code=409, detail="分类下有标签，先清空标签")
+            session.delete(cat)
+            db.commit(session)
+        from ..tags import reload_tags
+
+        reload_tags()
+        return {"deleted": True}
+
+    @app.post("/api/admin/tags")
+    def admin_add_tag(body: dict, user: User = Depends(require_owner)):
+        """新增标签（指定分类）。"""
+        from ..models import Tag, TagCategory
+
+        name = str(body.get("name", "")).strip()
+        category_id = body.get("category_id")
+        if not name or len(name) > 20:
+            raise HTTPException(status_code=400, detail="标签名需 1-20 字符")
+        with db.get_session() as session:
+            if session.get(TagCategory, category_id) is None:
+                raise HTTPException(status_code=400, detail="分类不存在")
+            if session.scalars(select(Tag).where(Tag.name == name)).first():
+                raise HTTPException(status_code=409, detail="标签已存在")
+            item = Tag(category_id=category_id, name=name, is_custom=1)
+            session.add(item)
+            db.commit(session)
+            session.refresh(item)
+        from ..tags import reload_tags
+
+        reload_tags()
+        return {"id": item.id, "name": item.name}
+
+    @app.delete("/api/admin/tags/{tag_id}")
+    def admin_delete_tag(tag_id: int, user: User = Depends(require_owner)):
+        """删除标签：一条 DELETE，题上关联（question_tags）DB 级联清除。"""
+        from ..models import Tag
+
+        with db.get_session() as session:
+            item = session.get(Tag, tag_id)
+            if item is None:
+                raise HTTPException(status_code=404, detail="tag not found")
+            session.delete(item)
+            db.commit(session)
+        from ..tags import reload_tags
+
+        reload_tags()
         return {"deleted": True}
 
     # --- 数据备份：导出/导入（sqlite 整库备份 zip） ---
@@ -1122,7 +1393,7 @@ def create_app(
                 payload["items"] = [
                     {
                         "stem": q.stem,
-                        "tags": q.tags,
+                        "tags": list(getattr(q, "_pending_tags", [])),
                         "difficulty": q.difficulty,
                     }
                     for q in entry["questions"]
@@ -1168,8 +1439,10 @@ def _run_answer_job(
         with db.get_session() as session:
             row = session.get(Session, session_id)
             question = session.get(Question, row.question_id)
+            tags = _question_tag_map(session, [question.id]).get(question.id, [])
+        question._tags = tags  # 非持久属性：judge/retrieval 读取题标签
         judge_llm = llm_factory("judge")
-        knowledge = _knowledge_for(question.stem, question.tags, embedder_factory, llm=judge_llm)
+        knowledge = _knowledge_for(question.stem, tags, embedder_factory, llm=judge_llm)
         if row.status == SessionStatus.finished:
             # 判分失败重试：从 attempts 重建 transcript 直接重判，不再续答
             judgment = judge(
@@ -1312,6 +1585,11 @@ def _reference_for(question, embedder_factory, user_id: int) -> str | None:
             )
         if not candidates:
             return None
+        tag_map = {}
+        with db.get_session() as session:
+            tag_map = _question_tag_map(session, [q.id for q in candidates])
+        for q in candidates:
+            q._tags = tag_map.get(q.id, [])  # 非持久属性：检索评分用
         return build_reference(question, candidates, embedder=embedder_factory())
     except Exception as e:
         logger.warning("reference retrieval failed, judge without reference: %s", e)
@@ -1517,10 +1795,10 @@ def _tag_direct_questions(source_id: int, llm_factory) -> None:
                     session.delete(row)
                 elif info["verdict"] == "rewrite" and info["new_stem"]:
                     row.stem = info["new_stem"]
-                    row.tags = info["tags"]
+                    _set_question_tags(session, row.id, info["tags"])
                     row.difficulty = info["difficulty"]
                 else:
-                    row.tags = info["tags"]
+                    _set_question_tags(session, row.id, info["tags"])
                     row.difficulty = info["difficulty"]
             db.commit(session)
     except Exception as e:
@@ -1687,7 +1965,6 @@ def _confirm_project_questions(source_id: int, items: list[dict], embedder_facto
                 source_id=source_id,
                 type=QuestionType.project,
                 stem=str(i["stem"]).strip(),
-                tags=[t for t in (i.get("tags") or []) if isinstance(t, str)][:5],
                 difficulty=_clamp_difficulty(i.get("difficulty")),
                 good_criteria=list(DEFAULT_GOOD_CRITERIA),
                 bad_criteria=list(DEFAULT_BAD_CRITERIA),
@@ -1697,6 +1974,17 @@ def _confirm_project_questions(source_id: int, items: list[dict], embedder_facto
         kept = dedup(questions, pool, embedder_factory())
         with db.get_session() as session:
             session.add_all(kept)
+            db.commit(session)
+            # 候选标签（词表命中）写 question_tags 关联
+            tags_by_stem = {
+                str(i["stem"]).strip(): [
+                    t for t in (i.get("tags") or [])
+                    if isinstance(t, str) and t in TAG_VOCABULARY
+                ][:5]
+                for i in valid
+            }
+            for q in kept:
+                _set_question_tags(session, q.id, tags_by_stem.get(q.stem, []))
             db.commit(session)
         logger.info("confirmed %d project questions for source %s", len(kept), source_id)
     except Exception as e:
@@ -1732,20 +2020,58 @@ def _db_url() -> str:
 
 
 def _tags_exists(tag: str):
-    """tags JSON 数组精确包含 tag 的 EXISTS 子查询。
+    """题含指定标签的 EXISTS 子查询（question_tags 关联表 JOIN tags）。"""
+    from ..models import QuestionTag, Tag
 
-    用 json_each 解析 JSON 值匹配（兼容 SQLAlchemy 默认 ensure_ascii 的 \\uXXXX 转义存储），
-    替代 cast(tags, String).like —— 后者对中文标签永远匹配不上（历史遗留 bug，
-    曾导致复习「该标签暂无题目」死胡同；ASCII 标签不受影响所以未暴露）。
-    """
-    je = func.json_each(Question.tags).table_valued("value")
-    return select(1).where(je.c.value == tag).exists()
+    return Question.id.in_(
+        select(QuestionTag.question_id)
+        .join(Tag, QuestionTag.tag_id == Tag.id)
+        .where(Tag.name == tag)
+    )
 
 
 def _tags_contains(keyword: str):
-    """tags JSON 数组任一元素模糊包含 keyword 的 EXISTS 子查询（大小写不敏感）。"""
-    je = func.json_each(Question.tags).table_valued("value")
-    return select(1).where(je.c.value.ilike(f"%{keyword}%")).exists()
+    """题含模糊匹配标签的 EXISTS 子查询（标签名 ilike，大小写不敏感）。"""
+    from ..models import QuestionTag, Tag
+
+    return Question.id.in_(
+        select(QuestionTag.question_id)
+        .join(Tag, QuestionTag.tag_id == Tag.id)
+        .where(Tag.name.ilike(f"%{keyword}%"))
+    )
+
+
+def _set_question_tags(session, question_id: int, names: list[str]) -> None:
+    """覆写题目标签（db.set_question_tags 转发，调用处保持统一）。"""
+    db.set_question_tags(session, question_id, names)
+
+
+def _tag_ids_by_name(session, names: list[str]) -> list[int]:
+    """词表标签名 → id 映射（question_tags 写入用）。"""
+    from ..models import Tag
+
+    if not names:
+        return []
+    rows = session.scalars(select(Tag).where(Tag.name.in_(names))).all()
+    return [t.id for t in rows]
+
+
+def _question_tag_map(session, qids: list[int]) -> dict[int, list[str]]:
+    """批量取题-标签名映射（question_tags → tags），供列表接口组装 tags 字段。"""
+    from ..models import QuestionTag, Tag
+
+    if not qids:
+        return {}
+    rows = session.execute(
+        select(QuestionTag.question_id, Tag.name)
+        .join(Tag, QuestionTag.tag_id == Tag.id)
+        .where(QuestionTag.question_id.in_(qids))
+        .order_by(QuestionTag.question_id, Tag.name)
+    ).all()
+    tag_map: dict[int, list[str]] = {}
+    for qid, name in rows:
+        tag_map.setdefault(qid, []).append(name)
+    return tag_map
 
 
 def _review_questions(session, tag: str, limit: int = 30):
