@@ -37,7 +37,7 @@ const state = {
 const $ = (sel) => document.querySelector(sel);
 
 // 可刷新恢复的主视图（hash 路由，带状态参数）；answer/result/detail 为流程中间态（sessionStorage 恢复）
-const HASHABLE = new Set(["today", "bank", "history", "review", "upload"]);
+const HASHABLE = new Set(["today", "bank", "history", "review", "favorites", "upload"]);
 
 if ("scrollRestoration" in history) history.scrollRestoration = "manual"; // 后退不恢复旧滚动位
 
@@ -80,6 +80,9 @@ function show(view) {
   if (view === "history") {
     loadHistory();
     loadStats();
+  }
+  if (view === "favorites") {
+    loadFavorites();
   }
   if (HASHABLE.has(view)) updateHash();
 }
@@ -316,6 +319,7 @@ async function loadBank() {
       : "";
     card.innerHTML = `
       <div class="question-head">
+        <button class="fav-btn${q.favorited ? " active" : ""}" data-id="${q.id}" data-fav="${q.favorited ? "1" : "0"}" title="收藏">★</button>
         ${badge}
         <span class="badge">${q.type}</span>
         <span class="badge">难度 ${difficultyStars(q.difficulty)}</span>
@@ -323,12 +327,23 @@ async function loadBank() {
       </div>
       <p>${escapeHtml(q.stem)}</p>`;
     card.addEventListener("click", (e) => {
-      if (e.target.closest(".admin-btn")) return;
+      if (e.target.closest(".admin-btn") || e.target.closest(".fav-btn")) return;
       state.returnTo = "bank";
       startAnswer(q);
     });
     list.appendChild(card);
   }
+  list.querySelectorAll(".fav-btn").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
+      const fav = btn.dataset.fav === "1";
+      await toggleFavorite(id, fav, (now) => {
+        btn.classList.toggle("active", now);
+        btn.dataset.fav = now ? "1" : "0";
+      });
+    });
+  });
   list.querySelectorAll(".admin-btn").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -351,8 +366,79 @@ async function loadBank() {
   updateHash();
 }
 
-function gotoBankPage() {
-  const input = $("#bank-goto");
+// --- 收藏 ---
+
+const favState = { page: 1, pageSize: 20, totalPages: 1 };
+
+async function toggleFavorite(id, favorited, after) {
+  try {
+    if (favorited) {
+      await api(`/api/favorites/${id}`, { method: "DELETE" });
+    } else {
+      await api(`/api/favorites/${id}`, { method: "POST" });
+    }
+    if (after) after(!favorited);
+  } catch (err) {
+    uiToast(err.message, true);
+  }
+}
+
+async function loadFavorites() {
+  const params = new URLSearchParams({ page: favState.page, page_size: favState.pageSize });
+  const keyword = $("#fav-search").value.trim();
+  if (keyword) params.set("q", keyword);
+  let data;
+  try {
+    data = await api(`/api/favorites?${params}`);
+  } catch (err) {
+    uiToast(err.message, true);
+    return;
+  }
+  favState.totalPages = Math.max(1, data.total_pages);
+  const list = $("#fav-list");
+  list.innerHTML = "";
+  if (!data.items.length) {
+    list.innerHTML = emptyState("暂无收藏题目", "在题库或今日题目里点击 ★ 收藏想重点复习的题");
+  }
+  for (const q of data.items) {
+    const card = document.createElement("div");
+    card.className = "card question-card";
+    card.innerHTML = `
+      <div class="question-head">
+        <button class="fav-btn active" data-id="${q.id}" title="取消收藏">★</button>
+        <span class="badge">${q.type}</span>
+        <span class="badge">难度 ${difficultyStars(q.difficulty)}</span>
+        <span class="badge">${(q.tags || []).join("、") || "无标签"}</span>
+      </div>
+      <p>${escapeHtml(q.stem)}</p>`;
+    card.addEventListener("click", (e) => {
+      if (e.target.closest(".fav-btn")) return;
+      state.returnTo = "favorites";
+      startAnswer(q);
+    });
+    list.appendChild(card);
+  }
+  list.querySelectorAll(".fav-btn").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
+      await toggleFavorite(id, true, () => loadFavorites());
+    });
+  });
+  $("#fav-page-info").textContent = `第 ${data.page} / ${favState.totalPages} 页`;
+  $("#fav-prev").disabled = data.page <= 1;
+  $("#fav-next").disabled = data.page >= favState.totalPages;
+}
+
+$("#fav-prev").addEventListener("click", () => {
+  if (favState.page > 1) { favState.page -= 1; loadFavorites(); }
+});
+$("#fav-next").addEventListener("click", () => {
+  if (favState.page < favState.totalPages) { favState.page += 1; loadFavorites(); }
+});
+$("#fav-search").addEventListener("input", () => { favState.page = 1; loadFavorites(); });
+
+function gotoBankPage() {  const input = $("#bank-goto");
   const n = Number(input.value);
   const total = Number(input.max) || 1;
   if (!Number.isInteger(n) || n < 1 || n > total) {
@@ -1834,6 +1920,8 @@ $("#auth-tab-login").addEventListener("click", () => {
   $("#auth-submit").textContent = "登录";
   $("#auth-hint").textContent = "登录后开始刷题";
   $("#auth-error").textContent = "";
+  $("#auth-focus-row").classList.add("hidden");
+  $("#auth-lang-row").classList.add("hidden");
 });
 ["#auth-username", "#auth-password"].forEach((sel) => {
   $(sel).addEventListener("keydown", (e) => {
@@ -1847,6 +1935,11 @@ $("#auth-tab-register").addEventListener("click", () => {
   $("#auth-submit").textContent = "注册";
   $("#auth-hint").textContent = "首个注册用户为管理员（owner）；开放注册共 20 个名额";
   $("#auth-error").textContent = "";
+  $("#auth-focus-row").classList.remove("hidden");
+  $("#auth-lang-row").classList.add("hidden"); // 默认岗位为空，语言行隐藏
+});
+$("#auth-focus").addEventListener("change", () => {
+  $("#auth-lang-row").classList.toggle("hidden", $("#auth-focus").value !== "backend");
 });
 $("#auth-submit").addEventListener("click", async () => {
   const username = $("#auth-username").value.trim();
@@ -1856,11 +1949,16 @@ $("#auth-submit").addEventListener("click", async () => {
     return;
   }
   const path = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
+  const payload = { username, password };
+  if (authMode === "register") {
+    payload.focus = $("#auth-focus").value || null;
+    payload.focus_lang = $("#auth-focus-lang").value || null;
+  }
   try {
     const body = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify(payload),
     }).then(async (r) => {
       if (!r.ok) {
         const b = await r.json().catch(() => ({}));
@@ -1882,10 +1980,44 @@ $("#auth-submit").addEventListener("click", async () => {
   }
 });
 
+// --- 求职设置（岗位 × 语言，只影响推荐排序） ---
+
+$("#focus-btn").addEventListener("click", () => {
+  const u = state.user || {};
+  $("#focus-sel").value = u.focus || "";
+  $("#focus-lang-sel").value = u.focus_lang || "";
+  $("#focus-lang-row").classList.toggle("hidden", (u.focus || "") !== "backend");
+  $("#focus-error").textContent = "";
+  $("#focus-modal").classList.remove("hidden");
+});
+$("#focus-cancel").addEventListener("click", () => $("#focus-modal").classList.add("hidden"));
+$("#focus-sel").addEventListener("change", () => {
+  $("#focus-lang-row").classList.toggle("hidden", $("#focus-sel").value !== "backend");
+});
+$("#focus-save").addEventListener("click", async () => {
+  try {
+    const body = await api("/api/auth/profile", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        focus: $("#focus-sel").value || null,
+        focus_lang: $("#focus-lang-sel").value || null,
+      }),
+    });
+    state.user.focus = body.focus;
+    state.user.focus_lang = body.focus_lang;
+    $("#focus-modal").classList.add("hidden");
+    uiToast("求职设置已保存，推荐将按新岗位调整");
+  } catch (err) {
+    $("#focus-error").textContent = err.message;
+  }
+});
+
 function applyRoleUI() {
   const isOwner = state.user && state.user.role === "owner";
   $("#daily-run").classList.toggle("hidden", !isOwner);
   $("#upload-btn").classList.toggle("hidden", !isOwner);
+  $("#reviewer-link").style.display = isOwner ? "flex" : "none";
 }
 
 async function initAuth() {

@@ -1,0 +1,80 @@
+﻿<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>题库审核</title>
+  <link rel="stylesheet" href="/static/reviewer.css?v=2">
+</head>
+<body>
+  <header class="rv-head">
+    <h1>题库人工审核</h1>
+    <a href="/" class="rv-back">← 返回主界面</a>
+    <div class="rv-progress" id="rv-progress"></div>
+  </header>
+
+  <div class="rv-toolbar">
+    <label>分类
+      <select id="rv-filter-cat"><option value="all">全部</option></select>
+    </label>
+    <label>难度
+      <select id="rv-filter-diff">
+        <option value="all">全部</option>
+        <option value="1">★</option><option value="2">★★</option>
+        <option value="3">★★★</option><option value="4">★★★★</option>
+        <option value="5">★★★★★</option>
+      </select>
+    </label>
+    <label>状态
+      <select id="rv-filter-status">
+        <option value="all">全部</option>
+        <option value="done">已审核</option>
+        <option value="todo">未审核</option>
+      </select>
+    </label>
+    <input type="search" id="rv-search" placeholder="搜索题干…">
+    <span class="rv-toolbar-spacer"></span>
+    <button id="rv-batch-apply">批量采用建议</button>
+    <button id="rv-batch-save">批量保存</button>
+    <button id="rv-batch-delete" class="rv-danger">批量删除</button>
+    <button id="rv-open-tags">标签管理</button>
+  </div>
+
+  <div class="rv-legend">
+    <span>☐ 勾选 = 批量操作对象</span>
+    <span class="rv-ref">■ AI 建议（现有标签快照，仅供参考）</span>
+    <span class="rv-edit">■ 人工编辑区（保存后为真实数据）</span>
+  </div>
+
+  <div id="rv-list" class="rv-list"></div>
+  <div class="rv-pager">
+    <button id="rv-prev">上一页</button>
+    <span id="rv-page-info"></span>
+    <button id="rv-next">下一页</button>
+  </div>
+
+  <!-- 标签/分类管理弹层 -->
+  <div id="rv-tags-modal" class="rv-modal hidden">
+    <div class="rv-modal-card">
+      <h2>标签 / 分类管理</h2>
+      <div class="rv-tags-body">
+        <div class="rv-tags-left">
+          <h3>新增</h3>
+          <label>分类名 <input id="rv-new-cat" placeholder="新分类名"></label>
+          <button id="rv-add-cat">新增分类</button>
+          <label>标签名 <input id="rv-new-tag" placeholder="新标签名"></label>
+          <select id="rv-new-tag-cat"></select>
+          <button id="rv-add-tag">新增标签</button>
+        </div>
+        <div class="rv-tags-right" id="rv-tags-tree"></div>
+      </div>
+      <div class="rv-modal-foot">
+        <button id="rv-tags-close">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="rv-toast" class="rv-toast hidden"></div>
+  <script src="/static/reviewer.js?v=2"></script>
+</body>
+</html>

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>面试助手</title>
   <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-  <link rel="stylesheet" href="/static/style.css?v=20260810i">
+  <link rel="stylesheet" href="/static/style.css?v=20260811v1">
 </head>
 <body>
   <button id="sidebar-hamburger" class="hamburger" title="菜单">☰</button>
@@ -20,10 +20,13 @@
       <button data-view="bank">题库</button>
       <button data-view="history">历史记录</button>
       <button data-view="review">复习</button>
+      <button data-view="favorites">收藏</button>
     </nav>
     <div class="sidebar-actions">
       <button id="daily-run" class="sidebar-daily">立即更新</button>
       <button id="upload-btn" class="sidebar-upload">上传题目</button>
+      <button id="focus-btn" class="sidebar-upload">求职设置</button>
+      <a id="reviewer-link" class="sidebar-logout" href="/static/reviewer.html" style="text-decoration:none;display:none">题库审核</a>
       <button id="logout-btn" class="sidebar-logout">退出登录</button>
     </div>
     <input type="file" id="upload-file" accept=".md,.txt,.pdf,.doc,.docx" hidden>
@@ -44,6 +47,25 @@
           </label>
           <label>密码
             <input type="password" id="auth-password" autocomplete="current-password">
+          </label>
+          <label class="hidden" id="auth-focus-row">求职岗位
+            <select id="auth-focus">
+              <option value="">不指定（全部推荐）</option>
+              <option value="backend">后端开发</option>
+              <option value="ai_app">AI 应用开发</option>
+              <option value="ai_infra">AI 基础设施</option>
+              <option value="frontend">前端开发</option>
+              <option value="qa">测试开发</option>
+            </select>
+          </label>
+          <label class="hidden" id="auth-lang-row">后端语言方向
+            <select id="auth-focus-lang">
+              <option value="">不指定</option>
+              <option value="java">Java</option>
+              <option value="python">Python</option>
+              <option value="go">Go</option>
+              <option value="C/C++">C/C++</option>
+            </select>
           </label>
           <p class="meta" id="auth-hint">注册后即成为第一个管理员（owner）</p>
           <button id="auth-submit" class="primary">登录</button>
@@ -301,6 +323,20 @@
       <div class="card-list" id="review-list"></div>
     </section>
 
+    <section id="view-favorites" class="view hidden">
+      <div class="card filter-bar">
+        <label>搜索
+          <input type="search" id="fav-search" placeholder="关键词…">
+        </label>
+      </div>
+      <div class="card-list" id="fav-list"></div>
+      <div class="bank-pager">
+        <button id="fav-prev">上一页</button>
+        <span id="fav-page-info" class="meta"></span>
+        <button id="fav-next">下一页</button>
+      </div>
+    </section>
+
     <section id="view-detail" class="view hidden">
       <div class="card">
         <button id="detail-back">← 返回</button>
@@ -322,6 +358,37 @@
       </div>
     </section>
   </main>
+
+  <div id="focus-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>求职设置</h2>
+      <p class="meta">岗位只影响今日推荐排序，不阻断做题；随时可改</p>
+      <label>求职岗位
+        <select id="focus-sel">
+          <option value="">不指定（全部推荐）</option>
+          <option value="backend">后端开发</option>
+          <option value="ai_app">AI 应用开发</option>
+          <option value="ai_infra">AI 基础设施</option>
+          <option value="frontend">前端开发</option>
+          <option value="qa">测试开发</option>
+        </select>
+      </label>
+      <label id="focus-lang-row" class="hidden">后端语言方向
+        <select id="focus-lang-sel">
+          <option value="">不指定</option>
+          <option value="java">Java</option>
+          <option value="python">Python</option>
+          <option value="go">Go</option>
+          <option value="C/C++">C/C++</option>
+        </select>
+      </label>
+      <div class="modal-foot">
+        <button id="focus-cancel">取消</button>
+        <button id="focus-save" class="primary">保存</button>
+      </div>
+      <p class="meta" id="focus-error"></p>
+    </div>
+  </div>
 
   <div id="question-modal" class="modal hidden">
     <div class="modal-card">
@@ -392,7 +459,7 @@
   </div>
   <div id="ui-toast" class="hidden"></div>
 
-  <script src="/static/app.js?v=20260810i"></script>
+  <script src="/static/app.js?v=20260811v1"></script>
 </body>
 </html>
 
