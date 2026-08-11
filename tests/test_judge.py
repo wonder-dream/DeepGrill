@@ -9,7 +9,7 @@ from app.judge.judge import (
     compute_total,
     judge,
 )
-from app.models import Question, QuestionType, Session, SessionKind, Source, SourceType
+from app.models import Question, QuestionType, Session, SessionKind, Source, SourceType, User
 from tests.fakes import FakeLLM
 
 VALID = {
@@ -27,16 +27,18 @@ TRANSCRIPT = [
 
 
 def make_question(type=QuestionType.knowledge, **kw):
-    return Question(
+    tags = kw.pop("tags", ["Java"])
+    q = Question(
         source_id=1,
         type=type,
         stem="讲一下 HashMap 底层原理",
-        tags=["Java"],
         difficulty=2,
         good_criteria=["完整、准确", "结构清晰"],
         bad_criteria=["答非所问"],
         **kw,
     )
+    q._tags = tags  # 非持久属性：judge 读题标签
+    return q
 
 
 def add_session(db):
@@ -48,7 +50,11 @@ def add_session(db):
     db.add(question)
     commit(db)
     db.refresh(question)
-    s = Session(question_id=question.id, kind=SessionKind.chain)
+    user = User(username="judgeuser", password_hash="x")
+    db.add(user)
+    commit(db)
+    db.refresh(user)
+    s = Session(question_id=question.id, user_id=user.id, kind=SessionKind.chain)
     db.add(s)
     commit(db)
     db.refresh(s)
@@ -178,10 +184,10 @@ def test_out_of_vocab_weak_tags_mapped_to_nearest(db):
 
 def test_weak_tags_mapped_deduped_and_capped(db):
     """映射去重（多个外词映射同一词表词只留一个）且上限仍 3。"""
-    payload = {**VALID, "weak_tags": ["Java 基础", "Java 并发", "高并发场景", "RAG 检索"]}
+    payload = {**VALID, "weak_tags": ["Java 基础", "Java 并发", "分布式锁场景", "RAG 检索"]}
     llm = FakeLLM([payload])
     judgment = judge(make_question(), TRANSCRIPT, "m", llm)
-    assert judgment.weak_tags == ["Java", "并发", "RAG"]  # 高并发场景 子串映射到保留词 并发（2026-08-10 词表精简）
+    assert judgment.weak_tags == ["Java", "分布式", "RAG"]  # 外词子串映射（首个匹配）+ 去重 + 上限 3
 
 
 def test_weak_tags_capped_at_max(db):

@@ -19,7 +19,6 @@ from app.errors import LLMError
 from app.models import (
     Judgment,
     Question,
-    QuestionStatus,
     QuestionType,
     Session,
     SessionKind,
@@ -140,15 +139,19 @@ def add_today_question(db, stem="讲一下 HashMap 底层原理", status_today=T
         source_id=source.id,
         type=qtype,
         stem=stem,
-        tags=tags or [],
         good_criteria=["完整、准确"],
         bad_criteria=["答非所问"],
-        status=QuestionStatus.today if status_today else QuestionStatus.pending,
-        selected_at=datetime.now() if status_today else None,
     )
     db.add(q)
     commit(db)
     db.refresh(q)
+    if tags:
+        from app.db import set_question_tags
+        from app.tags import reload_tags
+
+        reload_tags()
+        set_question_tags(db, q.id, tags)
+        commit(db)
     if status_today:
         user = ensure_test_user(db)
         db.add(UserPick(user_id=user.id, question_id=q.id, picked_at=datetime.now()))
@@ -700,25 +703,25 @@ def test_review_excludes_other_tags(db):
 
 
 def test_review_chinese_tag_matches(db):
-    """中文标签精确匹配（json_each 修复）：LIKE cast 对 \\uXXXX 转义存储匹配不上。"""
-    q1 = add_today_question(db, stem="缓存穿透题", tags=["缓存"])
+    """中文标签精确匹配（question_tags JOIN 修复）。"""
+    q1 = add_today_question(db, stem="限流算法题", tags=["限流"])
     add_today_question(db, stem="Java 题", tags=["Java"])
     client = make_client(db, FakeLLM([]))
-    data = client.get("/api/review", params={"tag": "缓存"}).json()
+    data = client.get("/api/review", params={"tag": "限流"}).json()
     assert data["fallback"] is False  # 不是回退：确实命中中文标签题
     assert [i["id"] for i in data["items"]] == [q1.id]
-    assert data["items"][0]["tags"] == ["缓存"]
+    assert data["items"][0]["tags"] == ["限流"]
 
 
 def test_bank_search_chinese_tag(db):
-    """题库中文标签搜索（json_each 修复）：关键词搜中文标签能命中。"""
-    add_today_question(db, stem="缓存一致性设计", tags=["缓存"], status_today=False)
+    """题库中文标签搜索：关键词搜中文标签能命中。"""
+    add_today_question(db, stem="限流设计题", tags=["限流"], status_today=False)
     add_today_question(db, stem="纯题干题", tags=["Java"], status_today=False)
     client = make_client(db, FakeLLM([]))
-    hit = client.get("/api/bank", params={"q": "缓存"}).json()
-    assert hit["total"] == 1  # 题干命中（纯题干题无缓存标签）
-    cat = client.get("/api/bank", params={"category": "数据库与中间件", "page_size": 50}).json()
-    assert cat["total"] >= 1  # 分类过滤（缓存题命中新分类）
+    hit = client.get("/api/bank", params={"q": "限流"}).json()
+    assert hit["total"] == 1  # 题干命中（纯题干题无限流标签）
+    cat = client.get("/api/bank", params={"category": "分布式与高并发", "page_size": 50}).json()
+    assert cat["total"] >= 1  # 分类过滤（限流题命中新分类）
 
 
 def test_review_invalid_tag_400(db):
@@ -744,9 +747,9 @@ def test_review_fallback_same_category(db):
 
     data = client.get("/api/review", params={"tag": "MySQL"}).json()  # 无 MySQL 题
     assert data["fallback"] is True
-    assert data["fallback_category"] == "数据库与中间件"  # MySQL 所在新分类
+    assert data["fallback_category"] == "数据库"  # MySQL 所在新分类
     stems = [i["stem"] for i in data["items"]]
-    assert "Redis 题" in stems  # 回退到同分类（数据库与中间件）题目
+    assert "Redis 题" in stems  # 回退到同分类（数据库）题目
     assert "Java 并发题" not in stems and "RAG 题" not in stems  # 其他分类不混入
 
 
@@ -767,13 +770,13 @@ def test_review_paper_fallback_uses_category_questions(db):
 
 def test_review_tags_aggregates_weak_tags(db):
     q1 = add_today_question(db, stem="RAG 题", tags=["RAG"])
-    q2 = add_today_question(db, stem="缓存题", tags=["缓存"])
+    q2 = add_today_question(db, stem="限流题", tags=["限流"])
     client = make_client(db, FakeLLM([]))
     s1 = client.post("/api/sessions", json={"question_id": q1.id, "kind": "open"}).json()["session_id"]
     s2 = client.post("/api/sessions", json={"question_id": q2.id, "kind": "open"}).json()["session_id"]
     with db:
         db.add(Judgment(session_id=s1, scores={"status": "ok"}, total_score=80,
-                        weak_tags=["RAG", "缓存"]))
+                        weak_tags=["RAG", "限流"]))
         db.add(Judgment(session_id=s2, scores={"status": "ok"}, total_score=80,
                         weak_tags=["RAG"]))
         commit(db)
@@ -781,9 +784,9 @@ def test_review_tags_aggregates_weak_tags(db):
     tags = client.get("/api/review/tags").json()
     by_tag = {t["tag"]: t["count"] for t in tags}
     assert by_tag["RAG"] == 2
-    assert by_tag["缓存"] == 1
+    assert by_tag["限流"] == 1
     assert by_tag["Agent"] == 0
-    assert len(tags) == 81  # 全部词表标签
+    assert len(tags) == 114  # 全部词表标签
     # 有计数的排最前
     counts = [t["count"] for t in tags]
     assert counts[0] == 2 and counts[1] == 1
@@ -793,20 +796,23 @@ def test_review_tags_aggregates_weak_tags(db):
 def test_review_tags_empty_db(db):
     client = make_client(db, FakeLLM([]))
     tags = client.get("/api/review/tags").json()
-    assert len(tags) == 81
+    assert len(tags) == 114
     assert all(t["count"] == 0 for t in tags)
 
 
 def test_tag_categories_structure(db):
-    """GET /api/tags：分类结构 + 标签总数与词表一致。"""
-    from app.tags import TAG_CATEGORIES, TAG_VOCABULARY
+    """GET /api/tags：分类结构（含岗位/语言标注）+ 标签总数与词表一致。"""
+    from app.tags import CATEGORY_LANG, CATEGORY_ROLES, TAG_CATEGORIES, TAG_VOCABULARY
 
     client = make_client(db, FakeLLM([]))
     cats = client.get("/api/tags").json()
     assert [c["name"] for c in cats] == [name for name, _ in TAG_CATEGORIES]
     flat = [t for c in cats for t in c["tags"]]
     assert flat == list(TAG_VOCABULARY)
-    assert len(flat) == 81
+    assert len(flat) == 114
+    for c in cats:
+        assert tuple(c["roles"]) == CATEGORY_ROLES.get(c["name"], ())
+        assert c["lang"] == CATEGORY_LANG.get(c["name"])
 
 
 # --- 题库浏览 ---
@@ -940,25 +946,27 @@ def test_upload_direct_mode_inserts_questions(db):
 
 
 def test_upload_direct_mode_tags_llm(db):
-    import json as _json
-
     content = "Q: 讲一下 HashMap 底层原理\nQ: Redis 分布式锁"
     llm = FakeLLM([
         {"items": [
             {"stem": "讲一下 HashMap 底层原理", "tags": ["Java", "词表外", "数据结构"], "difficulty": 4},
-            {"stem": "Redis 分布式锁", "tags": ["缓存"], "difficulty": 9},
+            {"stem": "Redis 分布式锁", "tags": ["Redis"], "difficulty": 9},
         ]}
     ])
     client = make_client(db, llm)
     body = client.post("/api/upload", json={"filename": "题.md", "content": content}).json()
     with db:
         from sqlalchemy import text as _t
-        tags1 = _json.loads(db.exec(_t("SELECT tags FROM questions WHERE stem = :s"),
-                                    params={"s": "讲一下 HashMap 底层原理"}).one()[0])
-        tags2 = _json.loads(db.exec(_t("SELECT tags FROM questions WHERE stem = :s"),
-                                    params={"s": "Redis 分布式锁"}).one()[0])
+        tags1 = [r[0] for r in db.exec(_t(
+            "SELECT t.name FROM question_tags qt JOIN tags t ON qt.tag_id = t.id "
+            "JOIN questions q ON qt.question_id = q.id WHERE q.stem = :s ORDER BY t.name"),
+            params={"s": "讲一下 HashMap 底层原理"}).all()]
+        tags2 = [r[0] for r in db.exec(_t(
+            "SELECT t.name FROM question_tags qt JOIN tags t ON qt.tag_id = t.id "
+            "JOIN questions q ON qt.question_id = q.id WHERE q.stem = :s ORDER BY t.name"),
+            params={"s": "Redis 分布式锁"}).all()]
         assert "词表外" not in tags1 and "Java" in tags1 and "数据结构" in tags1
-        assert "缓存" in tags2
+        assert "Redis" in tags2
         diff1 = db.exec(_t("SELECT difficulty FROM questions WHERE stem = :s"),
                         params={"s": "讲一下 HashMap 底层原理"}).one()[0]
         diff2 = db.exec(_t("SELECT difficulty FROM questions WHERE stem = :s"),
@@ -1114,8 +1122,12 @@ def test_upload_resume_confirm_imports(db):
             from sqlalchemy import text as _t
             rows = []
             for n in range(100):  # confirm 为后台任务，轮询等待入库完成
-                rows = db.exec(_t("SELECT stem, tags, difficulty FROM questions WHERE source_id = :i"),
-                               params={"i": body["source_id"]}).all()
+                rows = db.exec(_t(
+                    "SELECT q.stem, "
+                    "(SELECT json_group_array(t.name ORDER BY t.name) FROM question_tags qt2 "
+                    " JOIN tags t ON qt2.tag_id = t.id WHERE qt2.question_id = q.id), "
+                    "q.difficulty FROM questions q WHERE q.source_id = :i"),
+                    params={"i": body["source_id"]}).all()
                 if rows:
                     break
                 time.sleep(0.05)

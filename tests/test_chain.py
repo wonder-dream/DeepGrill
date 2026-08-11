@@ -16,6 +16,7 @@ from app.models import (
     SessionStatus,
     Source,
     SourceType,
+    User,
 )
 from tests.fakes import FakeLLM
 
@@ -61,7 +62,11 @@ def add_session(db):
     db.add(question)
     commit(db)
     db.refresh(question)
-    s = Session(question_id=question.id, kind=SessionKind.chain)
+    user = User(username="chainuser", password_hash="x")
+    db.add(user)
+    commit(db)
+    db.refresh(user)
+    s = Session(question_id=question.id, user_id=user.id, kind=SessionKind.chain)
     db.add(s)
     commit(db)
     db.refresh(s)

@@ -13,6 +13,7 @@ from app.models import (
     SessionStatus,
     Source,
     SourceType,
+    User,
 )
 from app.retrieval import (
     HIGH_SCORE,
@@ -33,9 +34,9 @@ def file_db(tmp_path):
 
 
 def q(stem, tags=None):
-    return Question(
-        source_id=1, type=QuestionType.knowledge, stem=stem, tags=tags or []
-    )
+    qq = Question(source_id=1, type=QuestionType.knowledge, stem=stem)
+    qq._tags = tags or []  # 非持久属性：检索评分用
+    return qq
 
 
 def vec(*xs):
@@ -52,8 +53,9 @@ def persist_question(db, stem, tags=None):
     commit(db)
     db.refresh(source)
     qq = Question(
-        source_id=source.id, type=QuestionType.knowledge, stem=stem, tags=tags or []
+        source_id=source.id, type=QuestionType.knowledge, stem=stem
     )
+    qq._tags = tags or []
     db.add(qq)
     commit(db)
     db.refresh(qq)
@@ -61,7 +63,14 @@ def persist_question(db, stem, tags=None):
 
 
 def add_high_score_session(db, question, answer_text="高分回答内容", score=90):
-    s = Session(question_id=question.id, kind=SessionKind.open, status=SessionStatus.finished)
+    user = User(username="rv_user", password_hash="x")
+    db.add(user)
+    commit(db)
+    db.refresh(user)
+    s = Session(
+        question_id=question.id, user_id=user.id,
+        kind=SessionKind.open, status=SessionStatus.finished,
+    )
     db.add(s)
     commit(db)
     db.refresh(s)
@@ -156,7 +165,11 @@ def test_build_reference_uses_high_score_attempts(file_db):
 
 def test_build_reference_falls_back_to_reference_answer(file_db):
     old = persist_question(file_db, "讲一下 KV Cache 的原理", ["KV Cache"])
-    s = Session(question_id=old.id, kind=SessionKind.open, status=SessionStatus.finished)
+    user = User(username="rv_user2", password_hash="x")
+    file_db.add(user)
+    commit(file_db)
+    file_db.refresh(user)
+    s = Session(question_id=old.id, user_id=user.id, kind=SessionKind.open, status=SessionStatus.finished)
     file_db.add(s)
     commit(file_db)
     file_db.refresh(s)
@@ -182,7 +195,11 @@ def test_build_reference_falls_back_to_reference_answer(file_db):
 
 def test_build_reference_none_without_high_score(file_db):
     old = persist_question(file_db, "讲一下 KV Cache 的原理", ["KV Cache"])
-    s = Session(question_id=old.id, kind=SessionKind.open, status=SessionStatus.finished)
+    user = User(username="rv_user3", password_hash="x")
+    file_db.add(user)
+    commit(file_db)
+    file_db.refresh(user)
+    s = Session(question_id=old.id, user_id=user.id, kind=SessionKind.open, status=SessionStatus.finished)
     file_db.add(s)
     commit(file_db)
     file_db.add(

@@ -29,7 +29,10 @@ def _add_chunk(db, idx: int, content: str, version: int = 1):
         ))
         commit(s)
         meta = s.get(KnowledgeMeta, 1)
-        meta.version = version
+        if meta is None:
+            s.add(KnowledgeMeta(id=1, version=version))
+        else:
+            meta.version = version
         commit(s)
 
 

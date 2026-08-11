@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.db import (
@@ -18,20 +18,24 @@ from app.models import (
     Attempt,
     Judgment,
     Question,
-    QuestionStatus,
+    QuestionTag,
     QuestionType,
     Session,
     SessionKind,
     SessionStatus,
     Source,
     SourceType,
+    Tag,
     TaskLog,
+    User,
+    UserPick,
 )
 
 VALID_SCORES = {"accuracy": 85, "completeness": 70, "clarity": 90, "depth": 60}
 
 
 _source_seq = 0
+_user_seq = 0
 
 
 def add_source(session, source_hash=None, **kw):
@@ -55,9 +59,22 @@ def add_question(session, type=QuestionType.knowledge, stem="问题", **kw):
     return question
 
 
+def add_user(session, username=None):
+    global _user_seq
+    if username is None:
+        _user_seq += 1
+        username = f"u{_user_seq}"
+    user = User(username=username, password_hash="x")
+    session.add(user)
+    commit(session)
+    session.refresh(user)
+    return user
+
+
 def add_session(session, **kw):
     question = kw.pop("question", None) or add_question(session)
-    s = Session(question_id=question.id, kind=SessionKind.chain, **kw)
+    user = kw.pop("user", None) or add_user(session)
+    s = Session(question_id=question.id, user_id=user.id, kind=SessionKind.chain, **kw)
     session.add(s)
     commit(session)
     session.refresh(s)
@@ -103,22 +120,20 @@ def test_cascade_delete_session(db):
     db.delete(s)
     commit(db)
 
-    assert db.get(Attempt, a1.id) is None
-    assert db.get(Attempt, a2.id) is None
-    assert db.get(Judgment, j.id) is None
-    assert db.get(Session, s.id) is None
+    # DB 真实级联验证（select 走真实查询，不受 identity map 缓存影响）
+    assert db.scalars(select(Attempt).where(Attempt.id.in_([a1.id, a2.id]))).all() == []
+    assert db.scalars(select(Judgment).where(Judgment.id == j.id)).all() == []
+    assert db.scalars(select(Session).where(Session.id == s.id)).all() == []
 
 
 def test_json_fields_roundtrip(db):
     q = add_question(
         db,
-        tags=["agent", "RAG"],
         good_criteria=["完整", "准确"],
         bad_criteria=["答非所问"],
         difficulty=4,
     )
     loaded_q = db.get(Question, q.id)
-    assert loaded_q.tags == ["agent", "RAG"]
     assert loaded_q.good_criteria == ["完整", "准确"]
     assert loaded_q.bad_criteria == ["答非所问"]
     assert loaded_q.difficulty == 4
@@ -132,6 +147,22 @@ def test_json_fields_roundtrip(db):
     assert loaded_j.weak_tags == ["深度不足"]
 
 
+def test_question_tags_roundtrip(db):
+    """题目-标签多对多：写入关联后查询命中；重复插同关联由复合主键拦截。"""
+    q = add_question(db)
+    tag_a = db.scalars(select(Tag).where(Tag.name == "Java")).first()  # 种子词表
+    assert tag_a is not None
+    db.add(QuestionTag(question_id=q.id, tag_id=tag_a.id))
+    commit(db)
+    rows = db.scalars(
+        select(QuestionTag).where(QuestionTag.question_id == q.id)
+    ).all()
+    assert len(rows) == 1
+    with pytest.raises(StorageError):  # commit 统一包装 IntegrityError → StorageError
+        db.add(QuestionTag(question_id=q.id, tag_id=tag_a.id))
+        commit(db)
+
+
 def test_enum_values_roundtrip(db):
     source = add_source(db, type=SourceType.github, source_hash="h2")
     q = add_question(db, source=source, type=QuestionType.design)
@@ -141,58 +172,15 @@ def test_enum_values_roundtrip(db):
     assert db.get(Question, q.id).type == QuestionType.design
     assert db.get(Session, s.id).status == SessionStatus.finished
 
-
 # --- edge ---
 
 
 def test_empty_table_helpers(db):
-    assert list_today_questions(db) == []
-    assert pick_questions(db, 5) == []
+    user = add_user(db)
+    assert list_today_questions(db, user.id) == []
+    assert pick_questions(db, user.id, 5) == []
     assert latest_task_log(db, "daily") is None
     assert count_questions_created_since(db, datetime.now() - timedelta(days=1)) == 0
-
-
-def test_migrate_backfills_today_selected_at(db):
-    """status='today' 但 selected_at NULL 的题被补齐（今日/历史不同步修复）。"""
-    from app.db import _migrate_backfill_today_selected_at
-
-    q = add_question(db, stem="today 无 selected_at 的题")
-    q.status = QuestionStatus.today
-    q.selected_at = None
-    commit(db)
-
-    engine = db.get_bind()
-    _migrate_backfill_today_selected_at(engine)
-    _migrate_backfill_today_selected_at(engine)  # 幂等
-
-    rows = db.exec(text("SELECT selected_at FROM questions WHERE id = :i"), params={"i": q.id}).all()
-    assert rows[0][0] is not None  # 已补齐
-    rows2 = db.exec(text("SELECT selected_at IS NULL FROM questions WHERE status = 'today'")).all()
-    assert all(r[0] == 0 for r in rows2)  # 无遗漏
-
-
-def test_migrate_cleans_empty_sessions(db):
-    """启动迁移：无回答无判分的空壳会话被清理；有内容的保留；幂等。"""
-    from app.db import _migrate_cleanup_empty_sessions
-
-    q = add_question(db)
-    empty = Session(question_id=q.id, kind=SessionKind.chain, status=SessionStatus.active)
-    db.add(empty)
-    commit(db)
-    db.refresh(empty)
-    with_content = Session(question_id=q.id, kind=SessionKind.chain, status=SessionStatus.finished)
-    db.add(with_content)
-    commit(db)
-    db.refresh(with_content)
-    db.add(Attempt(session_id=with_content.id, round_no=0, answer_text="答过一轮"))
-    commit(db)
-
-    engine = db.get_bind()
-    _migrate_cleanup_empty_sessions(engine)
-    _migrate_cleanup_empty_sessions(engine)  # 幂等
-
-    remaining = db.exec(text("SELECT id FROM sessions")).all()
-    assert [r[0] for r in remaining] == [with_content.id]
 
 
 def test_bulk_insert(db):
@@ -205,8 +193,8 @@ def test_bulk_insert(db):
 
 def test_long_text_roundtrip(db):
     long_text = "长" * 1_000_000
-    source = add_source(db, raw_text=long_text)
-    assert db.get(Source, source.id).raw_text == long_text
+    source = add_source(db, cleaned_text=long_text)
+    assert db.get(Source, source.id).cleaned_text == long_text
 
 
 def test_multiple_active_sessions_coexist(db):
@@ -216,23 +204,42 @@ def test_multiple_active_sessions_coexist(db):
     assert db.get(Session, s2.id).status == SessionStatus.active
 
 
-def test_pick_questions_marks_today_and_limits(db):
+def test_pick_questions_per_user_pool(db):
+    """每用户池：A 选走题不影响 B；已完成（finished 会话）的题不再被选；当天不重复选。"""
+    user_a = add_user(db, username="pick_a")
+    user_b = add_user(db, username="pick_b")
     for i in range(3):
         add_question(db, stem=f"q{i}")
-    picked = pick_questions(db, 2)
-    assert [q.stem for q in picked] == ["q0", "q1"]
-    assert [q.stem for q in list_today_questions(db)] == ["q0", "q1"]
-    assert all(q.selected_at is not None for q in picked)
-    remaining = db.exec(
-        text("SELECT stem FROM questions WHERE status = 'pending'")
-    ).all()
-    assert [r[0] for r in remaining] == ["q2"]
+
+    picked_a = pick_questions(db, user_a.id, 2)
+    assert [q.stem for q in picked_a] == ["q0", "q1"]
+    assert [q.stem for q in list_today_questions(db, user_a.id)] == ["q0", "q1"]
+
+    # B 今天从全库可选题（A 的选择不影响 B）
+    picked_b = pick_questions(db, user_b.id, 2)
+    assert [q.stem for q in picked_b] == ["q0", "q1"]
+
+    # A 今天再选：排除今天已选的，只剩 q2
+    picked_a2 = pick_questions(db, user_a.id, 2)
+    assert [q.stem for q in picked_a2] == ["q2"]
+
+    # 完成 q0（A 的 finished 会话）→ 明天 A 不再被选 q0
+    s = add_session(db, user=user_a, question=db.get(Question, picked_a[0].id), status=SessionStatus.finished)
+    commit(db)
+    # 模拟新的一天（把 A 今天 picks 改为昨天）
+    for p in db.scalars(select(UserPick).where(UserPick.user_id == user_a.id)).all():
+        p.picked_at = datetime.now() - timedelta(days=1)
+    commit(db)
+    picked_a3 = pick_questions(db, user_a.id, 10)
+    assert "q0" not in [q.stem for q in picked_a3]
+    assert "q1" in [q.stem for q in picked_a3]
 
 
 def test_pick_questions_by_type(db):
+    user = add_user(db)
     add_question(db, type=QuestionType.knowledge, stem="知识题")
     add_question(db, type=QuestionType.design, stem="设计题")
-    picked = pick_questions(db, 5, qtype=QuestionType.design)
+    picked = pick_questions(db, user.id, 5, qtype=QuestionType.design)
     assert [q.stem for q in picked] == ["设计题"]
 
 
@@ -279,8 +286,8 @@ def test_invalid_enum_via_raw_sql_rejected_by_db(db):
     with pytest.raises(IntegrityError):
         db.execute(
             text(
-                "INSERT INTO questions (source_id, type, stem, difficulty, status, created_at) "
-                "VALUES (:sid, 'nonsense', 'x', 1, 'pending', :now)"
+                "INSERT INTO questions (source_id, type, stem, difficulty, created_at) "
+                "VALUES (:sid, 'nonsense', 'x', 1, :now)"
             ),
             {"sid": source.id, "now": datetime.now().isoformat()},
         )

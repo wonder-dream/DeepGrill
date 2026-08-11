@@ -1,4 +1,4 @@
-import pytest
+﻿import pytest
 
 from app.errors import GenerationError, LLMError, LLMJsonError
 from app.models import Question, QuestionType, Source, SourceType
@@ -60,7 +60,7 @@ def test_generate_from_source_three_questions(db):
     assert questions[0].type == QuestionType.knowledge
     assert questions[1].type == QuestionType.design
     assert all(q.source_id == source.id for q in questions)
-    assert questions[0].tags == ["Java", "数据结构"]
+    assert questions[0]._pending_tags == ["Java", "数据结构"]
     assert questions[0].difficulty == 2
 
 
@@ -162,7 +162,7 @@ def test_missing_or_garbage_fields_handled(db):
     questions = generate_from_source(source, [], llm)
     assert len(questions) == 2
     assert questions[0].difficulty == 5  # 6 钳制到 5
-    assert questions[0].tags == []
+    assert questions[0]._pending_tags == []
     assert questions[1].difficulty == 1  # 非整数回退 1
 
 
@@ -174,7 +174,7 @@ def test_out_of_vocab_tags_filtered(db):
     ]
     llm = FakeLLM([payload])
     questions = generate_from_source(source, [], llm)
-    assert questions[0].tags == ["Java", "RAG"]  # "集合" 不在词表
+    assert questions[0]._pending_tags == ["Java", "RAG"]  # "集合" 不在词表
 
 
 def test_tags_capped_at_max(db):
@@ -185,7 +185,7 @@ def test_tags_capped_at_max(db):
     ]
     llm = FakeLLM([payload])
     questions = generate_from_source(source, [], llm)
-    assert len(questions[0].tags) == 5
+    assert len(questions[0]._pending_tags) == 5
 
 
 def test_non_str_stem_entries_dropped(db):

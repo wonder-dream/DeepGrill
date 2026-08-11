@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
@@ -26,7 +26,7 @@ def test_import_markdown_with_title(db, tmp_path):
     source = import_file(p, "manual")
     assert source.title == "阿里一面面经"
     assert source.type == SourceType.manual
-    assert source.raw_text == "# 阿里一面面经\n\n问了 HashMap。"
+    assert source.cleaned_text == "# 阿里一面面经\n问了 HashMap。"  # clean_text 压缩空行
     assert "HashMap" in source.cleaned_text
     assert count_sources(db) == 1
 
@@ -79,7 +79,7 @@ def test_empty_file_imports(db, tmp_path):
 def test_large_file_imports(db, tmp_path):
     p = write_file(tmp_path, "big.md", "长" * 1_000_000)
     source = import_file(p, "manual")
-    assert len(source.raw_text) == 1_000_000
+    assert len(source.cleaned_text) == 1_000_000
 
 
 def test_utf8_bom_stripped(db, tmp_path):
@@ -87,7 +87,7 @@ def test_utf8_bom_stripped(db, tmp_path):
     p.write_bytes("\ufeff# 标题\n正文".encode("utf-8"))
     source = import_file(p, "manual")
     assert source.title == "标题"
-    assert not source.raw_text.startswith("\ufeff")
+    assert not source.cleaned_text.startswith("\ufeff")
 
 
 def test_gbk_encoding_fallback(db, tmp_path):

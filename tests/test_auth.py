@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.auth import MAX_USERS, hash_password
 from app.db import commit, get_session, init_db
-from app.models import Question, QuestionType, Session, SessionKind, Source, SourceType, User, UserPick
+from app.models import Question, QuestionType, Session, SessionKind, Source, SourceType, User, UserFavorite, UserPick
 from app.web.routes import create_app
 from tests.fakes import FakeEmbedder, FakeLLM
 
@@ -295,12 +295,12 @@ def test_admin_edit_question(db):
     q = _add_question(db, "管理题")
     owner = authed_client("owner", role="owner")
     resp = owner.put(f"/api/admin/questions/{q.id}", json={
-        "stem": "修改后的题干", "difficulty": 4, "tags": ["Java", "并发"],
+        "stem": "修改后的题干", "difficulty": 4, "tags": ["Java", "分布式"],
     })
     assert resp.status_code == 200
     assert resp.json()["stem"] == "修改后的题干"
     assert resp.json()["difficulty"] == 4
-    assert resp.json()["tags"] == ["Java", "并发"]
+    assert resp.json()["tags"] == ["Java", "分布式"]
     assert owner.put(f"/api/admin/questions/{q.id}", json={"difficulty": 9}).status_code == 400
 
 
@@ -312,10 +312,27 @@ def test_admin_delete_question(db):
         commit(s)
         s.refresh(user_a)
         s.add(Session(question_id=q.id, user_id=user_a.id, kind=SessionKind.open))
+        s.add(UserPick(user_id=user_a.id, question_id=q.id))
+        s.add(UserFavorite(user_id=user_a.id, question_id=q.id))
+        commit(s)
+        # 给题挂标签关联（级联验证）
+        from app.models import QuestionTag, Tag
+        from app.tags import TAG_CATEGORIES
+        tag = s.scalars(select(Tag).where(Tag.name == "Java")).first()
+        if tag is None:
+            tag = Tag(category_id=1, name="Java")
+            s.add(tag)
+            commit(s)
+        s.add(QuestionTag(question_id=q.id, tag_id=tag.id))
         commit(s)
     owner = authed_client("owner", role="owner")
     assert owner.delete(f"/api/admin/questions/{q.id}").json()["deleted"] is True
     assert owner.delete(f"/api/admin/questions/{q.id}").status_code == 404
+    with get_session() as s:
+        assert s.scalars(select(Session).where(Session.question_id == q.id)).first() is None
+        assert s.scalars(select(UserPick).where(UserPick.question_id == q.id)).first() is None
+        assert s.scalars(select(UserFavorite).where(UserFavorite.question_id == q.id)).first() is None
+        assert s.scalars(select(QuestionTag).where(QuestionTag.question_id == q.id)).first() is None
 
 
 def test_admin_requires_owner(db):

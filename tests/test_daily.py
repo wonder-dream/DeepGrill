@@ -15,7 +15,6 @@ from app.db import commit, latest_task_log
 from app.errors import LLMError
 from app.models import (
     Question,
-    QuestionStatus,
     QuestionType,
     Session,
     SessionKind,
@@ -104,11 +103,7 @@ def test_happy_full_flow(db):
     assert report["sources"]["a"] == {"fetched": 2, "failed": 0}
     assert report["new_questions"] == 2
     assert report["errors"] == []
-    assert [q.stem for q in report["today_questions"]] == [
-        "讲一下 HashMap 底层原理",
-        "讲一下 Redis 持久化",
-    ]
-    assert all(q.status == QuestionStatus.today for q in report["today_questions"])
+    assert report["today_questions"] == []  # 选题由用户懒加载，流水线不再选题
 
     log = latest_task_log(db, "daily")
     assert log.status == "success"
@@ -141,8 +136,7 @@ def test_no_new_sources_picks_old_pending(db):
 
     assert report["new_questions"] == 0
     assert len(llm.calls) == 0
-    # 当日待做从 pending 池补足（无新题时取旧 pending）
-    assert len(report["today_questions"]) == 2
+    assert report["today_questions"] == []  # 无新题不选题（懒加载机制接管）
     assert report["sources"]["a"] == {"fetched": 0, "failed": 0}
 
 
@@ -217,10 +211,25 @@ def test_today_questions_respected_quota_types(db):
     ]
     llm = FakeLLM([payload])
     report = run_daily(make_config(), [FakeSource("a", [s])], llm, EMBEDDER)
+    assert report["new_questions"] == 4
+    assert report["today_questions"] == []  # 选题由用户懒加载
 
-    today = report["today_questions"]
-    assert len(today) == 4  # knowledge 2/3 + design 2/2 + project 0/1
-    types = [q.type for q in today]
+    from app.db import pick_questions
+    from app.models import User
+
+    user = User(username="quota_user", password_hash="x")
+    db.add(user)
+    commit(db)
+    db.refresh(user)
+    # 每用户池按 D8 配额（knowledge 3/design 2/project 1）选取
+    picked = []
+    for qtype, limit in (
+        (QuestionType.knowledge, 3),
+        (QuestionType.design, 2),
+        (QuestionType.project, 1),
+    ):
+        picked.extend(pick_questions(db, user.id, limit, qtype))
+    types = [q.type for q in picked]
     assert types.count(QuestionType.knowledge) == 2
     assert types.count(QuestionType.design) == 2
 
@@ -238,48 +247,25 @@ def test_rerun_idempotent(db):
     assert len(count) == 1
 
 
-def test_stale_today_recycled_to_pending(db):
-    """回归：昨日被选为今日但未完成的题被回收回 pending 池；已完成（有 finished 会话）的不回收。"""
-    from app.db import recycle_stale_today
-
+def test_picked_questions_flow_through_generation(db):
+    """生成入库后题可被用户按需选中（每用户池）；无 finished 会话的题可被再次选。"""
     s = add_source(db)
-    undone = Question(
-        source_id=s.id, type=QuestionType.knowledge, stem="昨天没做的题",
-        status=QuestionStatus.today, selected_at=datetime.now() - timedelta(days=1),
-    )
-    db.add(undone)
-    done = Question(
-        source_id=s.id, type=QuestionType.knowledge, stem="昨天做完的题",
-        status=QuestionStatus.today, selected_at=datetime.now() - timedelta(days=1),
-    )
-    db.add(done)
+    llm = FakeLLM([Q1])
+    report = run_daily(make_config(), [FakeSource("a", [s])], llm, EMBEDDER)
+    assert report["new_questions"] == 1
+
+    from app.models import User
+
+    user = User(username="dailyuser", password_hash="x")
+    db.add(user)
     commit(db)
-    db.refresh(undone)
-    db.refresh(done)
-    db.add(Session(question_id=done.id, kind=SessionKind.open, status=SessionStatus.finished))
-    commit(db)
+    db.refresh(user)
 
-    recycled = recycle_stale_today(db)
+    from app.db import list_today_questions, pick_questions
 
-    assert recycled == 1
-    assert db.scalars(select(Question).where(Question.id == undone.id)).one().status == QuestionStatus.pending
-    assert db.scalars(select(Question).where(Question.id == done.id)).one().status == QuestionStatus.today
-
-
-def test_stale_today_repicked_on_next_run(db):
-    """回收回池后，当次流水线选题会重新选中昨天的未做题（不丢题）。"""
-    s = add_source(db)
-    q = Question(
-        source_id=s.id, type=QuestionType.knowledge, stem="昨天没做的题",
-        status=QuestionStatus.today, selected_at=datetime.now() - timedelta(days=1),
-    )
-    db.add(q)
-    commit(db)
-
-    report = run_daily(make_config(), [FakeSource("a", [])], FakeLLM([]), EMBEDDER)
-
-    assert report["errors"] == []
-    assert [x.stem for x in report["today_questions"]] == ["昨天没做的题"]
+    picked = pick_questions(db, user.id, 5)
+    assert [q.stem for q in picked] == ["讲一下 HashMap 底层原理"]
+    assert [q.stem for q in list_today_questions(db, user.id)] == ["讲一下 HashMap 底层原理"]
 
 
 # --- fail ---
@@ -295,7 +281,7 @@ def test_generates_from_sources_without_questions_on_rerun(db):
 
     assert report["new_questions"] == 2
     assert report["errors"] == []
-    assert len(report["today_questions"]) == 2
+    assert report["today_questions"] == []  # 懒加载语义
 
 
 def test_source_failure_isolated(db):
