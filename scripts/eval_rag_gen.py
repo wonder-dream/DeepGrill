@@ -66,10 +66,12 @@ def load_sample() -> list[dict]:
 
 
 def make_question(stem: str) -> Question:
-    return Question(
-        source_id=1, type=QuestionType.knowledge, stem=stem, tags=["Go"],
+    q = Question(
+        source_id=1, type=QuestionType.knowledge, stem=stem,
         difficulty=3, good_criteria=["完整、准确、结构清晰"], bad_criteria=["答非所问"],
     )
+    q._tags = ["Go"]  # 非持久属性：judge 读题标签
+    return q
 
 
 def judge_once(llm, q, knowledge) -> str | None:
@@ -113,8 +115,8 @@ def main() -> None:
     print("| 题 | 结果 |")
     print("|---|---|")
     for item in sample:
-        q = make_question(item["stem"])
-        k = _knowledge_for(q.stem, q.tags, lambda: embedder, k=5)
+    q = make_question(item["stem"])
+    k = _knowledge_for(q.stem, getattr(q, "_tags", []), lambda: embedder, k=5)
         a = judge_once(llm, q, k)
         b = judge_once(llm, q, None)
         if not a or not b:

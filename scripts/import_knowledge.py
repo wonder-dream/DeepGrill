@@ -242,7 +242,11 @@ def import_file(path: Path, embedder, llm=None, distill: bool = False) -> tuple[
 def bump_version() -> None:
     with get_session() as session:
         meta = session.get(KnowledgeMeta, 1)
-        if meta is not None:
+        if meta is None:
+            session.add(KnowledgeMeta(id=1, version=1))
+            commit(session)
+            logger.info("knowledge_meta initialized, version → 1")
+        else:
             meta.version += 1
             commit(session)
             logger.info("knowledge_meta version → %d", meta.version)

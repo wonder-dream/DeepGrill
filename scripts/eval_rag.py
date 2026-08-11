@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from app.db import get_session, init_db
 from app.embed import Embedder
-from app.models import Question, QuestionType
+from app.models import Question, QuestionTag, QuestionType, Tag
 from app.retrieval import KnowledgeIndex
 
 K = 5
@@ -38,9 +38,22 @@ def load_queries() -> tuple[list[tuple[str, str]], list[str]]:
         rows = s.scalars(
             select(Question).where(Question.type == QuestionType.knowledge)
         ).all()
+        qids = [q.id for q in rows]
+        tag_rows = (
+            s.execute(
+                select(QuestionTag.question_id, Tag.name)
+                .join(Tag, QuestionTag.tag_id == Tag.id)
+                .where(QuestionTag.question_id.in_(qids))
+            ).all()
+            if qids
+            else []
+        )
+    tag_map: dict[int, list[str]] = {}
+    for qid, name in tag_rows:
+        tag_map.setdefault(qid, []).append(name)
     neg = []
     for q in rows:
-        if any(t in ("Redis", "MySQL", "Java", "并发") for t in (q.tags or [])):
+        if any(t in ("Redis", "MySQL", "Java", "并发") for t in tag_map.get(q.id, [])):
             neg.append(q.stem)
         if len(neg) >= 20:
             break
