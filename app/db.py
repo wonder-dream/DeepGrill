@@ -1,3 +1,4 @@
+import random
 import re
 import threading
 from collections.abc import Generator
@@ -288,6 +289,81 @@ def _rank_recommend(
 BAD_SCORE_THRESHOLD = 70  # 上次判分低于此阈值 = 表现不好，重新进入今日选题池（薄弱复习）
 
 
+def _question_focus_info(
+    session: DBSession, qids: list[int], focus: str | None, focus_lang: str | None
+) -> dict[int, tuple[int, int, bool, bool]]:
+    """题 → (lang 命中, role 命中, 存在语言无关分类标签, 命中通用分类标签)。
+
+    由标签分类的 lang/roles 推导；无标签题不在返回中（调用方按相关兜底）。
+    """
+    from .models import QuestionTag, Tag, TagCategory
+
+    if not qids:
+        return {}
+    rows = session.execute(
+        select(QuestionTag.question_id, TagCategory.lang, TagCategory.roles)
+        .join(Tag, QuestionTag.tag_id == Tag.id)
+        .join(TagCategory, Tag.category_id == TagCategory.id)
+        .where(QuestionTag.question_id.in_(qids))
+    ).all()
+    info: dict[int, list] = {}
+    for qid, lang, roles in rows:
+        cat_roles = tuple(roles or ())
+        entry = info.setdefault(qid, [0, 0, 0, 0])
+        if focus_lang and lang == focus_lang:
+            entry[0] = 1
+        if focus and focus in cat_roles:
+            entry[1] = 1
+        if not cat_roles:
+            entry[3] = 1  # 通用分类标签
+        elif lang is None:
+            entry[2] = 1  # 语言无关分类标签（如 数据库/分布式/OS）
+    return {qid: tuple(v) for qid, v in info.items()}
+
+
+def _is_focus_relevant(
+    info: tuple[int, int, bool, bool] | None, focus: str | None, focus_lang: str | None
+) -> bool:
+    """岗位×语言相关性：backend 严格语言原则（其他语言分类不相关）；通用/无标签题算相关。"""
+    if focus is None:
+        return True
+    if info is None:  # 无标签题：无法判定，兜底算相关（新题可进今日）
+        return True
+    lang_hit, role_hit, has_neutral_cat, is_common = info
+    if is_common:
+        return True
+    if focus == "backend":
+        if focus_lang:
+            if lang_hit:
+                return True  # 我的语言分类
+            if has_neutral_cat and role_hit:
+                return True  # 语言无关的后端分类（数据库/分布式/OS/基础设施）
+            return False  # 其他语言分类（Go/Python/C++ 等）严格排除
+        return bool(role_hit)
+    return bool(role_hit)
+
+
+def _weighted_sample(
+    relevant_ids: list[int], other_ids: list[int], n: int, p_rel: float = 0.75
+) -> list[int]:
+    """3:1 权重随机抽取（不放回）：3/4 概率从相关池抽，1/4 从非相关池抽；池空互转。"""
+    rel = list(relevant_ids)
+    oth = list(other_ids)
+    random.shuffle(rel)
+    random.shuffle(oth)
+    picked: list[int] = []
+    while len(picked) < n and (rel or oth):
+        if rel and (not oth or random.random() < p_rel):
+            picked.append(rel.pop())
+        elif oth:
+            picked.append(oth.pop())
+        elif rel:
+            picked.append(rel.pop())
+        else:
+            break
+    return picked
+
+
 @_wrap_storage
 def pick_questions(
     session: DBSession,
@@ -295,15 +371,15 @@ def pick_questions(
     limit: int,
     qtype: QuestionType | None = None,
 ) -> list[Question]:
-    """今日选题：从「没写过」与「上次表现不好」双池按 7:3 权重随机选取。
+    """今日选题：70% 没写过池（严格岗位语言相关）+ 30% 上次表现不好池（3:1 岗位加权随机）。
 
-    池 A（70% 权重）：用户从未完成（无我的 finished 会话）的题，组内随机
-    池 B（30% 权重）：用户上次判分 < BAD_SCORE_THRESHOLD 的题（薄弱复习），组内随机
-    每池不足时由另一池互补兜底；排除今天已选过的题；qtype 按题型配额过滤（D8）。
+    池 A（70% 权重）：用户从未完成（无我的 finished 会话）的题，**严格按岗位×语言筛选**，
+      只取相关题（我的语言分类 ∪ 语言无关后端分类 ∪ 通用 ∪ 无标签兜底），组内随机
+    池 B（30% 权重）：用户上次判分 < BAD_SCORE_THRESHOLD 的题（薄弱复习），
+      岗位相关题与非相关题按 3:1 权重随机
+    每池不足由另一池互补兜底（优先相关）；排除今天已选过的题；qtype 按题型配额过滤（D8）。
     """
-    import random
-
-    from .models import Judgment
+    from .models import Judgment, User
 
     picked_today_qids = select(UserPick.question_id).where(
         UserPick.user_id == user_id,
@@ -337,16 +413,31 @@ def pick_questions(
         if score is not None and score < BAD_SCORE_THRESHOLD:
             bad_qids.add(qid)
     b_ids = list(session.scalars(base.where(Question.id.in_(bad_qids))))
-    # 7:3 权重分配（每池内随机），不足互补
+
+    user = session.get(User, user_id)
+    focus = user.focus if user is not None else None
+    focus_lang = user.focus_lang if user is not None else None
+    info = _question_focus_info(session, a_ids + b_ids, focus, focus_lang)
+    relevant = lambda qid: _is_focus_relevant(info.get(qid), focus, focus_lang)
+
+    # 池 A：严格岗位相关（不足由池 B 3:1 权重互补）
     n_bad = round(limit * 0.3)
     n_never = limit - n_bad
-    picked: list[int] = []
-    picked.extend(random.sample(a_ids, min(n_never, len(a_ids))))
-    picked.extend(random.sample(b_ids, min(n_bad, len(b_ids))))
+    a_rel = [qid for qid in a_ids if relevant(qid)]
+    picked: list[int] = list(random.sample(a_rel, min(n_never, len(a_rel))))
+    # 池 B：3:1 岗位加权（排除已选）
+    b_pool = [qid for qid in b_ids if qid not in picked]
+    b_rel = [qid for qid in b_pool if relevant(qid)]
+    b_oth = [qid for qid in b_pool if not relevant(qid)]
+    picked.extend(_weighted_sample(b_rel, b_oth, min(n_bad, len(b_pool))))
+    # 不足互补：全部剩余候选按 3:1 相关加权补齐
     if len(picked) < limit:
         rest = [qid for qid in a_ids + b_ids if qid not in picked]
-        picked.extend(random.sample(rest, min(limit - len(picked), len(rest))))
+        rest_rel = [qid for qid in rest if relevant(qid)]
+        rest_oth = [qid for qid in rest if not relevant(qid)]
+        picked.extend(_weighted_sample(rest_rel, rest_oth, limit - len(picked)))
     random.shuffle(picked)  # 双池混合后乱序展示
+
     questions = [session.get(Question, qid) for qid in picked]
     now = datetime.now()
     for q in questions:

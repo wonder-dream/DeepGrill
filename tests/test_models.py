@@ -263,6 +263,42 @@ def test_pick_questions_bad_score_reenters_pool(db):
     assert "上次高分题" not in stems
 
 
+def test_pick_never_pool_focus_strict(db):
+    """池 A（没写过）严格岗位×语言：backend+java 用户不选其他语言分类（Go）的题；
+    池 B 有相关题可补时也不引入非相关题（不足兜底才允许出现）。"""
+    from app.models import User
+
+    user = User(username="focus_user", password_hash="x", focus="backend", focus_lang="java")
+    db.add(user)
+    commit(db)
+    db.refresh(user)
+
+    q_java = add_question(db, stem="Java 分类题")
+    q_java_bad = add_question(db, stem="Java 低分题")
+    add_question(db, stem="无标签题")
+    add_question(db, stem="Go 分类题")
+
+    from app.db import set_question_tags
+
+    set_question_tags(db, q_java.id, ["JVM"])
+    set_question_tags(db, q_java_bad.id, ["JVM"])
+    go_q = db.scalars(select(Question).where(Question.stem == "Go 分类题")).first()
+    set_question_tags(db, go_q.id, ["Goroutine"])
+    commit(db)
+    # q_java_bad 判分 40 → 进池 B（相关低分）
+    s = add_session(db, user=user, question=q_java_bad, status=SessionStatus.finished)
+    db.add(Judgment(session_id=s.id, scores={"status": "ok"}, total_score=40))
+    commit(db)
+
+    # limit=2：池 A 抽 1（相关）+ 池 B 抽 1（相关低分）→ Go 题不出现
+    picked = pick_questions(db, user.id, 2)
+    stems = [q.stem for q in picked]
+    assert len(stems) == 2
+    assert "Go 分类题" not in stems
+    assert "Java 分类题" in stems or "无标签题" in stems
+    assert "Java 低分题" in stems  # 池 B 低分题进入
+
+
 def test_pick_questions_by_type(db):
     user = add_user(db)
     add_question(db, type=QuestionType.knowledge, stem="知识题")
