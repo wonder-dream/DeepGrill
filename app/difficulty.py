@@ -24,6 +24,17 @@ def target_level_for(difficulty: int) -> int:
     return min(5, difficulty + 1)
 
 
+PROBE_TIERS = {1: "light", 2: "light", 3: "medium", 4: "deep", 5: "deep"}
+
+
+def probe_tier_for(difficulty: int) -> str:
+    """追问档位：1-2 浅挖（回答完整清晰即收尾，最多轻拓展一问）/
+    3 中挖（追到权衡/边界 L4 即收）/
+    4-5 深挖（逐层深挖到目标深度 L5，达标即收）。"""
+    return PROBE_TIERS.get(difficulty, "deep")
+
+
 def max_rounds_for(difficulty: int, config_max: int = 20) -> int:
-    """追问轮数上限按难度收紧（低难度题少问）：min(config_max, 3 + difficulty*3)。"""
-    return min(config_max, 3 + difficulty * 3)
+    """追问轮数上限按档位收紧（低难度题浅挖少问）：light 4 / medium 8 / deep 12-15。"""
+    cap = {1: 4, 2: 4, 3: 8, 4: 12, 5: 15}.get(difficulty, 15)
+    return min(config_max, cap)

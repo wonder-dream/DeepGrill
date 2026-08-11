@@ -1,4 +1,4 @@
-import pytest
+﻿import pytest
 from sqlalchemy import select
 
 from app.db import commit
@@ -27,24 +27,24 @@ VALID_JUDGMENT = {
     "weak_tags": ["RAG"],
 }
 
-CONTINUE = {"action": "continue", "followup": "追问：谈谈扩容机制", "quality": "correct", "level": 2}
-FINISH = {"action": "finish", "followup": "好的，本轮结束", "quality": "correct", "level": 5}
+CONTINUE = {"action": "continue", "followup": "追问：谈谈扩容机制", "quality": "correct", "completeness": "complete", "level": 2}
+FINISH = {"action": "finish", "followup": "好的，本轮结束", "quality": "correct", "completeness": "complete", "level": 5}
 
 
 def round_l2():
-    return {"action": "continue", "followup": "追问L2", "quality": "correct", "level": 2}
+    return {"action": "continue", "followup": "追问L2", "quality": "correct", "completeness": "complete", "level": 2}
 
 
 def round_l3():
-    return {"action": "continue", "followup": "追问L3", "quality": "correct", "level": 3}
+    return {"action": "continue", "followup": "追问L3", "quality": "correct", "completeness": "complete", "level": 3}
 
 
 def round_l4():
-    return {"action": "continue", "followup": "追问L4", "quality": "correct", "level": 4}
+    return {"action": "continue", "followup": "追问L4", "quality": "correct", "completeness": "complete", "level": 4}
 
 
 def finish_l5():
-    return {"action": "finish", "followup": "L5 证明充分", "quality": "correct", "level": 5}
+    return {"action": "finish", "followup": "L5 证明充分", "quality": "correct", "completeness": "complete", "level": 5}
 
 
 def add_session(db):
@@ -87,8 +87,10 @@ def attempts(db, session_id):
 
 
 def test_good_answers_probed_to_l5_then_finish(db):
-    """答得好 → 持续深挖到 L5，且 L5 连续 correct 才 finish（不再两轮收尾）。"""
+    """深挖档（4-5 星）：答得好 → 持续深挖到 L5，达标即 finish。"""
     s, q = add_session(db)
+    q.difficulty = 4  # 深挖档
+    commit(db)
     llm = FakeLLM([round_l2(), round_l3(), round_l4(), finish_l5(), VALID_JUDGMENT])
     chain = ChainSession(s.id, q, llm, judge_model="judge-m", max_rounds=20)
 
@@ -119,7 +121,7 @@ def test_good_answers_probed_to_l5_then_finish(db):
 
 
 def test_prompt_injects_difficulty_and_target_level(db):
-    """难度分级追问：prompt 注入题目难度/档位名与目标深度，收尾条件按目标层级。"""
+    """难度分级追问：prompt 注入题目难度/档位名与目标深度说明。"""
     s, q = add_session(db)
     q.difficulty = 2
     commit(db)
@@ -130,9 +132,9 @@ def test_prompt_injects_difficulty_and_target_level(db):
     chain.next_round("答")
     content = "\n".join(m["content"] for m in llm.calls[0])
     assert "题目难度：2/5（基础）" in content
-    assert "达到 L3" in content  # 目标深度注入
-    assert "已到目标深度 L3" in content  # 收尾条件按目标层级
-    assert "已到 L5" not in content
+    assert "追问档位：浅挖档" in content  # 档位注入
+    assert "不设强制的深度目标" in content  # 浅挖档以回答完整清晰为准
+    assert "绝不深挖" in content  # 浅挖档收尾策略
 
 
 def test_prompt_injects_knowledge(db):
@@ -149,8 +151,10 @@ def test_prompt_injects_knowledge(db):
 
 
 def test_two_consecutive_bad_answers_finish(db):
-    """连续 2 次差评（wrong/unsure）→ 判定探到底收尾；单次差评不误杀。"""
+    """深挖档：连续 2 次差评（wrong/unsure）→ 判定探到底收尾；单次差评不误杀。"""
     s, q = add_session(db)
+    q.difficulty = 5
+    commit(db)
     llm = FakeLLM([
         round_l2(),
         {"action": "continue", "followup": "再确认L2", "quality": "wrong", "level": 2},
@@ -169,6 +173,8 @@ def test_two_consecutive_bad_answers_finish(db):
 def test_code_forces_finish_when_llm_violates_rule(db):
     """代码侧兜底：LLM 连续 2 次 wrong 仍返回 continue（违反 prompt 规则）→ 强制收尾。"""
     s, q = add_session(db)
+    q.difficulty = 5
+    commit(db)
     llm = FakeLLM([
         round_l2(),
         {"action": "continue", "followup": "再确认L2", "quality": "wrong", "level": 2},
@@ -190,6 +196,8 @@ def test_code_forces_finish_when_llm_violates_rule(db):
 def test_quality_persisted_and_passed_to_judge(db):
     """quality 逐轮落库；finish 时质量轨迹注入判分 prompt。"""
     s, q = add_session(db)
+    q.difficulty = 4
+    commit(db)
     llm = FakeLLM([round_l2(), finish_l5(), VALID_JUDGMENT])
     chain = ChainSession(s.id, q, llm, judge_model="m", max_rounds=20)
     chain.next_round("答1")
@@ -204,8 +212,10 @@ def test_quality_persisted_and_passed_to_judge(db):
 
 
 def test_single_bad_answer_not_finished(db):
-    """单次差评后答好 → 继续深挖（不因偶发卡壳误收尾）。"""
+    """深挖档：单次差评后答好 → 继续深挖（不因偶发卡壳误收尾）。"""
     s, q = add_session(db)
+    q.difficulty = 5
+    commit(db)
     llm = FakeLLM([
         round_l2(),
         {"action": "continue", "followup": "再确认L2", "quality": "wrong", "level": 2},
@@ -225,6 +235,8 @@ def test_single_bad_answer_not_finished(db):
 
 def test_poor_answers_forced_finish_at_max_rounds(db):
     s, q = add_session(db)
+    q.difficulty = 5
+    commit(db)
     llm = FakeLLM([CONTINUE, CONTINUE, CONTINUE, VALID_JUDGMENT])
     chain = ChainSession(s.id, q, llm, judge_model="m", max_rounds=3)
 
@@ -236,6 +248,46 @@ def test_poor_answers_forced_finish_at_max_rounds(db):
     assert len(attempts(db, s.id)) == 3
     judgment = chain.finish()
     assert judgment.status == STATUS_OK
+
+
+def test_light_tier_complete_answer_finishes_immediately(db):
+    """浅挖档（1-2 星）：回答完整清晰（complete+correct）→ 第一轮直接收尾，不再强制深挖。"""
+    s, q = add_session(db)  # 难度 1
+    llm = FakeLLM([
+        {"action": "finish", "followup": "答得完整，本轮结束", "quality": "correct", "completeness": "complete", "level": 1},
+        VALID_JUDGMENT,
+    ])
+    chain = ChainSession(s.id, q, llm, judge_model="m")
+    r = chain.next_round("HashMap 底层是数组加链表，冲突时链表转红黑树")
+    assert r["finished"] is True
+    assert len(attempts(db, s.id)) == 1
+
+
+def test_light_tier_llm_continues_forced_finish(db):
+    """浅挖档兜底：LLM 对完整回答仍 continue（违反 prompt）→ 代码按完整度强制收尾。"""
+    s, q = add_session(db)
+    llm = FakeLLM([
+        {"action": "continue", "followup": "还追问", "quality": "correct", "completeness": "complete", "level": 1},
+        VALID_JUDGMENT,
+    ])
+    chain = ChainSession(s.id, q, llm, judge_model="m")
+    r = chain.next_round("答完整清晰")
+    assert r["finished"] is True  # complete+correct → 代码兜底收尾
+
+
+def test_light_tier_partial_two_rounds_finish(db):
+    """浅挖档：回答有缺口（partial）→ 只追 1 轮缺口后收尾，不无限追问。"""
+    s, q = add_session(db)
+    llm = FakeLLM([
+        {"action": "continue", "followup": "追缺口", "quality": "partial", "completeness": "partial", "level": 1},
+        {"action": "continue", "followup": "还有缺口", "quality": "partial", "completeness": "partial", "level": 2},
+        VALID_JUDGMENT,
+    ])
+    chain = ChainSession(s.id, q, llm, judge_model="m")
+    assert chain.next_round("答了一部分")["finished"] is False
+    r2 = chain.next_round("补了一点")["finished"] is True  # 连续 2 轮 partial → 收尾
+    assert r2 is True
+    assert len(attempts(db, s.id)) == 2
 
 
 def test_judgment_persisted_with_session(db):
@@ -256,6 +308,8 @@ def test_judgment_persisted_with_session(db):
 
 def test_resume_continues_round_numbering(db):
     s, q = add_session(db)
+    q.difficulty = 5
+    commit(db)
     llm1 = FakeLLM([CONTINUE, CONTINUE])
     chain1 = ChainSession(s.id, q, llm1, judge_model="m", max_rounds=5)
     chain1.next_round("答1")
@@ -345,3 +399,4 @@ def test_next_round_after_finish_raises(db):
     assert chain.finished is True
     with pytest.raises(ChainStateError):
         chain.next_round("再来一轮")
+

@@ -1,4 +1,4 @@
-import base64
+﻿import base64
 import math
 import time
 import pytest
@@ -1187,7 +1187,7 @@ def test_resume_unfinished_session(db):
 
     body = client.get(f"/api/sessions/{session_id}/resume").json()
     assert body["rounds_done"] == 1
-    assert body["max_rounds"] == 6  # 难度 1 → 3+1*3=6
+    assert body["max_rounds"] == 4  # 浅挖档（难度 1）上限 4
 
 
 def test_resume_max_rounds_scales_with_difficulty(db):
@@ -1200,7 +1200,7 @@ def test_resume_max_rounds_scales_with_difficulty(db):
     client.post(f"/api/sessions/{session_id}/answer", json={"answer": "第一轮"})
 
     body = client.get(f"/api/sessions/{session_id}/resume").json()
-    assert body["max_rounds"] == 18  # 难度 5 → 3+5*3=18
+    assert body["max_rounds"] == 15  # 深挖档（难度 5）上限 15
 
 
 def test_resume_finished_session_409(db):
@@ -1672,3 +1672,4 @@ def test_sqlite_busy_timeout_set(db):
 
     with engine().connect() as conn:
         assert conn.execute(_t("PRAGMA busy_timeout")).scalar() == 5000
+
