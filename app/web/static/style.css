@@ -9,7 +9,7 @@
   --green-soft: rgba(93, 122, 79, 0.1);
   --line: #e5e0d5;
   --line-dark: #d8d2c3;
-  --serif: Georgia, "Songti SC", SimSun, serif;
+  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Songti SC", SimSun, serif; /* 标题：数字/西文走现代无衬线，中文回落宋体 */
   --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   /* 统一尺寸 token：按钮/输入/徽章 6px · 卡片 8px · 弹窗 12px */
   --radius-sm: 6px;
