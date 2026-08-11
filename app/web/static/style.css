@@ -141,6 +141,12 @@ body {
 }
 .sidebar-upload:hover { border-color: var(--red); color: var(--red); }
 
+#reviewer-link {
+  display: flex;
+  align-items: center;
+  justify-content: center; /* a 元素 flex 容器内文字居中（text-align 对 flex 无效） */
+}
+
 .sidebar-logout {
   border: 1px solid var(--line-dark);
   text-align: center;
@@ -672,7 +678,7 @@ textarea:focus {
 }
 .primary:hover { color: #fff; border-color: var(--ink); opacity: 0.88; }
 .primary:disabled { opacity: 0.45; cursor: not-allowed; }
-.modal-foot .primary { margin-top: 0; } /* 弹窗内主按钮不与取消按钮错位 */
+.modal-foot .primary { margin-top: 0; font-weight: 400; } /* 弹窗内主按钮与取消按钮字号/粗细一致（仅背景区分主次） */
 
 details { margin: 12px 0; font-size: 14px; }
 details summary { cursor: pointer; color: var(--ink-soft); transition: color 0.15s ease; }
