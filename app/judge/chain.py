@@ -116,7 +116,8 @@ class ChainSession:
             level=level,
             quality=quality,
         )
-        if level is not None:
+        if level is not None and round_no > 0:
+            # 只统计追问轮次的层级（首答是题目本身层级，不触发"达标即收"）
             self._max_level = max(self._max_level, level)
         if self._should_finish(action, round_no, quality, prev_quality, completeness):
             self._finished = True
