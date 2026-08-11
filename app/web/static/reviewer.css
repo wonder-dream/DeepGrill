@@ -1,16 +1,4 @@
-﻿:root {
-  --paper: #f6f4ef;
-  --card: #fffdf9;
-  --ink: #26231e;
-  --ink-soft: #6f6a5e;
-  --red: #c0392b;
-  --red-soft: rgba(192, 57, 43, 0.08);
-  --green: #5d7a4f;
-  --green-soft: rgba(93, 122, 79, 0.1);
-  --line: #e5e0d5;
-  --line-dark: #d8d2c3;
-  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-}
+﻿/* 主题变量定义见 theme.css（6 套主题，body[data-theme] 切换） */
 * { box-sizing: border-box; }
 body {
   margin: 0;

@@ -1,0 +1,172 @@
+/* 主题变量（6 套）：retro 复古档案（默认）/ minimal 极简现代 / dark 深色专业
+   / brutal 新粗野主义 / warm 温暖渐变 / editorial 黑白杂志
+   通过 <body data-theme="..."> 切换；style.css 与 reviewer.css 共用本文件变量。 */
+
+:root,
+body[data-theme="retro"] {
+  /* 纸感档案：米黄羊皮纸 + 红点缀 + 点阵纹理 */
+  --paper: #f6f4ef;
+  --card: #fffdf9;
+  --ink: #26231e;
+  --ink-soft: #6f6a5e;
+  --red: #c0392b;
+  --red-soft: rgba(192, 57, 43, 0.08);
+  --green: #5d7a4f;
+  --green-soft: rgba(93, 122, 79, 0.1);
+  --line: #e5e0d5;
+  --line-dark: #d8d2c3;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --shadow-card: none;
+  --shadow-modal: 0 6px 24px rgba(38, 35, 30, 0.2);
+  --soft-bg: rgba(38, 35, 30, 0.06);
+  --inverse-text: #fff;
+  --bg-image: radial-gradient(rgba(60, 50, 30, 0.05) 1px, transparent 1px);
+  --bg-size: 24px 24px;
+  --card-border: 1px solid var(--line);
+  --input-border: 1px solid var(--line-dark);
+  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Songti SC", SimSun, serif;
+  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+body[data-theme="minimal"] {
+  /* 极简现代：白底 + 靛蓝主色 + 大圆角轻阴影（Linear/Notion 风） */
+  --paper: #fafafa;
+  --card: #ffffff;
+  --ink: #18181b;
+  --ink-soft: #71717a;
+  --red: #4f46e5;
+  --red-soft: rgba(79, 70, 229, 0.08);
+  --green: #16a34a;
+  --green-soft: rgba(22, 163, 74, 0.1);
+  --line: #e4e4e7;
+  --line-dark: #d4d4d8;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-modal: 0 10px 40px rgba(0, 0, 0, 0.12);
+  --soft-bg: rgba(0, 0, 0, 0.05);
+  --inverse-text: #fff;
+  --bg-image: none;
+  --bg-size: auto;
+  --card-border: 1px solid var(--line);
+  --input-border: 1px solid var(--line-dark);
+  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Songti SC", SimSun, serif;
+  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* 通用尺寸 token（各主题共享，不随主题变化） */
+  --btn-pad: 6px 14px;
+  --btn-sm-pad: 4px 12px;
+  --input-pad: 6px 10px;
+  --font-btn: 13px;
+  --font-sm: 12px;
+}
+
+body[data-theme="dark"] {
+  /* 深色专业：深蓝灰 + 霓虹蓝点缀（GitHub Dark / Vercel 风） */
+  --paper: #0d1117;
+  --card: #161b22;
+  --ink: #e6edf3;
+  --ink-soft: #8b949e;
+  --red: #58a6ff;
+  --red-soft: rgba(88, 166, 255, 0.12);
+  --green: #3fb950;
+  --green-soft: rgba(63, 185, 80, 0.15);
+  --line: #21262d;
+  --line-dark: #30363d;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-modal: 0 12px 48px rgba(0, 0, 0, 0.6);
+  --soft-bg: rgba(255, 255, 255, 0.06);
+  --inverse-text: #0d1117;
+  --bg-image: none;
+  --bg-size: auto;
+  --card-border: 1px solid var(--line-dark);
+  --input-border: 1px solid var(--line-dark);
+  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+body[data-theme="brutal"] {
+  /* 新粗野主义轻量：白底 + 2px 黑描边 + 硬阴影 + 高饱和橙红 */
+  --paper: #f5f4ef;
+  --card: #ffffff;
+  --ink: #111111;
+  --ink-soft: #555555;
+  --red: #ff3d00;
+  --red-soft: #ffe8e0;
+  --green: #00a862;
+  --green-soft: #e0f5ea;
+  --line: #111111;
+  --line-dark: #111111;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --shadow-card: 4px 4px 0 rgba(17, 17, 17, 0.9);
+  --shadow-modal: 6px 6px 0 rgba(17, 17, 17, 0.9);
+  --soft-bg: #f0efea;
+  --inverse-text: #fff;
+  --bg-image: none;
+  --bg-size: auto;
+  --card-border: 2px solid #111111;
+  --input-border: 2px solid #111111;
+  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+body[data-theme="warm"] {
+  /* 温暖渐变学习风：米白 + 桃橙主色 + 圆润大按钮 + 顶部暖渐变 */
+  --paper: #fdf6f0;
+  --card: #fffdf9;
+  --ink: #3b2f2a;
+  --ink-soft: #8a7a70;
+  --red: #ff7a59;
+  --red-soft: rgba(255, 122, 89, 0.12);
+  --green: #6f9e63;
+  --green-soft: rgba(111, 158, 99, 0.14);
+  --line: #f0e4da;
+  --line-dark: #e2d2c4;
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+  --shadow-card: 0 4px 16px rgba(180, 130, 100, 0.12);
+  --shadow-modal: 0 12px 40px rgba(180, 130, 100, 0.25);
+  --soft-bg: rgba(255, 122, 89, 0.06);
+  --inverse-text: #fff;
+  --bg-image: linear-gradient(180deg, #fff1e4 0%, rgba(253, 246, 240, 0) 320px);
+  --bg-size: auto;
+  --card-border: 1px solid var(--line);
+  --input-border: 1px solid var(--line-dark);
+  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Songti SC", SimSun, serif;
+  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+body[data-theme="editorial"] {
+  /* 黑白杂志：纯黑白 + 大留白 + 细分割线 + 红细点缀 */
+  --paper: #ffffff;
+  --card: #ffffff;
+  --ink: #111111;
+  --ink-soft: #6b6b6b;
+  --red: #b91c1c;
+  --red-soft: rgba(185, 28, 28, 0.06);
+  --green: #1a5c2e;
+  --green-soft: rgba(26, 92, 46, 0.06);
+  --line: #e5e5e5;
+  --line-dark: #cccccc;
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 4px;
+  --shadow-card: none;
+  --shadow-modal: 0 2px 12px rgba(0, 0, 0, 0.08);
+  --soft-bg: rgba(0, 0, 0, 0.04);
+  --inverse-text: #fff;
+  --bg-image: none;
+  --bg-size: auto;
+  --card-border: none;
+  --input-border: 1px solid #cccccc;
+  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Songti SC", SimSun, serif;
+  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}

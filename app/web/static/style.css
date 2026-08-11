@@ -1,26 +1,4 @@
-﻿:root {
-  --paper: #f6f4ef;
-  --card: #fffdf9;
-  --ink: #26231e;
-  --ink-soft: #6f6a5e;
-  --red: #c0392b;
-  --red-soft: rgba(192, 57, 43, 0.08);
-  --green: #5d7a4f;
-  --green-soft: rgba(93, 122, 79, 0.1);
-  --line: #e5e0d5;
-  --line-dark: #d8d2c3;
-  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Songti SC", SimSun, serif; /* 标题：数字/西文走现代无衬线，中文回落宋体 */
-  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-  /* 统一尺寸 token：按钮/输入/徽章 6px · 卡片 8px · 弹窗 12px */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --btn-pad: 6px 14px;
-  --btn-sm-pad: 4px 12px;
-  --input-pad: 6px 10px;
-  --font-btn: 13px;
-  --font-sm: 12px;
-}
+﻿/* 主题变量定义见 theme.css（6 套主题，body[data-theme] 切换） */
 
 * { box-sizing: border-box; }
 
@@ -35,8 +13,8 @@ body {
   line-height: 1.7;
   color: var(--ink);
   background-color: var(--paper);
-  background-image: radial-gradient(rgba(60, 50, 30, 0.05) 1px, transparent 1px);
-  background-size: 24px 24px;
+  background-image: var(--bg-image);
+  background-size: var(--bg-size);
   background-attachment: fixed;
 }
 
@@ -127,12 +105,12 @@ body {
 }
 .sidebar-daily {
   border: 1px solid var(--ink);
-  color: #fff;
+  color: var(--inverse-text);
   background: var(--ink);
   text-align: center;
   font-weight: 600;
 }
-.sidebar-daily:hover { opacity: 0.88; color: #fff; background: var(--ink); }
+.sidebar-daily:hover { opacity: 0.88; color: var(--inverse-text); background: var(--ink); }
 
 .sidebar-upload {
   border: 1px solid var(--line-dark);
@@ -154,6 +132,30 @@ body {
   font-size: 13px;
 }
 .sidebar-logout:hover { border-color: var(--red); color: var(--red); }
+
+/* 主题切换器（侧边栏导航下方） */
+.theme-switcher {
+  display: flex;
+  gap: 6px;
+  margin: 14px 4px 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.theme-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--line-dark);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.15s ease;
+}
+.theme-dot:hover { transform: scale(1.15); }
+.theme-dot.theme-active {
+  border-color: var(--red);
+  box-shadow: 0 0 0 2px var(--red-soft);
+}
 
 /* 底部操作组：每日更新/上传/退出始终贴底（普通用户无每日/上传时退出也在底部） */
 .sidebar-actions {
@@ -195,8 +197,9 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
 
 .card {
   background: var(--card);
-  border: 1px solid var(--line);
+  border: var(--card-border);
   border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
   padding: 18px 22px;
   margin-bottom: 14px;
 }
@@ -420,7 +423,7 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
 #bank-search:hover { border-color: var(--ink-soft); }
 #bank-search:focus {
   border-color: var(--red);
-  box-shadow: 0 0 0 3px rgba(192, 57, 43, 0.15);
+  box-shadow: 0 0 0 3px var(--red-soft);
 }
 #bank-search::placeholder { color: var(--ink-soft); opacity: 0.7; }
 
@@ -499,12 +502,12 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
   font-weight: 500;
 }
 .badge-todo {
-  border-color: rgba(192, 57, 43, 0.4);
+  border-color: var(--red);
   background: var(--red-soft);
   color: var(--red);
 }
 .badge-done {
-  border-color: rgba(93, 122, 79, 0.4);
+  border-color: var(--green);
   background: var(--green-soft);
   color: var(--green);
 }
@@ -533,7 +536,7 @@ h2 {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.chat-user { background: rgba(38, 35, 30, 0.06); }
+.chat-user { background: var(--soft-bg); }
 .chat-interviewer {
   border-left: 3px solid var(--red);
   background: var(--card);
@@ -545,7 +548,7 @@ h2 {
   font-size: 11px;
   padding: 0 6px;
   border-radius: var(--radius-sm);
-  border: 1px solid rgba(192, 57, 43, 0.35);
+  border: 1px solid var(--red);
   background: var(--red-soft);
   color: var(--red);
   margin-left: 8px;
@@ -642,7 +645,7 @@ h2 {
 
 #detail-delete {
   color: var(--red);
-  border-color: rgba(192, 57, 43, 0.45);
+  border-color: var(--red);
   margin-top: 12px;
   margin-right: 8px;
 }
@@ -670,13 +673,13 @@ textarea:focus {
 
 .primary {
   background: var(--ink);
-  color: #fff;
+  color: var(--inverse-text);
   border-color: var(--ink);
   margin-top: 12px;
   font-weight: 600;
   padding: var(--btn-pad);
 }
-.primary:hover { color: #fff; border-color: var(--ink); opacity: 0.88; }
+.primary:hover { color: var(--inverse-text); border-color: var(--ink); opacity: 0.88; }
 .primary:disabled { opacity: 0.45; cursor: not-allowed; }
 .modal-foot .primary { margin-top: 0; font-weight: 400; } /* 弹窗内主按钮与取消按钮字号/粗细一致（仅背景区分主次） */
 
@@ -694,7 +697,7 @@ details summary:hover { color: var(--red); }
 .score-bar {
   flex: 1;
   height: 6px;
-  background: rgba(38, 35, 30, 0.08);
+  background: var(--soft-bg);
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
@@ -716,7 +719,7 @@ details summary:hover { color: var(--red); }
 
 #result-retry {
   background: var(--red);
-  color: #fff;
+  color: var(--inverse-text);
   border: none;
   padding: var(--btn-pad);
   border-radius: var(--radius-sm);
@@ -752,7 +755,7 @@ details summary:hover { color: var(--red); }
   border: 1px solid var(--line-dark);
   border-radius: var(--radius-sm);
   padding: 10px;
-  box-shadow: 0 4px 14px rgba(38, 35, 30, 0.12);
+  box-shadow: var(--shadow-modal);
 }
 .pick-head {
   display: flex;
@@ -869,7 +872,7 @@ details summary:hover { color: var(--red); }
 .calendar-cell.in-range { background: var(--red-soft); }
 .calendar-cell.range-start, .calendar-cell.range-end {
   background: var(--red);
-  color: #fff;
+  color: var(--inverse-text);
   font-weight: 600;
 }
 .calendar-hint { font-size: 12px; margin: 10px 0 0; text-align: center; }
@@ -907,7 +910,7 @@ details summary:hover { color: var(--red); }
   cursor: pointer;
   font-size: 16px;
   padding: 0;
-  box-shadow: 0 2px 8px rgba(38, 35, 30, 0.12);
+  box-shadow: var(--shadow-modal);
 }
 .hamburger.cal-toggle { left: 56px; }
 
@@ -919,12 +922,12 @@ details summary:hover { color: var(--red); }
   z-index: 90;
   max-width: 86%;
   background: var(--ink);
-  color: #fff;
+  color: var(--inverse-text);
   padding: 9px 16px;
   border-radius: var(--radius-sm);
   font-size: 13px;
   font-family: var(--sans);
-  box-shadow: 0 4px 14px rgba(38, 35, 30, 0.25);
+  box-shadow: var(--shadow-modal);
 }
 #ui-toast.toast-error { background: var(--red); }
 
@@ -954,7 +957,7 @@ details summary:hover { color: var(--red); }
     width: 240px;
     transform: translateX(-105%);
     transition: transform 0.22s ease;
-    box-shadow: 4px 0 18px rgba(38, 35, 30, 0.18);
+    box-shadow: var(--shadow-modal);
   }
   body.sidebar-open .sidebar { transform: translateX(0); }
   body.sidebar-open .sidebar.collapsed { width: 240px; }
@@ -1100,7 +1103,7 @@ details summary:hover { color: var(--red); }
 .modal {
   position: fixed;
   inset: 0;
-  background: rgba(38, 35, 30, 0.4);
+  background: color-mix(in srgb, var(--ink) 40%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1115,7 +1118,7 @@ details summary:hover { color: var(--red); }
   border: 1px solid var(--line-dark);
   border-radius: var(--radius-lg);
   padding: 18px;
-  box-shadow: 0 6px 24px rgba(38, 35, 30, 0.2);
+  box-shadow: var(--shadow-modal);
 }
 .modal-card label {
   display: block;
@@ -1154,6 +1157,9 @@ details summary:hover { color: var(--red); }
 }
 .modal-foot button:hover { border-color: var(--red); color: var(--red); }
 #qm-error { color: var(--red); }
+
+
+
 
 
 

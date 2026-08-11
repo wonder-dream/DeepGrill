@@ -4,9 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>题库审核</title>
+  <link rel="stylesheet" href="/static/theme.css?v=2">
   <link rel="stylesheet" href="/static/reviewer.css?v=2">
 </head>
 <body>
+  <script>
+    document.body.dataset.theme = localStorage.getItem("theme") || "retro";
+  </script>
   <header class="rv-head">
     <h1>题库人工审核</h1>
     <a href="/" class="rv-back">← 返回主界面</a>

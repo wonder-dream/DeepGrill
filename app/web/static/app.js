@@ -39,6 +39,25 @@ const $ = (sel) => document.querySelector(sel);
 // 可刷新恢复的主视图（hash 路由，带状态参数）；answer/result/detail 为流程中间态（sessionStorage 恢复）
 const HASHABLE = new Set(["today", "bank", "history", "review", "favorites", "upload"]);
 
+// --- 主题：localStorage 持久化，body[data-theme] 切换（theme.css 6 套） ---
+
+function applyTheme(theme) {
+  document.body.dataset.theme = theme;
+  localStorage.setItem("theme", theme);
+  document.querySelectorAll(".theme-dot").forEach((btn) => {
+    btn.classList.toggle("theme-active", btn.dataset.theme === theme);
+  });
+}
+
+(function initTheme() {
+  const saved = localStorage.getItem("theme") || "retro";
+  document.body.dataset.theme = saved;
+  document.querySelectorAll(".theme-dot").forEach((btn) => {
+    btn.classList.toggle("theme-active", btn.dataset.theme === saved);
+    btn.addEventListener("click", () => applyTheme(btn.dataset.theme));
+  });
+})();
+
 if ("scrollRestoration" in history) history.scrollRestoration = "manual"; // 后退不恢复旧滚动位
 
 function scrollTop() {
