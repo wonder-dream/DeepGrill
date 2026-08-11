@@ -1,69 +1,32 @@
-/* 主题变量（5 套）：minimal 清爽白底（日常）/ aurora 霓虹极光 / cyber 赛博终端
-   / glass 玻璃深色 / brutal 撞色粗野
+/* 主题变量（2 套）：retro 纸质档案（默认）/ cyber 像素终端
    通过 <body data-theme="..."> 切换；style.css 与 reviewer.css 共用本文件变量。 */
 
 :root,
-body[data-theme="aurora"] {
-  /* 霓虹极光：深蓝黑底 + 青紫粉光晕 + 玻璃卡片发光 */
-  --paper: #0b1020;
-  --card: rgba(22, 28, 52, 0.62);
-  --ink: #e8ecf8;
-  --ink-soft: #8a94b8;
-  --red: #22d3ee;
-  --red-soft: rgba(34, 211, 238, 0.12);
-  --green: #a78bfa;
-  --green-soft: rgba(167, 139, 250, 0.16);
-  --line: rgba(148, 163, 255, 0.16);
-  --line-dark: rgba(148, 163, 255, 0.32);
+body[data-theme="retro"] {
+  /* 纸质档案：米黄羊皮纸 + 红点缀 + 点阵纹理 */
+  --paper: #f6f4ef;
+  --card: #fffdf9;
+  --ink: #26231e;
+  --ink-soft: #6f6a5e;
+  --red: #c0392b;
+  --red-soft: rgba(192, 57, 43, 0.08);
+  --green: #5d7a4f;
+  --green-soft: rgba(93, 122, 79, 0.1);
+  --line: #e5e0d5;
+  --line-dark: #d8d2c3;
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
-  --shadow-card: 0 0 24px rgba(34, 211, 238, 0.1);
-  --shadow-modal: 0 0 48px rgba(34, 211, 238, 0.18);
-  --soft-bg: rgba(148, 163, 255, 0.1);
-  --inverse-text: #0b1020;
-  --bg-image: radial-gradient(600px at 18% 12%, rgba(34, 211, 238, 0.14), transparent 70%),
-    radial-gradient(800px at 82% 0%, rgba(168, 85, 247, 0.13), transparent 70%),
-    radial-gradient(640px at 55% 100%, rgba(244, 114, 182, 0.1), transparent 70%);
-  --bg-size: auto;
-  --card-border: 1px solid rgba(148, 163, 255, 0.22);
-  --input-border: 1px solid rgba(148, 163, 255, 0.35);
-  --glass: blur(10px);
-  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-  /* 通用尺寸 token（各主题共享，不随主题变化） */
-  --btn-pad: 6px 14px;
-  --btn-sm-pad: 4px 12px;
-  --input-pad: 6px 10px;
-  --font-btn: 13px;
-  --font-sm: 12px;
-}
-
-body[data-theme="minimal"] {
-  /* 清爽白底（日常实用款）：白底 + 靛蓝主色 + 大圆角轻阴影 */
-  --paper: #fafafa;
-  --card: #ffffff;
-  --ink: #18181b;
-  --ink-soft: #71717a;
-  --red: #4f46e5;
-  --red-soft: rgba(79, 70, 229, 0.08);
-  --green: #16a34a;
-  --green-soft: rgba(22, 163, 74, 0.1);
-  --line: #e4e4e7;
-  --line-dark: #d4d4d8;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06);
-  --shadow-modal: 0 10px 40px rgba(0, 0, 0, 0.12);
-  --soft-bg: rgba(0, 0, 0, 0.05);
+  --shadow-card: none;
+  --shadow-modal: 0 6px 24px rgba(38, 35, 30, 0.2);
+  --soft-bg: rgba(38, 35, 30, 0.06);
   --inverse-text: #fff;
-  --bg-image: none;
-  --bg-size: auto;
+  --bg-image: radial-gradient(rgba(60, 50, 30, 0.05) 1px, transparent 1px);
+  --bg-size: 24px 24px;
   --card-border: 1px solid var(--line);
   --input-border: 1px solid var(--line-dark);
   --glass: none;
-  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Songti SC", SimSun, serif;
   --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   --btn-pad: 6px 14px;
   --btn-sm-pad: 4px 12px;
@@ -73,7 +36,7 @@ body[data-theme="minimal"] {
 }
 
 body[data-theme="cyber"] {
-  /* 赛博终端（像素版）：Game Boy 绿调色板 + 直角 + 块状硬阴影 + 像素颗粒背景（护眼低饱和） */
+  /* 赛博终端（像素版）：Game Boy 绿调色板 + 直角 + 块状硬阴影 + 像素颗粒背景 */
   --paper: #0f1a0f;
   --card: #17251a;
   --ink: #e2f0d8;
@@ -96,7 +59,7 @@ body[data-theme="cyber"] {
   --card-border: 2px solid #2a3d24;
   --input-border: 2px solid #2a3d24;
   --glass: none;
-  --serif: "Cascadia Mono", Consolas, "Courier New", monospace; /* 标题/数字保持终端等宽 */
+  --serif: "Cascadia Mono", Consolas, "Courier New", monospace; /* 标题/数字终端等宽 */
   --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; /* 正文常规字体护眼 */
   --btn-pad: 6px 14px;
   --btn-sm-pad: 4px 12px;
@@ -105,95 +68,7 @@ body[data-theme="cyber"] {
   --font-sm: 12px;
 }
 
-body[data-theme="glass"] {
-  /* 玻璃深色：深灰渐变 + 半透明磨砂卡片 + 细蓝霓虹描边 */
-  --paper: #10141c;
-  --card: rgba(255, 255, 255, 0.07);
-  --ink: #f0f4fa;
-  --ink-soft: #9aa4b8;
-  --red: #60a5fa;
-  --red-soft: rgba(96, 165, 250, 0.12);
-  --green: #34d399;
-  --green-soft: rgba(52, 211, 153, 0.14);
-  --line: rgba(255, 255, 255, 0.1);
-  --line-dark: rgba(255, 255, 255, 0.2);
-  --radius-sm: 10px;
-  --radius-md: 14px;
-  --radius-lg: 18px;
-  --shadow-card: 0 4px 20px rgba(0, 0, 0, 0.3);
-  --shadow-modal: 0 12px 48px rgba(0, 0, 0, 0.5);
-  --soft-bg: rgba(255, 255, 255, 0.06);
-  --inverse-text: #10141c;
-  --bg-image: radial-gradient(700px at 20% 0%, rgba(96, 165, 250, 0.08), transparent 70%),
-    radial-gradient(700px at 85% 100%, rgba(52, 211, 153, 0.06), transparent 70%);
-  --bg-size: auto;
-  --card-border: 1px solid rgba(255, 255, 255, 0.14);
-  --input-border: 1px solid rgba(255, 255, 255, 0.25);
-  --glass: blur(12px);
-  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-  --btn-pad: 6px 14px;
-  --btn-sm-pad: 4px 12px;
-  --input-pad: 6px 10px;
-  --font-btn: 13px;
-  --font-sm: 12px;
-}
-
-body[data-theme="brutal"] {
-  /* 撞色粗野：深底 + 高饱和撞色硬阴影（街头海报） */
-  --paper: #101018;
-  --card: #1a1a26;
-  --ink: #f2f2f7;
-  --ink-soft: #9a9ab0;
-  --red: #ff2d55;
-  --red-soft: rgba(255, 45, 85, 0.14);
-  --green: #00e5ff;
-  --green-soft: rgba(0, 229, 255, 0.14);
-  --line: #2e2e3e;
-  --line-dark: #3f3f54;
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
-  --shadow-card: 4px 4px 0 #ff2d55;
-  --shadow-modal: 6px 6px 0 #00e5ff;
-  --soft-bg: rgba(255, 255, 255, 0.06);
-  --inverse-text: #101018;
-  --bg-image: none;
-  --bg-size: auto;
-  --card-border: 1px solid #f2f2f7;
-  --input-border: 1px solid #3f3f54;
-  --glass: none;
-  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-  --btn-pad: 6px 14px;
-  --btn-sm-pad: 4px 12px;
-  --input-pad: 6px 10px;
-  --font-btn: 13px;
-  --font-sm: 12px;
-}
-
-/* 玻璃主题（aurora/glass）：卡片磨砂 + 主题化细节 */
-body[data-theme="aurora"] .card,
-body[data-theme="glass"] .card {
-  backdrop-filter: var(--glass);
-  -webkit-backdrop-filter: var(--glass);
-}
-body[data-theme="aurora"] .sidebar,
-body[data-theme="glass"] .sidebar {
-  backdrop-filter: var(--glass);
-  -webkit-backdrop-filter: var(--glass);
-}
-body[data-theme="aurora"] .primary,
-body[data-theme="glass"] .primary {
-  background: linear-gradient(135deg, var(--red), var(--green));
-  border-color: transparent;
-}
-body[data-theme="aurora"] .sidebar-daily,
-body[data-theme="glass"] .sidebar-daily {
-  background: linear-gradient(135deg, var(--red), var(--green));
-  border-color: transparent;
-}
-/* cyber：提示符感侧边栏品牌 */
+/* cyber 像素风细节：提示符品牌 + 块状按钮阴影 + 按下位移 + 进度条分段 */
 body[data-theme="cyber"] .sidebar h1::before {
   content: "> ";
   background: none;
@@ -202,7 +77,6 @@ body[data-theme="cyber"] .sidebar h1::before {
   margin-right: 2px;
   color: var(--red);
 }
-/* cyber 像素风：按钮/输入块状阴影 + 按下位移 + 像素进度条 */
 body[data-theme="cyber"] button,
 body[data-theme="cyber"] .weak-tag-entry {
   box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35);
@@ -217,15 +91,11 @@ body[data-theme="cyber"] .primary {
 }
 body[data-theme="cyber"] .progress-fill,
 body[data-theme="cyber"] .score-fill {
-  box-shadow: none;
   border-right: 4px solid var(--paper); /* 像素分段感 */
 }
 body[data-theme="cyber"] .badge {
   box-shadow: 0 2px 0 rgba(0, 0, 0, 0.25);
   border-width: 2px;
-}
-body[data-theme="cyber"] .card {
-  box-shadow: var(--shadow-card);
 }
 body[data-theme="cyber"] .progress-track {
   border-width: 2px;
