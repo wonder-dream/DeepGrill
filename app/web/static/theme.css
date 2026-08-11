@@ -73,32 +73,32 @@ body[data-theme="minimal"] {
 }
 
 body[data-theme="cyber"] {
-  /* 赛博终端：纯黑 + 霓虹绿等宽 + 网格扫描线 */
-  --paper: #000000;
-  --card: rgba(10, 15, 10, 0.85);
-  --ink: #ccffd9;
-  --ink-soft: #57a86a;
-  --red: #33ff66;
-  --red-soft: rgba(51, 255, 102, 0.1);
-  --green: #00d4ff;
-  --green-soft: rgba(0, 212, 255, 0.12);
-  --line: rgba(51, 255, 102, 0.18);
-  --line-dark: rgba(51, 255, 102, 0.38);
+  /* 赛博终端（护眼版）：深墨绿黑底（非纯黑）+ 柔和绿强调 + 标题等宽 + 正文常规字体 */
+  --paper: #0a0f0b;
+  --card: rgba(15, 22, 16, 0.9);
+  --ink: #d3dbd3;
+  --ink-soft: #7e8f7f;
+  --red: #4ade80;
+  --red-soft: rgba(74, 222, 128, 0.1);
+  --green: #38bdf8;
+  --green-soft: rgba(56, 189, 248, 0.12);
+  --line: rgba(74, 222, 128, 0.14);
+  --line-dark: rgba(74, 222, 128, 0.3);
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 10px;
-  --shadow-card: 0 0 14px rgba(51, 255, 102, 0.12);
-  --shadow-modal: 0 0 36px rgba(51, 255, 102, 0.2);
-  --soft-bg: rgba(51, 255, 102, 0.06);
-  --inverse-text: #000000;
-  --bg-image: linear-gradient(rgba(51, 255, 102, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(51, 255, 102, 0.035) 1px, transparent 1px);
+  --shadow-card: 0 0 12px rgba(74, 222, 128, 0.07);
+  --shadow-modal: 0 0 28px rgba(74, 222, 128, 0.12);
+  --soft-bg: rgba(74, 222, 128, 0.05);
+  --inverse-text: #0a0f0b;
+  --bg-image: linear-gradient(rgba(74, 222, 128, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(74, 222, 128, 0.02) 1px, transparent 1px);
   --bg-size: 32px 32px;
-  --card-border: 1px solid rgba(51, 255, 102, 0.3);
-  --input-border: 1px solid rgba(51, 255, 102, 0.4);
+  --card-border: 1px solid rgba(74, 222, 128, 0.24);
+  --input-border: 1px solid rgba(74, 222, 128, 0.35);
   --glass: none;
-  --serif: "Cascadia Mono", Consolas, "Courier New", monospace;
-  --sans: "Cascadia Mono", Consolas, "Courier New", monospace;
+  --serif: "Cascadia Mono", Consolas, "Courier New", monospace; /* 标题/数字保持终端等宽 */
+  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; /* 正文常规字体护眼 */
   --btn-pad: 6px 14px;
   --btn-sm-pad: 4px 12px;
   --input-pad: 6px 10px;
