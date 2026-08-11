@@ -73,29 +73,28 @@ body[data-theme="minimal"] {
 }
 
 body[data-theme="cyber"] {
-  /* 赛博终端（护眼版）：深墨绿黑底（非纯黑）+ 柔和绿强调 + 标题等宽 + 正文常规字体 */
-  --paper: #0a0f0b;
-  --card: rgba(15, 22, 16, 0.9);
-  --ink: #d3dbd3;
-  --ink-soft: #7e8f7f;
-  --red: #4ade80;
-  --red-soft: rgba(74, 222, 128, 0.1);
-  --green: #38bdf8;
-  --green-soft: rgba(56, 189, 248, 0.12);
-  --line: rgba(74, 222, 128, 0.14);
-  --line-dark: rgba(74, 222, 128, 0.3);
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
-  --shadow-card: 0 0 12px rgba(74, 222, 128, 0.07);
-  --shadow-modal: 0 0 28px rgba(74, 222, 128, 0.12);
-  --soft-bg: rgba(74, 222, 128, 0.05);
-  --inverse-text: #0a0f0b;
-  --bg-image: linear-gradient(rgba(74, 222, 128, 0.02) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(74, 222, 128, 0.02) 1px, transparent 1px);
-  --bg-size: 32px 32px;
-  --card-border: 1px solid rgba(74, 222, 128, 0.24);
-  --input-border: 1px solid rgba(74, 222, 128, 0.35);
+  /* 赛博终端（像素版）：Game Boy 绿调色板 + 直角 + 块状硬阴影 + 像素颗粒背景（护眼低饱和） */
+  --paper: #0f1a0f;
+  --card: #17251a;
+  --ink: #e2f0d8;
+  --ink-soft: #86a07a;
+  --red: #8bac0f;
+  --red-soft: rgba(139, 172, 15, 0.14);
+  --green: #6fbf73;
+  --green-soft: rgba(111, 191, 115, 0.14);
+  --line: rgba(139, 172, 15, 0.18);
+  --line-dark: rgba(139, 172, 15, 0.32);
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --shadow-card: 0 4px 0 rgba(0, 0, 0, 0.35);
+  --shadow-modal: 0 6px 0 rgba(0, 0, 0, 0.45);
+  --soft-bg: rgba(139, 172, 15, 0.06);
+  --inverse-text: #0f1a0f;
+  --bg-image: radial-gradient(rgba(139, 172, 15, 0.05) 1px, transparent 1px);
+  --bg-size: 6px 6px;
+  --card-border: 2px solid #2a3d24;
+  --input-border: 2px solid #2a3d24;
   --glass: none;
   --serif: "Cascadia Mono", Consolas, "Courier New", monospace; /* 标题/数字保持终端等宽 */
   --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; /* 正文常规字体护眼 */
@@ -202,4 +201,32 @@ body[data-theme="cyber"] .sidebar h1::before {
   height: auto;
   margin-right: 2px;
   color: var(--red);
+}
+/* cyber 像素风：按钮/输入块状阴影 + 按下位移 + 像素进度条 */
+body[data-theme="cyber"] button,
+body[data-theme="cyber"] .weak-tag-entry {
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35);
+}
+body[data-theme="cyber"] button:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+}
+body[data-theme="cyber"] .primary {
+  box-shadow: 0 3px 0 #4a5d08;
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.3);
+}
+body[data-theme="cyber"] .progress-fill,
+body[data-theme="cyber"] .score-fill {
+  box-shadow: none;
+  border-right: 4px solid var(--paper); /* 像素分段感 */
+}
+body[data-theme="cyber"] .badge {
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.25);
+  border-width: 2px;
+}
+body[data-theme="cyber"] .card {
+  box-shadow: var(--shadow-card);
+}
+body[data-theme="cyber"] .progress-track {
+  border-width: 2px;
 }
