@@ -672,6 +672,7 @@ textarea:focus {
 }
 .primary:hover { color: #fff; border-color: var(--ink); opacity: 0.88; }
 .primary:disabled { opacity: 0.45; cursor: not-allowed; }
+.modal-foot .primary { margin-top: 0; } /* 弹窗内主按钮不与取消按钮错位 */
 
 details { margin: 12px 0; font-size: 14px; }
 details summary { cursor: pointer; color: var(--ink-soft); transition: color 0.15s ease; }
@@ -1142,6 +1143,7 @@ details summary:hover { color: var(--red); }
   color: var(--ink);
   padding: var(--btn-pad);
   border-radius: var(--radius-sm);
+  font-size: var(--font-btn);
   cursor: pointer;
 }
 .modal-foot button:hover { border-color: var(--red); color: var(--red); }
