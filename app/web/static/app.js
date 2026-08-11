@@ -39,7 +39,7 @@ const $ = (sel) => document.querySelector(sel);
 // 可刷新恢复的主视图（hash 路由，带状态参数）；answer/result/detail 为流程中间态（sessionStorage 恢复）
 const HASHABLE = new Set(["today", "bank", "history", "review", "favorites", "upload"]);
 
-// --- 主题：localStorage 持久化，body[data-theme] 切换（theme.css 6 套） ---
+// --- 主题：localStorage 持久化，body[data-theme] 切换（theme.css：retro 纸质 / cyber 像素） ---
 
 function applyTheme(theme) {
   document.body.dataset.theme = theme;
@@ -49,30 +49,13 @@ function applyTheme(theme) {
   });
 }
 
-// --- 布局：body[data-layout] 切换（style.css 布局规则） ---
-
-function applyLayout(layout) {
-  document.body.dataset.layout = layout;
-  localStorage.setItem("layout", layout);
-  document.querySelectorAll(".layout-btn").forEach((btn) => {
-    btn.classList.toggle("layout-active", btn.dataset.layout === layout);
-  });
-}
-
-(function initThemeLayout() {
+(function initTheme() {
   const THEMES = ["retro", "cyber"];
-  const LAYOUTS = ["classic", "topbar"];
   const theme = THEMES.includes(localStorage.getItem("theme")) ? localStorage.getItem("theme") : "retro";
-  const layout = LAYOUTS.includes(localStorage.getItem("layout")) ? localStorage.getItem("layout") : "classic";
   document.body.dataset.theme = theme;
-  document.body.dataset.layout = layout;
   document.querySelectorAll(".theme-dot").forEach((btn) => {
     btn.classList.toggle("theme-active", btn.dataset.theme === theme);
     btn.addEventListener("click", () => applyTheme(btn.dataset.theme));
-  });
-  document.querySelectorAll(".layout-btn").forEach((btn) => {
-    btn.classList.toggle("layout-active", btn.dataset.layout === layout);
-    btn.addEventListener("click", () => applyLayout(btn.dataset.layout));
   });
 })();
 
