@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --paper: #f6f4ef;
   --card: #fffdf9;
   --ink: #26231e;
@@ -11,6 +11,15 @@
   --line-dark: #d8d2c3;
   --serif: Georgia, "Songti SC", SimSun, serif;
   --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* 统一尺寸 token：按钮/输入/徽章 6px · 卡片 8px · 弹窗 12px */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --btn-pad: 6px 14px;
+  --btn-sm-pad: 4px 12px;
+  --input-pad: 6px 10px;
+  --font-btn: 13px;
+  --font-sm: 12px;
 }
 
 * { box-sizing: border-box; }
@@ -81,7 +90,7 @@ body {
   color: var(--ink-soft);
   width: 26px;
   height: 26px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 12px;
   padding: 0;
@@ -102,7 +111,7 @@ body {
   color: var(--ink);
   text-align: left;
   padding: 8px 12px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 14px;
   font-family: var(--sans);
@@ -161,7 +170,7 @@ main { flex: 1; max-width: 880px; margin: 28px auto; padding: 0 20px 60px; min-w
   background: var(--card);
   color: var(--ink);
   padding: 6px 14px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 13px;
   font-family: var(--sans);
@@ -181,7 +190,7 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
 .card {
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 18px 22px;
   margin-bottom: 14px;
 }
@@ -221,14 +230,14 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
 .progress-track {
   height: 8px;
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--card);
   overflow: hidden;
 }
 .progress-fill {
   height: 100%;
   background: var(--red);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   transition: width 0.3s ease;
 }
 
@@ -299,7 +308,7 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
   text-align: center;
   padding: 8px 4px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 .ov-num {
   display: block;
@@ -359,9 +368,9 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
 .filter-bar label { font-size: 13px; color: var(--ink-soft); }
 .filter-bar select {
   margin-left: 6px;
-  padding: 5px 10px;
+  padding: var(--input-pad);
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   background: var(--card);
   color: var(--ink);
@@ -372,10 +381,10 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
   border: 1px solid var(--line-dark);
   background: var(--card);
   color: var(--ink-soft);
-  border-radius: 4px;
-  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  padding: var(--btn-sm-pad);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--font-sm);
   line-height: 1.3;
 }
 .fav-btn.active {
@@ -388,9 +397,9 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
 #bank-search {
   margin-left: 6px;
   width: 170px;
-  padding: 5px 10px 5px 28px;
+  padding: var(--input-pad); padding-left: 28px;
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   background: var(--card);
   color: var(--ink);
@@ -418,9 +427,9 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 #bank-goto {
   width: 64px;
-  padding: 5px 8px;
+  padding: var(--input-pad);
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   font-family: var(--sans);
   background: var(--card);
@@ -432,8 +441,8 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
   border: 1px solid var(--line-dark);
   background: var(--card);
   color: var(--ink);
-  padding: 6px 12px;
-  border-radius: 4px;
+  padding: var(--btn-pad);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 13px;
   font-family: var(--sans);
@@ -442,9 +451,9 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
 #bank-goto-btn:hover { border-color: var(--red); color: var(--red); }
 .bank-pager select {
   margin-left: 4px;
-  padding: 4px 6px;
+  padding: var(--input-pad);
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   font-family: var(--sans);
   background: var(--card);
@@ -456,8 +465,8 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
   border: 1px solid var(--line-dark);
   background: var(--card);
   color: var(--ink);
-  padding: 6px 16px;
-  border-radius: 4px;
+  padding: var(--btn-pad);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 13px;
   font-family: var(--sans);
@@ -477,7 +486,7 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
 .badge {
   font-size: 12px;
   padding: 1px 8px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--line-dark);
   background: var(--card);
   color: var(--ink-soft);
@@ -513,7 +522,7 @@ h2 {
 .chat-item {
   margin: 10px 0;
   padding: 10px 16px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 14px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -529,7 +538,7 @@ h2 {
   display: inline-block;
   font-size: 11px;
   padding: 0 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   border: 1px solid rgba(192, 57, 43, 0.35);
   background: var(--red-soft);
   color: var(--red);
@@ -542,8 +551,8 @@ h2 {
   border: 1px solid var(--line-dark);
   background: var(--card);
   color: var(--ink);
-  padding: 5px 12px;
-  border-radius: 3px;
+  padding: var(--btn-pad);
+  border-radius: var(--radius-sm);
   font-size: 12px;
   cursor: pointer;
   font-family: var(--sans);
@@ -561,8 +570,8 @@ h2 {
   border: 1px solid var(--line-dark);
   background: var(--card);
   color: var(--ink-soft);
-  padding: 2px 10px;
-  border-radius: 3px;
+  padding: var(--btn-sm-pad);
+  border-radius: var(--radius-sm);
   font-size: 12px;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -574,9 +583,9 @@ h2 {
   border: 1px solid var(--line-dark);
   background: var(--card);
   color: var(--ink);
-  padding: 4px 12px;
-  border-radius: 3px;
-  font-size: 13px;
+  padding: var(--btn-sm-pad);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-btn);
   cursor: pointer;
   margin: 0 8px 8px 0;
   font-family: var(--sans);
@@ -589,7 +598,7 @@ h2 {
   border: 1px solid var(--line-dark);
   background: var(--card);
   color: var(--red);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   width: 24px;
   height: 24px;
   line-height: 1;
@@ -637,7 +646,7 @@ h2 {
 textarea {
   width: 100%;
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 10px 12px;
   font-size: 14px;
   font-family: var(--sans);
@@ -659,7 +668,7 @@ textarea:focus {
   border-color: var(--ink);
   margin-top: 12px;
   font-weight: 600;
-  padding: 8px 20px;
+  padding: var(--btn-pad);
 }
 .primary:hover { color: #fff; border-color: var(--ink); opacity: 0.88; }
 .primary:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -679,13 +688,13 @@ details summary:hover { color: var(--red); }
   flex: 1;
   height: 6px;
   background: rgba(38, 35, 30, 0.08);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 .score-fill {
   height: 100%;
   background: var(--red);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 
 #result-review, #detail-review { white-space: pre-wrap; }
@@ -702,8 +711,8 @@ details summary:hover { color: var(--red); }
   background: var(--red);
   color: #fff;
   border: none;
-  padding: 8px 16px;
-  border-radius: 4px;
+  padding: var(--btn-pad);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 13px;
 }
@@ -720,7 +729,7 @@ details summary:hover { color: var(--red); }
   padding: 14px;
   background: var(--card);
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
 }
 
 #calendar-title { cursor: pointer; }
@@ -734,7 +743,7 @@ details summary:hover { color: var(--red); }
   z-index: 10;
   background: var(--card);
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 10px;
   box-shadow: 0 4px 14px rgba(38, 35, 30, 0.12);
 }
@@ -755,9 +764,9 @@ details summary:hover { color: var(--red); }
   color: var(--ink-soft);
   width: 24px;
   height: 24px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--font-sm);
   padding: 0;
   transition: all 0.15s ease;
 }
@@ -772,7 +781,7 @@ details summary:hover { color: var(--red); }
   background: var(--card);
   color: var(--ink);
   padding: 5px 0;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 12px;
   font-family: var(--sans);
@@ -799,9 +808,9 @@ details summary:hover { color: var(--red); }
   color: var(--ink-soft);
   width: 26px;
   height: 26px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--font-sm);
   padding: 0;
   transition: all 0.15s ease;
 }
@@ -843,7 +852,7 @@ details summary:hover { color: var(--red); }
   color: var(--ink);
   font-size: 13px;
   font-family: var(--sans);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -860,9 +869,9 @@ details summary:hover { color: var(--red); }
 
 .filter-bar input[type="date"] {
   margin-left: 6px;
-  padding: 4px 6px;
+  padding: var(--input-pad);
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   background: var(--card);
   color: var(--ink);
@@ -887,7 +896,7 @@ details summary:hover { color: var(--red); }
   color: var(--ink);
   width: 38px;
   height: 38px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 16px;
   padding: 0;
@@ -905,7 +914,7 @@ details summary:hover { color: var(--red); }
   background: var(--ink);
   color: #fff;
   padding: 9px 16px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   font-family: var(--sans);
   box-shadow: 0 4px 14px rgba(38, 35, 30, 0.25);
@@ -919,9 +928,9 @@ details summary:hover { color: var(--red); }
   color: var(--ink-soft);
   width: 24px;
   height: 24px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--font-sm);
   padding: 0;
   margin-left: auto;
 }
@@ -978,7 +987,7 @@ details summary:hover { color: var(--red); }
   background: var(--card);
   color: var(--ink);
   padding: 6px 14px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 13px;
   font-family: var(--sans);
@@ -1000,9 +1009,9 @@ details summary:hover { color: var(--red); }
 #upload-count {
   width: 70px;
   margin-left: 8px;
-  padding: 4px 8px;
+  padding: var(--input-pad);
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   font-family: var(--sans);
   background: var(--card);
@@ -1016,7 +1025,7 @@ details summary:hover { color: var(--red); }
   box-sizing: border-box;
   padding: 8px 10px;
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   font-family: var(--sans);
   background: var(--card);
@@ -1053,9 +1062,9 @@ details summary:hover { color: var(--red); }
 .auth-form input {
   width: 100%;
   box-sizing: border-box;
-  padding: 7px 10px;
+  padding: var(--input-pad);
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 14px;
   font-family: var(--sans);
   background: var(--card);
@@ -1072,8 +1081,8 @@ details summary:hover { color: var(--red); }
   border: 1px solid var(--line-dark);
   background: var(--card);
   color: var(--ink-soft);
-  padding: 2px 8px;
-  border-radius: 3px;
+  padding: var(--btn-sm-pad);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 12px;
   font-family: var(--sans);
@@ -1097,7 +1106,7 @@ details summary:hover { color: var(--red); }
   overflow: auto;
   background: var(--card);
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-lg);
   padding: 18px;
   box-shadow: 0 6px 24px rgba(38, 35, 30, 0.2);
 }
@@ -1110,9 +1119,9 @@ details summary:hover { color: var(--red); }
 .modal-card input, .modal-card select, .modal-card textarea {
   width: 100%;
   box-sizing: border-box;
-  padding: 6px 9px;
+  padding: var(--input-pad);
   border: 1px solid var(--line-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   font-family: var(--sans);
   background: var(--card);
@@ -1131,9 +1140,12 @@ details summary:hover { color: var(--red); }
   border: 1px solid var(--line-dark);
   background: var(--card);
   color: var(--ink);
-  padding: 5px 14px;
-  border-radius: 4px;
+  padding: var(--btn-pad);
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .modal-foot button:hover { border-color: var(--red); color: var(--red); }
 #qm-error { color: var(--red); }
+
+
+
