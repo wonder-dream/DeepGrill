@@ -205,34 +205,62 @@ def test_multiple_active_sessions_coexist(db):
 
 
 def test_pick_questions_per_user_pool(db):
-    """每用户池：A 选走题不影响 B；已完成（finished 会话）的题不再被选；当天不重复选。"""
+    """每用户池：A 选走题不影响 B；已完成且高分的题不再被选；当天不重复选。"""
     user_a = add_user(db, username="pick_a")
     user_b = add_user(db, username="pick_b")
     for i in range(3):
         add_question(db, stem=f"q{i}")
 
+    # limit=2 → 7:3 随机（3 题全在没写过池）：任意 2 题
     picked_a = pick_questions(db, user_a.id, 2)
-    assert [q.stem for q in picked_a] == ["q0", "q1"]
-    assert [q.stem for q in list_today_questions(db, user_a.id)] == ["q0", "q1"]
+    a_stems = {q.stem for q in picked_a}
+    assert len(a_stems) == 2 and a_stems <= {"q0", "q1", "q2"}
+    assert {q.stem for q in list_today_questions(db, user_a.id)} == a_stems
 
     # B 今天从全库可选题（A 的选择不影响 B）
     picked_b = pick_questions(db, user_b.id, 2)
-    assert [q.stem for q in picked_b] == ["q0", "q1"]
+    assert len(picked_b) == 2
 
-    # A 今天再选：排除今天已选的，只剩 q2
+    # A 今天再选：排除今天已选的，只剩第 3 题
     picked_a2 = pick_questions(db, user_a.id, 2)
-    assert [q.stem for q in picked_a2] == ["q2"]
+    assert [q.stem for q in picked_a2] == list({"q0", "q1", "q2"} - a_stems)
 
-    # 完成 q0（A 的 finished 会话）→ 明天 A 不再被选 q0
-    s = add_session(db, user=user_a, question=db.get(Question, picked_a[0].id), status=SessionStatus.finished)
+    # 完成 picked_a 中一题（finished 会话，无判分）→ 明天 A 不再被选它
+    done_stem = sorted(a_stems)[0]
+    done_q = db.scalars(select(Question).where(Question.stem == done_stem)).first()
+    add_session(db, user=user_a, question=done_q, status=SessionStatus.finished)
     commit(db)
     # 模拟新的一天（把 A 今天 picks 改为昨天）
     for p in db.scalars(select(UserPick).where(UserPick.user_id == user_a.id)).all():
         p.picked_at = datetime.now() - timedelta(days=1)
     commit(db)
     picked_a3 = pick_questions(db, user_a.id, 10)
-    assert "q0" not in [q.stem for q in picked_a3]
-    assert "q1" in [q.stem for q in picked_a3]
+    assert done_stem not in [q.stem for q in picked_a3]
+    assert ({"q0", "q1", "q2"} - {done_stem}) <= {q.stem for q in picked_a3}
+
+
+def test_pick_questions_bad_score_reenters_pool(db):
+    """表现不好（上次判分 < 阈值）的题重新进入今日候选；高分完成的题不进入。"""
+    from app.db import BAD_SCORE_THRESHOLD
+
+    user = add_user(db, username="pick_bad")
+    q_never = add_question(db, stem="没写过题")
+    q_bad = add_question(db, stem="上次低分题")
+    q_good = add_question(db, stem="上次高分题")
+
+    def finish(q, score):
+        s = add_session(db, user=user, question=q, status=SessionStatus.finished)
+        db.add(Judgment(session_id=s.id, scores={"status": "ok"}, total_score=score))
+        commit(db)
+
+    finish(q_bad, BAD_SCORE_THRESHOLD - 5)
+    finish(q_good, BAD_SCORE_THRESHOLD + 20)
+
+    # limit=2 → 7:3 各取 1：必选「没写过」+「上次低分」；高分完成题不得出现
+    picked = pick_questions(db, user.id, 2)
+    stems = [q.stem for q in picked]
+    assert "没写过题" in stems and "上次低分题" in stems
+    assert "上次高分题" not in stems
 
 
 def test_pick_questions_by_type(db):

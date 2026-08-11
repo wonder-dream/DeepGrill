@@ -285,6 +285,9 @@ def _rank_recommend(
     return picked
 
 
+BAD_SCORE_THRESHOLD = 60  # 上次判分低于此阈值 = 表现不好，重新进入今日选题池（薄弱复习）
+
+
 @_wrap_storage
 def pick_questions(
     session: DBSession,
@@ -292,29 +295,65 @@ def pick_questions(
     limit: int,
     qtype: QuestionType | None = None,
 ) -> list[Question]:
-    """每用户选题：从「我从未完成（无我的 finished 会话）且今天没选过」的题中，
-    按个性化推荐排序取 limit 题 → 写 user_picks；qtype 用于按题型配额选取（D8）。"""
-    done_qids = select(Session.question_id).where(
-        Session.user_id == user_id,
-        Session.status == SessionStatus.finished,
-    )
+    """今日选题：从「没写过」与「上次表现不好」双池按 7:3 权重随机选取。
+
+    池 A（70% 权重）：用户从未完成（无我的 finished 会话）的题，组内随机
+    池 B（30% 权重）：用户上次判分 < BAD_SCORE_THRESHOLD 的题（薄弱复习），组内随机
+    每池不足时由另一池互补兜底；排除今天已选过的题；qtype 按题型配额过滤（D8）。
+    """
+    import random
+
+    from .models import Judgment
+
     picked_today_qids = select(UserPick.question_id).where(
         UserPick.user_id == user_id,
         UserPick.picked_at >= _today_start(),
     )
-    stmt = select(Question).where(
-        Question.id.not_in(done_qids),
-        Question.id.not_in(picked_today_qids),
-    )
+    base = select(Question.id).where(Question.id.not_in(picked_today_qids))
     if qtype is not None:
-        stmt = stmt.where(Question.type == qtype)
-    candidates = list(session.scalars(stmt.order_by(Question.created_at)))
-    picked = _rank_recommend(session, candidates, user_id)[:limit]
+        base = base.where(Question.type == qtype)
+    done_qids = select(Session.question_id).where(
+        Session.user_id == user_id,
+        Session.status == SessionStatus.finished,
+    )
+    # 池 A：没写过（无 finished 会话）
+    a_ids = list(session.scalars(base.where(Question.id.not_in(done_qids))))
+    # 池 B：每题取最新 finished 判分，低于阈值进池
+    rows = session.execute(
+        select(Session.question_id, Judgment.total_score)
+        .join(Judgment, Judgment.session_id == Session.id)
+        .where(
+            Session.user_id == user_id,
+            Session.status == SessionStatus.finished,
+        )
+        .order_by(Session.id.desc())
+    ).all()
+    seen: set[int] = set()
+    bad_qids: set[int] = set()
+    for qid, score in rows:
+        if qid in seen:
+            continue
+        seen.add(qid)
+        if score is not None and score < BAD_SCORE_THRESHOLD:
+            bad_qids.add(qid)
+    b_ids = list(session.scalars(base.where(Question.id.in_(bad_qids))))
+    # 7:3 权重分配（每池内随机），不足互补
+    n_bad = round(limit * 0.3)
+    n_never = limit - n_bad
+    picked: list[int] = []
+    picked.extend(random.sample(a_ids, min(n_never, len(a_ids))))
+    picked.extend(random.sample(b_ids, min(n_bad, len(b_ids))))
+    if len(picked) < limit:
+        rest = [qid for qid in a_ids + b_ids if qid not in picked]
+        picked.extend(random.sample(rest, min(limit - len(picked), len(rest))))
+    random.shuffle(picked)  # 双池混合后乱序展示
+    questions = [session.get(Question, qid) for qid in picked]
     now = datetime.now()
-    for q in picked:
-        session.add(UserPick(user_id=user_id, question_id=q.id, picked_at=now))
+    for q in questions:
+        if q is not None:
+            session.add(UserPick(user_id=user_id, question_id=q.id, picked_at=now))
     commit(session)
-    return picked
+    return [q for q in questions if q is not None]
 
 
 @_wrap_storage
