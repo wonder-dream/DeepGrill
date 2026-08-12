@@ -1,4 +1,4 @@
-import pytest
+﻿import pytest
 
 from app.db import commit
 from app.errors import LLMError
@@ -50,7 +50,7 @@ def add_session(db):
     db.add(question)
     commit(db)
     db.refresh(question)
-    user = User(username="judgeuser", password_hash="x")
+    user = User(email="judgeuser@test.com", username="judgeuser", password_hash="x")
     db.add(user)
     commit(db)
     db.refresh(user)

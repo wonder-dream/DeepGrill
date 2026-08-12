@@ -62,7 +62,7 @@ def add_session(db):
     db.add(question)
     commit(db)
     db.refresh(question)
-    user = User(username="chainuser", password_hash="x")
+    user = User(email="chainuser@test.com", username="chainuser", password_hash="x")
     db.add(user)
     commit(db)
     db.refresh(user)

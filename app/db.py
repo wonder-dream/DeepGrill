@@ -50,6 +50,7 @@ def init_db(db_url: str) -> None:
         if db_url.startswith("sqlite"):
             _migrate_user_picks_unique(_engine)
             _migrate_sessions_active_unique(_engine)
+            _migrate_users_email(_engine)
     except SQLAlchemyError as e:
         raise StorageError(f"cannot init database {db_url}: {e}") from e
     _factory = sessionmaker(bind=_engine, class_=DBSession, expire_on_commit=False)
@@ -137,6 +138,35 @@ def _migrate_sessions_active_unique(engine: Engine) -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_active "
             "ON sessions (user_id, question_id) WHERE status = 'active'"
         ))
+
+
+def _migrate_users_email(engine: Engine) -> None:
+    """幂等迁移：users 表加 email 登录标识（2026-08-12 邮箱验证码注册）。
+
+    旧表（username 登录）无 email 列 → 重建表（email unique + username 降为显示名）
+    并清空全部用户数据（用户确认重来：本地库判分/会话本为 0，题库/知识库/词表保留）。
+    """
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info('users')")).fetchall()]
+        if "email" in cols:
+            return
+        # 先清引用 users 的子表（FK 约束），再重建 users
+        for table in ("user_tokens", "user_picks", "user_favorites", "attempts", "judgments", "sessions"):
+            conn.execute(text(f"DELETE FROM {table}"))
+        conn.execute(text("DROP TABLE users"))
+        conn.execute(text(
+            "CREATE TABLE users ("
+            " id INTEGER NOT NULL PRIMARY KEY,"
+            " email VARCHAR NOT NULL,"
+            " username VARCHAR NOT NULL,"
+            " password_hash VARCHAR NOT NULL,"
+            " role VARCHAR NOT NULL,"
+            " focus VARCHAR,"
+            " focus_lang VARCHAR,"
+            " created_at DATETIME NOT NULL,"
+            " CONSTRAINT uq_users_email UNIQUE (email))"
+        ))
+        conn.execute(text("CREATE INDEX ix_users_email ON users (email)"))
 
 
 @contextmanager

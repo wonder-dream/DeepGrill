@@ -1,4 +1,4 @@
-import math
+﻿import math
 
 import pytest
 
@@ -63,7 +63,7 @@ def persist_question(db, stem, tags=None):
 
 
 def add_high_score_session(db, question, answer_text="高分回答内容", score=90):
-    user = User(username="rv_user", password_hash="x")
+    user = User(email="rv_user@test.com", username="rv_user", password_hash="x")
     db.add(user)
     commit(db)
     db.refresh(user)
@@ -165,7 +165,7 @@ def test_build_reference_uses_high_score_attempts(file_db):
 
 def test_build_reference_falls_back_to_reference_answer(file_db):
     old = persist_question(file_db, "讲一下 KV Cache 的原理", ["KV Cache"])
-    user = User(username="rv_user2", password_hash="x")
+    user = User(email="rv_user2@test.com", username="rv_user2", password_hash="x")
     file_db.add(user)
     commit(file_db)
     file_db.refresh(user)
@@ -195,7 +195,7 @@ def test_build_reference_falls_back_to_reference_answer(file_db):
 
 def test_build_reference_none_without_high_score(file_db):
     old = persist_question(file_db, "讲一下 KV Cache 的原理", ["KV Cache"])
-    user = User(username="rv_user3", password_hash="x")
+    user = User(email="rv_user3@test.com", username="rv_user3", password_hash="x")
     file_db.add(user)
     commit(file_db)
     file_db.refresh(user)

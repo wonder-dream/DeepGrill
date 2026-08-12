@@ -213,7 +213,8 @@ class User(SQLModel, table=True):
     __tablename__ = "users"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    username: str = Field(unique=True, index=True)
+    email: str = Field(unique=True, index=True)  # 登录标识（邮箱验证码注册）
+    username: str = ""  # 显示名（注册时自动取邮箱前缀；保留旧列兼容迁移）
     password_hash: str
     role: str = "user"  # owner（管理员，可上传/题库管理/审核）| user
     focus: Optional[str] = None  # 求职岗位（frontend/backend/ai_app/qa/ai_infra，空=未设置）

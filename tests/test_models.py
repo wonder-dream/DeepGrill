@@ -64,7 +64,7 @@ def add_user(session, username=None):
     if username is None:
         _user_seq += 1
         username = f"u{_user_seq}"
-    user = User(username=username, password_hash="x")
+    user = User(email=f"{username}@test.com", username=username, password_hash="x")
     session.add(user)
     commit(session)
     session.refresh(user)
@@ -268,7 +268,7 @@ def test_pick_never_pool_focus_strict(db):
     池 B 有相关题可补时也不引入非相关题（不足兜底才允许出现）。"""
     from app.models import User
 
-    user = User(username="focus_user", password_hash="x", focus="backend", focus_lang="java")
+    user = User(email="focus_user@test.com", username="focus_user", password_hash="x", focus="backend", focus_lang="java")
     db.add(user)
     commit(db)
     db.refresh(user)

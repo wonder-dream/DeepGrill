@@ -1,5 +1,6 @@
-"""多用户认证与数据隔离测试（阶段 A）。"""
+﻿"""多用户认证与数据隔离测试（阶段 A）。"""
 import hashlib
+import time
 import pytest
 from datetime import datetime
 from fastapi.testclient import TestClient
@@ -32,7 +33,8 @@ def bare_client(llm=None):
     return TestClient(app)
 
 
-def authed_client(username="testuser", role="owner"):
+def authed_client(account="testuser", role="owner"):
+    """按显示名构造用户（email 自动 account@test.com），返回带 token 的客户端。"""
     from app.auth import create_token
 
     app = create_app(
@@ -41,10 +43,11 @@ def authed_client(username="testuser", role="owner"):
         daily_runner=None,
         embedder_factory=lambda: FakeEmbedder(),
     )
+    email = f"{account}@test.com"
     with get_session() as session:
-        user = session.scalars(select(User).where(User.username == username)).first()
+        user = session.scalars(select(User).where(User.email == email)).first()
         if user is None:
-            user = User(username=username, password_hash=hash_password("pass1234"), role=role)
+            user = User(email=email, username=account, password_hash=hash_password("pass1234"), role=role)
             session.add(user)
             commit(session)
             session.refresh(user)
@@ -52,11 +55,69 @@ def authed_client(username="testuser", role="owner"):
     return TestClient(app, headers={"Authorization": f"Bearer {token}"})
 
 
-def register(client, username="alice", password="pass1234"):
-    return client.post("/api/auth/register", json={"username": username, "password": password})
+def register(client, email="alice@163.com", password="pass1234", code="123456"):
+    """邮箱注册：直插固定验证码 123456 到内存（跳过真实 SMTP），请求用传入的 code。"""
+    from app import email_code
+
+    email = email.lower()
+    with email_code._codes_lock:
+        email_code._codes[email] = {
+            "code": "123456", "ts": time.time(), "last_sent": 0, "attempts": 0,
+        }
+    return client.post(
+        "/api/auth/register",
+        json={"email": email, "code": code, "password": password},
+    )
 
 
-# --- 注册 / 登录 ---
+# --- 验证码 / 注册 / 登录 ---
+
+
+def test_send_code_sends_and_stores(monkeypatch, db):
+    """send-code：SMTP 发送被替换后正常落码（真实发送函数被 mock）。"""
+    from app import email_code
+
+    sent = []
+
+    def fake_send(email, code):
+        sent.append((email, code))
+
+    monkeypatch.setattr(email_code, "send_smtp_code", fake_send)
+    resp = bare_client().post("/api/auth/send-code", json={"email": "new@163.com"})
+    assert resp.status_code == 200
+    assert len(sent) == 1 and sent[0][0] == "new@163.com"
+    with email_code._codes_lock:
+        entry = email_code._codes["new@163.com"]
+    assert entry["code"] == sent[0][1] and len(entry["code"]) == 6
+
+
+def test_send_code_invalid_email_400(db):
+    c = bare_client()
+    assert c.post("/api/auth/send-code", json={"email": "not-an-email"}).status_code == 400
+    assert c.post("/api/auth/send-code", json={"email": ""}).status_code == 400
+
+
+def test_send_code_rate_limit_429(monkeypatch, db):
+    from app import email_code
+
+    monkeypatch.setattr(email_code, "send_smtp_code", lambda email, code: None)
+    c = bare_client()
+    assert c.post("/api/auth/send-code", json={"email": "a@163.com"}).status_code == 200
+    assert c.post("/api/auth/send-code", json={"email": "a@163.com"}).status_code == 429  # 60s 内限频
+
+
+def test_send_code_smtp_unconfigured_503(monkeypatch, db):
+    """SMTP 未配置（发送抛 RuntimeError）→ 503 且不留码。"""
+    from app import email_code
+
+    def boom(email, code):
+        raise RuntimeError("SMTP 未配置")
+
+    monkeypatch.setattr(email_code, "send_smtp_code", boom)
+    c = bare_client()
+    assert c.post("/api/auth/send-code", json={"email": "b@163.com"}).status_code == 503
+    with email_code._codes_lock:
+        assert "b@163.com" not in email_code._codes
 
 
 def test_register_first_user_is_owner(db):
@@ -64,37 +125,54 @@ def test_register_first_user_is_owner(db):
     assert resp.status_code == 200
     body = resp.json()
     assert body["user"]["role"] == "owner"
+    assert body["user"]["username"] == "alice"  # 显示名 = 邮箱前缀
     assert body["token"]
 
 
 def test_register_second_user_is_user(db):
     c = bare_client()
-    register(c, "alice")
-    body = register(c, "bob").json()
+    register(c, "alice@163.com")
+    body = register(c, "bob@163.com").json()
     assert body["user"]["role"] == "user"
 
 
-def test_register_duplicate_username_409(db):
+def test_register_duplicate_email_409(db):
     c = bare_client()
-    register(c, "alice")
-    assert register(c, "alice").status_code == 409
+    register(c, "alice@163.com")
+    assert register(c, "alice@163.com").status_code == 409
+
+
+def test_register_wrong_code_400(db):
+    c = bare_client()
+    assert register(c, "alice@163.com", code="000000").status_code == 400  # 码错误
+    assert c.get("/api/auth/me").status_code == 401
+
+
+def test_register_code_consumed_after_use(db):
+    """验证码用后即删：注册成功后同码不可复用。"""
+    from app import email_code
+
+    c = bare_client()
+    assert register(c, "alice@163.com").status_code == 200
+    with email_code._codes_lock:
+        assert "alice@163.com" not in email_code._codes
 
 
 def test_register_weak_password_400(db):
     c = bare_client()
-    assert register(c, "alice", "onlyletters").status_code == 400  # 无数字
-    assert register(c, "alice", "12345678").status_code == 400  # 无字母
-    assert register(c, "alice", "short1").status_code == 400  # 过短
-    assert register(c, "alice", "goodpass1").status_code == 200
+    assert register(c, "alice@163.com", "onlyletters").status_code == 400  # 无数字
+    assert register(c, "alice@163.com", "12345678").status_code == 400  # 无字母
+    assert register(c, "alice@163.com", "short1").status_code == 400  # 过短
+    assert register(c, "alice@163.com", "goodpass1").status_code == 200
 
 
 def test_register_quota_full_409(db):
     c = bare_client()
-    register(c, "alice")
+    register(c, "alice@163.com")
     for i in range(MAX_USERS):
-        register(c, f"user{i}")
+        register(c, f"user{i}@163.com")
     # MAX_USERS 个 user 已满（alice 是 owner 不计入）
-    assert register(c, "overflow").status_code == 409
+    assert register(c, "overflow@163.com").status_code == 409
 
 
 def test_concurrent_register_single_owner(db):
@@ -107,7 +185,7 @@ def test_concurrent_register_single_owner(db):
     def reg(name):
         barrier.wait()
         c = bare_client()
-        resp = register(c, name)
+        resp = register(c, f"{name}@163.com")
         results.append((name, resp.status_code, resp.json().get("user", {}).get("role")))
 
     threads = [threading.Thread(target=reg, args=(n,)) for n in ("carol", "dave")]
@@ -126,47 +204,47 @@ def test_concurrent_register_single_owner(db):
 
 def test_login_success_and_wrong_password(db):
     c = bare_client()
-    register(c, "alice", "pass1234")
-    ok = c.post("/api/auth/login", json={"username": "alice", "password": "pass1234"})
+    register(c, "alice@163.com", "pass1234")
+    ok = c.post("/api/auth/login", json={"email": "alice@163.com", "password": "pass1234"})
     assert ok.status_code == 200
     assert ok.json()["token"]
-    bad = c.post("/api/auth/login", json={"username": "alice", "password": "wrong123"})
+    bad = c.post("/api/auth/login", json={"email": "alice@163.com", "password": "wrong123"})
     assert bad.status_code == 401
 
 
 def test_login_rate_limit_429(db):
     """同 IP 连续 5 次登录失败后，第 6 次请求 429。"""
     c = bare_client()
-    register(c, "alice", "pass1234")
+    register(c, "alice@163.com", "pass1234")
     for _ in range(5):
-        assert c.post("/api/auth/login", json={"username": "alice", "password": "wrong123"}).status_code == 401
-    assert c.post("/api/auth/login", json={"username": "alice", "password": "wrong123"}).status_code == 429
+        assert c.post("/api/auth/login", json={"email": "alice@163.com", "password": "wrong123"}).status_code == 401
+    assert c.post("/api/auth/login", json={"email": "alice@163.com", "password": "wrong123"}).status_code == 429
 
 
 def test_login_rate_limit_reset_on_success(db):
     """成功登录清零失败计数：4 次失败 + 1 次成功后可再失败 5 次才触发 429。"""
     c = bare_client()
-    register(c, "alice", "pass1234")
+    register(c, "alice@163.com", "pass1234")
     for _ in range(4):
-        c.post("/api/auth/login", json={"username": "alice", "password": "wrong123"})
-    assert c.post("/api/auth/login", json={"username": "alice", "password": "pass1234"}).status_code == 200
+        c.post("/api/auth/login", json={"email": "alice@163.com", "password": "wrong123"})
+    assert c.post("/api/auth/login", json={"email": "alice@163.com", "password": "pass1234"}).status_code == 200
     for _ in range(5):
-        assert c.post("/api/auth/login", json={"username": "alice", "password": "wrong123"}).status_code == 401
-    assert c.post("/api/auth/login", json={"username": "alice", "password": "wrong123"}).status_code == 429
+        assert c.post("/api/auth/login", json={"email": "alice@163.com", "password": "wrong123"}).status_code == 401
+    assert c.post("/api/auth/login", json={"email": "alice@163.com", "password": "wrong123"}).status_code == 429
 
 
 def test_register_rate_limit_429(db):
     """注册接口同样限速：连续 5 次注册失败（重名 409）后 429。"""
     c = bare_client()
-    register(c, "alice", "pass1234")
+    register(c, "alice@163.com", "pass1234")
     for _ in range(5):
-        assert register(c, "alice").status_code == 409
-    assert register(c, "alice").status_code == 429
+        assert register(c, "alice@163.com").status_code == 409
+    assert register(c, "alice@163.com").status_code == 429
 
 
 def test_me_and_logout(db):
     c = bare_client()
-    token = register(c, "alice").json()["token"]
+    token = register(c, "alice@163.com").json()["token"]
     me = c.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me.json()["username"] == "alice"
     c.post("/api/auth/logout", headers={"Authorization": f"Bearer {token}"})
@@ -180,7 +258,7 @@ def test_token_expiry_401_and_lazy_cleanup(db):
     from app.models import UserToken
 
     c = bare_client()
-    token = register(c, "alice").json()["token"]
+    token = register(c, "alice@163.com").json()["token"]
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     with get_session() as s:
         row = s.scalars(select(UserToken).where(UserToken.token_hash == token_hash)).one()
@@ -197,7 +275,7 @@ def test_token_expiry_401_and_lazy_cleanup(db):
 def test_token_not_expired_still_valid(db):
     """未过期 token 正常放行（expires_at 在将来）。"""
     c = bare_client()
-    token = register(c, "alice").json()["token"]
+    token = register(c, "alice@163.com").json()["token"]
     assert c.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
 
 
@@ -228,7 +306,7 @@ def _add_question(db, stem):
 def test_session_isolation(db):
     """A 用户的会话 B 不可见（404 越权拦截）。"""
     q = _add_question(db, "隔离题")
-    user_a = User(username="alice", password_hash=hash_password("pass1234"), role="user")
+    user_a = User(email="alice@test.com", username="alice", password_hash=hash_password("pass1234"), role="user")
     db.add(user_a)
     commit(db)
     db.refresh(user_a)
@@ -250,7 +328,7 @@ def test_history_and_bank_done_isolation(db):
 
     q = _add_question(db, "隔离题")
     with get_session() as s:
-        user_a = User(username="alice", password_hash=hash_password("pass1234"), role="user")
+        user_a = User(email="alice@test.com", username="alice", password_hash=hash_password("pass1234"), role="user")
         s.add(user_a)
         commit(s)
         s.refresh(user_a)
@@ -307,7 +385,7 @@ def test_admin_edit_question(db):
 def test_admin_delete_question(db):
     q = _add_question(db, "待删题")
     with get_session() as s:
-        user_a = User(username="alice", password_hash=hash_password("pass1234"), role="user")
+        user_a = User(email="alice@test.com", username="alice", password_hash=hash_password("pass1234"), role="user")
         s.add(user_a)
         commit(s)
         s.refresh(user_a)
@@ -344,19 +422,20 @@ def test_admin_requires_owner(db):
 
 
 def test_seed_owner_from_env(monkeypatch, db):
-    """OWNER_USERNAME/OWNER_PASSWORD 预置 owner：无 owner 时创建，幂等不重复。"""
+    """OWNER_EMAIL/OWNER_PASSWORD 预置 owner：无 owner 时创建，幂等不重复。"""
     from app.web.routes import _seed_owner_if_configured
 
-    monkeypatch.setenv("OWNER_USERNAME", "boss")
+    monkeypatch.setenv("OWNER_EMAIL", "boss@163.com")
     monkeypatch.setenv("OWNER_PASSWORD", "pass12345")
     _seed_owner_if_configured()
     with get_session() as s:
-        u = s.scalars(select(User).where(User.username == "boss")).first()
+        u = s.scalars(select(User).where(User.email == "boss@163.com")).first()
         assert u is not None and u.role == "owner"
-    monkeypatch.setenv("OWNER_USERNAME", "boss2")
+        assert u.username == "boss"  # 显示名 = 邮箱前缀
+    monkeypatch.setenv("OWNER_EMAIL", "boss2@163.com")
     _seed_owner_if_configured()
     with get_session() as s:
-        assert s.scalars(select(User).where(User.username == "boss2")).first() is None  # 已有 owner 不重复建
+        assert s.scalars(select(User).where(User.email == "boss2@163.com")).first() is None  # 已有 owner 不重复建
 
 
 def test_admin_batch_delete_questions(db):

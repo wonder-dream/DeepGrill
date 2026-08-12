@@ -16,6 +16,11 @@ daily:
   schedule: "08:00"
 notification:
   enabled: true
+smtp:
+  host_env: SMTP_HOST          # 验证码邮件（163: smtp.163.com / QQ: smtp.qq.com）
+  port_env: SMTP_PORT          # 465（SSL）
+  user_env: SMTP_USER          # 发件邮箱（163/QQ 全名）
+  pass_env: SMTP_PASS          # 授权码（非登录密码；从 .env 读）
 sources:
   github_repos:                # 面经仓库列表（可增删）
     - Zchary1106/agent-interview-hub

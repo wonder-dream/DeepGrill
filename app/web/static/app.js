@@ -2123,6 +2123,24 @@ function showAuth() {
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
 }
 let authMode = "login";
+let codeCountdown = 0;
+let codeTimer = null;
+function startCodeCountdown() {
+  const btn = $("#auth-send-code");
+  codeCountdown = 60;
+  btn.disabled = true;
+  btn.textContent = `${codeCountdown}s`;
+  codeTimer = setInterval(() => {
+    codeCountdown -= 1;
+    if (codeCountdown <= 0) {
+      clearInterval(codeTimer);
+      btn.disabled = false;
+      btn.textContent = "获取验证码";
+    } else {
+      btn.textContent = `${codeCountdown}s`;
+    }
+  }, 1000);
+}
 $("#auth-tab-login").addEventListener("click", () => {
   authMode = "login";
   $("#auth-tab-login").classList.add("upload-active");
@@ -2130,10 +2148,11 @@ $("#auth-tab-login").addEventListener("click", () => {
   $("#auth-submit").textContent = "登录";
   $("#auth-hint").textContent = "登录后开始刷题";
   $("#auth-error").textContent = "";
+  $("#auth-code-row").classList.add("hidden");
   $("#auth-focus-row").classList.add("hidden");
   $("#auth-lang-row").classList.add("hidden");
 });
-["#auth-username", "#auth-password"].forEach((sel) => {
+["#auth-email", "#auth-password", "#auth-code"].forEach((sel) => {
   $(sel).addEventListener("keydown", (e) => {
     if (e.key === "Enter") $("#auth-submit").click(); // 回车提交
   });
@@ -2143,29 +2162,53 @@ $("#auth-tab-register").addEventListener("click", () => {
   $("#auth-tab-register").classList.add("upload-active");
   $("#auth-tab-login").classList.remove("upload-active");
   $("#auth-submit").textContent = "注册";
-  $("#auth-hint").textContent = "首个注册用户为管理员（owner）；开放注册共 20 个名额";
+  $("#auth-hint").textContent = "输入邮箱获取验证码完成注册；首个注册用户为管理员";
   $("#auth-error").textContent = "";
+  $("#auth-code-row").classList.remove("hidden");
   $("#auth-focus-row").classList.remove("hidden");
   $("#auth-lang-row").classList.add("hidden"); // 默认岗位为空，语言行隐藏
 });
 $("#auth-focus").addEventListener("change", () => {
   $("#auth-lang-row").classList.toggle("hidden", $("#auth-focus").value !== "backend");
 });
-$("#auth-submit").addEventListener("click", async () => {
-  const username = $("#auth-username").value.trim();
-  const password = $("#auth-password").value;
-  if (!username || !password) {
-    $("#auth-error").textContent = "请输入用户名和密码";
+$("#auth-send-code").addEventListener("click", async () => {
+  const email = $("#auth-email").value.trim();
+  if (!email) {
+    $("#auth-error").textContent = "请先输入邮箱";
     return;
   }
-  const path = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
-  const payload = { username, password };
+  $("#auth-error").textContent = "";
+  try {
+    await api("/api/auth/send-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    startCodeCountdown();
+  } catch (err) {
+    $("#auth-error").textContent = err.message;
+  }
+});
+$("#auth-submit").addEventListener("click", async () => {
+  const email = $("#auth-email").value.trim();
+  const password = $("#auth-password").value;
+  if (!email || !password) {
+    $("#auth-error").textContent = authMode === "login" ? "请输入邮箱和密码" : "请输入邮箱、验证码和密码";
+    return;
+  }
+  const payload = { email, password };
   if (authMode === "register") {
+    const code = $("#auth-code").value.trim();
+    if (!code) {
+      $("#auth-error").textContent = "请输入验证码";
+      return;
+    }
+    payload.code = code;
     payload.focus = $("#auth-focus").value || null;
     payload.focus_lang = $("#auth-focus-lang").value || null;
   }
   try {
-    const body = await fetch(path, {
+    const body = await fetch(authMode === "login" ? "/api/auth/login" : "/api/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -2181,8 +2224,9 @@ $("#auth-submit").addEventListener("click", async () => {
     state.user = body.user;
     resetPerUserState();
     applyRoleUI();
-    $("#auth-username").value = "";
+    $("#auth-email").value = "";
     $("#auth-password").value = "";
+    $("#auth-code").value = "";
     loadTagCategories();
     show("today");
   } catch (err) {

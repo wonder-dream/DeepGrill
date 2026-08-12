@@ -1,4 +1,4 @@
-import pytest
+﻿import pytest
 from datetime import datetime, timedelta
 from sqlalchemy import select
 
@@ -217,7 +217,7 @@ def test_today_questions_respected_quota_types(db):
     from app.db import pick_questions
     from app.models import User
 
-    user = User(username="quota_user", password_hash="x")
+    user = User(email="quota_user@test.com", username="quota_user", password_hash="x")
     db.add(user)
     commit(db)
     db.refresh(user)
@@ -256,7 +256,7 @@ def test_picked_questions_flow_through_generation(db):
 
     from app.models import User
 
-    user = User(username="dailyuser", password_hash="x")
+    user = User(email="dailyuser@test.com", username="dailyuser", password_hash="x")
     db.add(user)
     commit(db)
     db.refresh(user)

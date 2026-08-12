@@ -30,7 +30,6 @@ from ..auth import (
     user_count,
     user_from_token,
     validate_password,
-    validate_username,
     verify_password,
 )
 from ..config import AppConfig, secret_value
@@ -282,23 +281,51 @@ def create_app(
 
     # --- 认证：注册 / 登录 / 登出 / 当前用户 ---
 
+    @app.post("/api/auth/send-code")
+    def auth_send_code(body: dict):
+        """发送注册验证码：邮箱格式校验 + 60s 限频；SMTP 未配置返回 503。"""
+        if len(str(body)) > 1024:
+            raise HTTPException(status_code=400, detail="请求体过大")
+        from ..email_code import can_send, issue_code, validate_email
+
+        email = str(body.get("email", "")).strip().lower()
+        err = validate_email(email)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+        if not can_send(email):
+            raise HTTPException(status_code=429, detail="发送过于频繁，请 60 秒后再试")
+        try:
+            issue_code(email)
+        except RuntimeError as e:
+            logger.warning("send code failed for %s: %s", email, e)
+            raise HTTPException(status_code=503, detail="邮件服务未配置，请联系管理员")
+        except Exception as e:
+            logger.warning("send code failed for %s: %s", email, e)
+            raise HTTPException(status_code=500, detail="邮件发送失败，请稍后重试")
+        return {"ok": True}
+
     @app.post("/api/auth/register")
     def auth_register(body: dict):
         if len(str(body)) > 4096:
             raise HTTPException(status_code=400, detail="请求体过大")
-        username = str(body.get("username", "")).strip()
+        from ..email_code import validate_email, verify_code
+
+        email = str(body.get("email", "")).strip().lower()
+        code = str(body.get("code", "")).strip()
         password = str(body.get("password", ""))
-        err = validate_username(username) or validate_password(password)
+        err = validate_email(email) or validate_password(password)
         if err:
             raise HTTPException(status_code=400, detail=err)
+        if not verify_code(email, code):
+            raise HTTPException(status_code=400, detail="验证码错误或已过期")
         focus, focus_lang = _validate_focus(body.get("focus"), body.get("focus_lang"))
         with _register_lock:  # 查重 + owner 判定 + 名额 + 建用户原子化（防并发竞态）
             with db.get_session() as session:
                 exists = session.scalars(
-                    select(User).where(User.username == username)
+                    select(User).where(User.email == email)
                 ).first()
                 if exists is not None:
-                    raise HTTPException(status_code=409, detail="用户名已存在")
+                    raise HTTPException(status_code=409, detail="该邮箱已注册")
                 has_owner = (
                     session.scalars(select(User).where(User.role == "owner").limit(1)).first()
                     is not None
@@ -306,7 +333,8 @@ def create_app(
                 if has_owner and user_count() >= MAX_USERS:
                     raise HTTPException(status_code=409, detail="注册名额已满（20 人）")
                 user = User(
-                    username=username,
+                    email=email,
+                    username=_display_name_for(email, session),
                     password_hash=hash_password(password),
                     role="owner" if not has_owner else "user",  # 无 owner 时补位，永不双生
                     focus=focus,
@@ -339,18 +367,19 @@ def create_app(
     def auth_login(body: dict):
         if len(str(body)) > 4096:
             raise HTTPException(status_code=400, detail="请求体过大")
-        username = str(body.get("username", "")).strip()
+        email = str(body.get("email", "")).strip().lower()
         password = str(body.get("password", ""))
         with db.get_session() as session:
             user = session.scalars(
-                select(User).where(User.username == username)
+                select(User).where(User.email == email)
             ).first()
             if user is None or not verify_password(password, user.password_hash):
-                raise HTTPException(status_code=401, detail="用户名或密码错误")
+                raise HTTPException(status_code=401, detail="邮箱或密码错误")
         token = create_token(user.id)
         return {
             "token": token,
-            "user": {"id": user.id, "username": user.username, "role": user.role},
+            "user": {"id": user.id, "username": user.username, "role": user.role,
+                     "focus": user.focus, "focus_lang": user.focus_lang},
         }
 
     @app.post("/api/auth/logout")
@@ -2220,31 +2249,42 @@ def _run_daily_pipeline(config: AppConfig, llm_factory):
     )
 
 
+def _display_name_for(email: str, session) -> str:
+    """显示名 = 邮箱 @ 前缀；重名自动加 -2/-3 后缀。"""
+    base = email.split("@")[0][:20] or "user"
+    name, n = base, 2
+    while session.scalars(select(User).where(User.username == name).limit(1)).first() is not None:
+        name = f"{base}-{n}"
+        n += 1
+    return name
+
+
 def _seed_owner_if_configured() -> None:
-    """库无 owner 且 .env 配置了 OWNER_USERNAME/OWNER_PASSWORD 时自动创建 owner（幂等）。
+    """库无 owner 且 .env 配置了 OWNER_EMAIL/OWNER_PASSWORD 时自动创建 owner（幂等）。
 
     防"首个注册者=owner"抢注窗口：新库/重建/导入覆盖后首次启动即锁定管理员。
     未配置时回退现状（首注册者=owner）并 WARN。
     """
-    owner_user = os.environ.get("OWNER_USERNAME", "").strip()
+    owner_email = os.environ.get("OWNER_EMAIL", "").strip().lower()
     owner_pass = os.environ.get("OWNER_PASSWORD", "")
-    if not owner_user or not owner_pass:
-        logger.warning("OWNER_USERNAME/OWNER_PASSWORD 未配置：空库时首个注册用户将成为管理员")
+    if not owner_email or not owner_pass:
+        logger.warning("OWNER_EMAIL/OWNER_PASSWORD 未配置：空库时首个注册用户将成为管理员")
         return
     from ..auth import hash_password
 
     with db.get_session() as session:
         if session.scalars(select(User).where(User.role == "owner").limit(1)).first() is not None:
             return
-        if session.scalars(select(User).where(User.username == owner_user)).first() is not None:
+        if session.scalars(select(User).where(User.email == owner_email)).first() is not None:
             return
         session.add(User(
-            username=owner_user,
+            email=owner_email,
+            username=_display_name_for(owner_email, session),
             password_hash=hash_password(owner_pass),
             role="owner",
         ))
         db.commit(session)
-        logger.info("seeded owner user %s from OWNER_* env", owner_user)
+        logger.info("seeded owner user %s from OWNER_* env", owner_email)
 
 
 def _db_url() -> str:

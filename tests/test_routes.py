@@ -71,10 +71,11 @@ def make_client(db, llm, runner=None, embedder=None, user_role="owner", username
     )
     with get_session() as session:
         user = session.scalars(
-            select(User).where(User.username == username)
+            select(User).where(User.email == f"{username}@test.com")
         ).first()
         if user is None:
             user = User(
+                email=f"{username}@test.com",
                 username=username,
                 password_hash=hash_password("testpass1"),
                 role=user_role,
@@ -107,9 +108,10 @@ def ensure_test_user(db):
     from app.auth import create_token, hash_password
     from app.models import User
 
-    user = db.scalars(select(User).where(User.username == "testuser")).first()
+    user = db.scalars(select(User).where(User.email == "testuser@test.com")).first()
     if user is None:
-        user = User(username="testuser", password_hash=hash_password("testpass1"), role="owner")
+        user = User(email="testuser@test.com", username="testuser",
+                    password_hash=hash_password("testpass1"), role="owner")
         db.add(user)
         commit(db)
         db.refresh(user)
@@ -1771,7 +1773,8 @@ def test_import_backup_keeps_login_for_same_user(tmp_path):
         _close()
         _init(f"sqlite:///{other_db}")
         with _gs() as s:
-            s.add(User(username="testuser", password_hash=hash_password("testpass1"), role="owner"))
+            s.add(User(email="testuser@test.com", username="testuser",
+                      password_hash=hash_password("testpass1"), role="owner"))
             commit(s)
             src = Source(type=SourceType.manual, source_hash="bh", cleaned_text="x")
             s.add(src)

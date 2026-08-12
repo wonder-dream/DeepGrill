@@ -38,6 +38,13 @@ class NotificationConfig(_FrozenModel):
     enabled: bool = True
 
 
+class SMTPConfig(_FrozenModel):
+    host_env: str = "SMTP_HOST"
+    port_env: str = "SMTP_PORT"
+    user_env: str = "SMTP_USER"
+    pass_env: str = "SMTP_PASS"
+
+
 class SourcesConfig(_FrozenModel):
     github_repos: list[str] = []
 
@@ -50,6 +57,7 @@ class AppConfig(BaseModel):
     daily: DailyConfig
     notification: NotificationConfig
     sources: SourcesConfig
+    smtp: SMTPConfig = SMTPConfig()
 
 
 def load_config(path: Path) -> AppConfig:
