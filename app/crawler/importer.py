@@ -38,7 +38,6 @@ def import_file(
         source = Source(
             type=SourceType(source_type),
             title=_extract_title(content, path),
-            raw_text=content,
             cleaned_text=clean_text(content),
             source_hash=source_hash,
         )

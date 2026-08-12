@@ -183,7 +183,6 @@ def _import_entry(entry: dict) -> Source | None:
             type=SourceType.nowcoder,
             url=entry["url"],
             title=entry["title"],
-            raw_text=entry["content"],
             cleaned_text=clean_text(entry["content"]),
             source_hash=url_hash,
         )

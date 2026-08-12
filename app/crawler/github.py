@@ -106,7 +106,6 @@ def _import_file(repo: str, file: Path, rel: Path) -> Source | None:
             type=SourceType.github,
             url=f"{CLONE_BASE}/{repo}/raw/HEAD/{rel.as_posix()}",
             title=_extract_title(content, rel),
-            raw_text=content,
             cleaned_text=clean_text(content),
             source_hash=hash_,
         )

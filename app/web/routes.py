@@ -1685,7 +1685,6 @@ def _insert_direct_questions(content: str) -> tuple[Source, int]:
             source = Source(
                 type=SourceType.manual,
                 title="用户上传",
-                raw_text=content,
                 cleaned_text=content,
                 source_hash=source_hash,
             )

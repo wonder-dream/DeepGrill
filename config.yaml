@@ -19,5 +19,11 @@ notification:
 sources:
   github_repos:                # 面经仓库列表（可增删）
     - Zchary1106/agent-interview-hub
-    - jingtian11/EasyOffer
     - houchenll/origin-llm
+    - adongwanai/AgentGuide
+    - bcefghj/ai-agent-interview-guide
+    - Lau-Jonathan/LLM-Agent-Interview-Guide
+    - Snailclimb/AIGuide
+    - limouren2000/llms-dev-study
+    - guoguo-tju/agent_java_offer
+    - GongLingRui/llm-agents-interview
