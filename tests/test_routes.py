@@ -17,6 +17,7 @@ from app.config import (
 from app.db import commit, get_session, init_db
 from app.errors import LLMError
 from app.models import (
+    Attempt,
     Judgment,
     Question,
     QuestionType,
@@ -456,12 +457,39 @@ def test_create_session_new_when_none_active(db):
     assert resp["status"] == "active"
 
 
-def test_today_list_marks_in_progress(db):
+def test_today_list_not_in_progress_without_input(db):
+    """创建会话但未作答 → 仍显示待做（active_session_id 为 None）。"""
     q = add_today_question(db)
     client = make_client(db, FakeLLM([]))
     client.post("/api/sessions", json={"question_id": q.id, "kind": "chain"})
     item = client.get("/api/today").json()[0]
-    assert item["active_session_id"] is not None
+    assert item["active_session_id"] is None
+    assert item["done"] is False
+
+
+def test_today_list_in_progress_with_answer_input(db):
+    """active 会话有实质回答 → 进行中（active_session_id 非空）。"""
+    q = add_today_question(db)
+    client = make_client(db, FakeLLM([]))
+    sid = client.post("/api/sessions", json={"question_id": q.id, "kind": "chain"}).json()["session_id"]
+    with db:
+        db.add(Attempt(session_id=sid, round_no=1, answer_text="我的回答"))
+        commit(db)
+    item = client.get("/api/today").json()[0]
+    assert item["active_session_id"] == sid
+    assert item["done"] is False
+
+
+def test_today_list_not_in_progress_with_blank_answer(db):
+    """active 会话回答全为空白字符 → 视为未开始（待做）。"""
+    q = add_today_question(db)
+    client = make_client(db, FakeLLM([]))
+    sid = client.post("/api/sessions", json={"question_id": q.id, "kind": "chain"}).json()["session_id"]
+    with db:
+        db.add(Attempt(session_id=sid, round_no=1, answer_text="   \t  "))
+        commit(db)
+    item = client.get("/api/today").json()[0]
+    assert item["active_session_id"] is None
     assert item["done"] is False
 
 
@@ -846,6 +874,37 @@ def test_bank_filter_type_and_category(db):
 
     by_cat = client.get("/api/bank", params={"category": "Java"}).json()
     assert by_cat["total"] == 1  # Java 题在新分类"Java"
+
+
+def test_bank_filter_done_and_sort(db):
+    q1 = add_today_question(db, stem="未答题A", tags=["Java"], status_today=False)
+    q2 = add_today_question(db, stem="已答题B", tags=["Java"], status_today=False)
+    q3 = add_today_question(db, stem="未答题C", tags=["Java"], status_today=False)
+    q4 = add_today_question(db, stem="最难D", tags=["Java"], status_today=False)
+    q1.difficulty = 1
+    q2.difficulty = 3
+    q3.difficulty = 2
+    q4.difficulty = 5
+    commit(db)
+    user = ensure_test_user(db)
+    _finish_session(db, q2.id, user.id, 80)
+    client = make_client(db, FakeLLM([]))
+
+    done = client.get("/api/bank", params={"done": "done"}).json()
+    assert done["total"] == 1
+    assert done["items"][0]["id"] == q2.id
+    todo = client.get("/api/bank", params={"done": "todo"}).json()
+    assert todo["total"] == 3
+
+    easy = client.get("/api/bank", params={"sort": "easy"}).json()
+    assert easy["items"][0]["id"] == q1.id  # 难度升序：最低难度在前
+    hard = client.get("/api/bank", params={"sort": "hard"}).json()
+    assert hard["items"][0]["id"] == q4.id  # 难度降序
+    oldest = client.get("/api/bank", params={"sort": "oldest"}).json()
+    assert oldest["items"][0]["id"] == q1.id  # id 升序
+
+    assert client.get("/api/bank", params={"done": "x"}).status_code == 400
+    assert client.get("/api/bank", params={"sort": "x"}).status_code == 400
 
 
 def test_bank_invalid_params(db):

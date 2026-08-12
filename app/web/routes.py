@@ -18,7 +18,7 @@ from pathlib import Path
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import cast, delete, func, or_, select, String, text
+from sqlalchemy import cast, delete, exists, func, or_, select, String, text
 
 from .. import db
 from ..auth import (
@@ -705,9 +705,11 @@ def create_app(
         category: str | None = None,
         q: str | None = None,
         difficulty: int | None = None,
+        done: str | None = None,
+        sort: str | None = None,
         user: User = Depends(require_user),
     ):
-        """全部题目分页浏览（id 倒序）；type/category/difficulty 筛选；q 关键词搜题干+标签；每项带 done 标志。"""
+        """全部题目分页浏览（id 倒序）；type/category/difficulty/done 筛选；sort 排序；q 关键词搜题干+标签；每项带 done 标志。"""
         from ..models import QuestionType as _QT
 
         if page < 1 or not 1 <= page_size <= 50:
@@ -720,6 +722,10 @@ def create_app(
                 raise HTTPException(status_code=400, detail=f"invalid type: {type}")
         if difficulty is not None and not 1 <= difficulty <= 5:
             raise HTTPException(status_code=400, detail=f"invalid difficulty: {difficulty}")
+        if done is not None and done not in ("done", "todo"):
+            raise HTTPException(status_code=400, detail=f"invalid done: {done}")
+        if sort is not None and sort not in ("newest", "oldest", "easy", "hard"):
+            raise HTTPException(status_code=400, detail=f"invalid sort: {sort}")
         if category is not None and category not in {name for name, _ in TAG_CATEGORIES}:
             raise HTTPException(status_code=400, detail=f"invalid category: {category}")
         cat_tags = None
@@ -745,6 +751,19 @@ def create_app(
                 filters.append(
                     or_(*(_tags_exists(t) for t in cat_tags))
                 )
+            if done is not None:
+                answered = exists().where(
+                    Session.question_id == Question.id,
+                    Session.user_id == user.id,
+                    Session.status == SessionStatus.finished,
+                )
+                filters.append(answered if done == "done" else ~answered)
+            order_by = {
+                "oldest": Question.id.asc(),
+                "easy": (Question.difficulty.asc(), Question.id.desc()),
+                "hard": (Question.difficulty.desc(), Question.id.desc()),
+                "newest": Question.id.desc(),
+            }[sort or "newest"]
             total = session.scalar(
                 select(func.count()).select_from(Question).where(*filters)
             )
@@ -753,7 +772,7 @@ def create_app(
                     Question.id, Question.stem, Question.type, Question.difficulty
                 )
                 .where(*filters)
-                .order_by(Question.id.desc())
+                .order_by(*([order_by] if not isinstance(order_by, tuple) else order_by))
                 .offset((page - 1) * page_size)
                 .limit(page_size)
             ).all()
@@ -1057,6 +1076,27 @@ def create_app(
             session.delete(row)
             db.commit(session)
         return {"deleted": True}
+
+    @app.post("/api/admin/questions/batch-delete")
+    def admin_batch_delete_questions(
+        body: dict, user: User = Depends(require_owner)
+    ):
+        """管理员批量删除题目：ids 列表（单次 ≤500），一条事务，关联 DB 级联清理。"""
+        raw_ids = body.get("ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise HTTPException(status_code=400, detail="ids 需为非空列表")
+        if len(raw_ids) > 500:
+            raise HTTPException(status_code=400, detail="单次最多 500 题")
+        try:
+            ids = [int(i) for i in raw_ids]
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="ids 必须都是整数")
+        with db.get_session() as session:
+            rows = list(session.scalars(select(Question).where(Question.id.in_(ids))))
+            for row in rows:
+                session.delete(row)
+            db.commit(session)
+        return {"deleted": len(rows)}
 
     # --- 标签/分类管理（词表数据库化，owner） ---
 
@@ -2134,7 +2174,14 @@ def _active_session_id(session, question_id: int, user_id: int) -> int | None:
         .order_by(Session.id.desc())
         .limit(1)
     ).first()
-    return row.id if row else None
+    if row is None:
+        return None
+    texts = session.scalars(
+        select(Attempt.answer_text).where(Attempt.session_id == row.id)
+    ).all()
+    if not any((t or "").strip() for t in texts):
+        return None
+    return row.id
 
 
 def _latest_judgment_by_question(

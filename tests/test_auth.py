@@ -341,3 +341,24 @@ def test_admin_requires_owner(db):
     assert normal.put(f"/api/admin/questions/{q.id}", json={"stem": "x" * 10}).status_code == 403
     assert normal.delete(f"/api/admin/questions/{q.id}").status_code == 403
     assert normal.post("/api/upload", json={"filename": "a.md", "content": "Q: x"}).status_code == 403
+
+
+def test_admin_batch_delete_questions(db):
+    q1 = _add_question(db, "批量删 1")
+    q2 = _add_question(db, "批量删 2")
+    q3 = _add_question(db, "保留题")
+    owner = authed_client("owner", role="owner")
+    resp = owner.post("/api/admin/questions/batch-delete", json={"ids": [q1.id, q2.id]})
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] == 2
+    with get_session() as s:
+        assert s.get(Question, q1.id) is None
+        assert s.get(Question, q2.id) is None
+        assert s.get(Question, q3.id) is not None
+    # 参数校验
+    assert owner.post("/api/admin/questions/batch-delete", json={"ids": []}).status_code == 400
+    assert owner.post("/api/admin/questions/batch-delete", json={"ids": list(range(501))}).status_code == 400
+    assert owner.post("/api/admin/questions/batch-delete", json={"ids": ["x"]}).status_code == 400
+    # 非 owner 拒绝
+    normal = authed_client("alice", role="user")
+    assert normal.post("/api/admin/questions/batch-delete", json={"ids": [q3.id]}).status_code == 403

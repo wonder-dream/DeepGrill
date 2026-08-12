@@ -492,6 +492,14 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
 
 .question-head { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
 
+.bank-check {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--red);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 .badge {
   font-size: 12px;
   padding: 1px 8px;

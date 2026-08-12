@@ -36,6 +36,8 @@ const state = {
 
 const $ = (sel) => document.querySelector(sel);
 
+let bankSelected = new Set(); // 题库批量勾选（owner，跨页累积；离开题库清空）
+
 // 可刷新恢复的主视图（hash 路由，带状态参数）；answer/result/detail 为流程中间态（sessionStorage 恢复）
 const HASHABLE = new Set(["today", "bank", "history", "review", "favorites", "upload"]);
 
@@ -69,6 +71,10 @@ function scrollTop() {
 
 function show(view) {
   state.view = view;
+  if (view !== "bank") {
+    bankSelected.clear(); // 离开题库：清空批量勾选
+    if ($("#bank-batch")) updateBankSelection();
+  }
   scrollTop(); // 切换页面回到顶部
   document.querySelectorAll(".view").forEach((v) => v.classList.add("hidden"));
   $("#view-" + view).classList.remove("hidden");
@@ -122,6 +128,8 @@ function currentViewParams() {
     setIf("type", $("#filter-bank-type"));
     setIf("difficulty", $("#filter-bank-difficulty"));
     setIf("category", $("#filter-bank-category"));
+    setIf("done", $("#filter-bank-done"));
+    if ($("#filter-bank-sort").value !== "newest") p.set("sort", $("#filter-bank-sort").value);
   } else if (state.view === "history") {
     if (state.rangeFrom) p.set("from", state.rangeFrom);
     if (state.rangeTo) p.set("to", state.rangeTo);
@@ -158,6 +166,8 @@ function applyViewParams(view, params) {
     if (params.has("type")) $("#filter-bank-type").value = params.get("type");
     if (params.has("difficulty")) $("#filter-bank-difficulty").value = params.get("difficulty");
     if (params.has("category")) $("#filter-bank-category").value = params.get("category");
+    if (params.has("done")) $("#filter-bank-done").value = params.get("done");
+    if (params.has("sort")) $("#filter-bank-sort").value = params.get("sort");
   } else if (view === "history") {
     state.rangeFrom = params.get("from") || null;
     state.rangeTo = params.get("to") || null;
@@ -299,6 +309,7 @@ async function loadTagCategories() {
 }
 
 async function loadBank() {
+  const isOwner = state.user && state.user.role === "owner";
   const params = new URLSearchParams({
     page: state.bankPage,
     page_size: state.bankPageSize,
@@ -306,10 +317,14 @@ async function loadBank() {
   const typeFilter = $("#filter-bank-type").value;
   const categoryFilter = $("#filter-bank-category").value;
   const difficultyFilter = $("#filter-bank-difficulty").value;
+  const doneFilter = $("#filter-bank-done").value;
+  const sortFilter = $("#filter-bank-sort").value;
   const keyword = $("#bank-search").value.trim();
   if (typeFilter !== "all") params.set("type", typeFilter);
   if (difficultyFilter !== "all") params.set("difficulty", difficultyFilter);
   if (categoryFilter !== "all") params.set("category", categoryFilter);
+  if (doneFilter !== "all") params.set("done", doneFilter);
+  if (sortFilter !== "newest") params.set("sort", sortFilter);
   if (keyword) params.set("q", keyword);
   let data;
   try {
@@ -332,13 +347,16 @@ async function loadBank() {
     const badge = q.done
       ? '<span class="badge badge-done">已答</span>'
       : '<span class="badge badge-todo">待做</span>';
-    const isOwner = state.user && state.user.role === "owner";
     const adminBtns = isOwner
       ? `<button class="admin-btn" data-action="edit" data-id="${q.id}">编辑</button>
          <button class="admin-btn admin-delete" data-action="delete" data-id="${q.id}">删除</button>`
       : "";
+    const checkBox = isOwner
+      ? `<input type="checkbox" class="bank-check" data-id="${q.id}"${bankSelected.has(q.id) ? " checked" : ""} title="勾选以批量删除">`
+      : "";
     card.innerHTML = `
       <div class="question-head">
+        ${checkBox}
         <button class="fav-btn${q.favorited ? " active" : ""}" data-id="${q.id}" data-fav="${q.favorited ? "1" : "0"}" title="收藏">★</button>
         ${badge}
         <span class="badge">${q.type}</span>
@@ -347,12 +365,27 @@ async function loadBank() {
       </div>
       <p>${escapeHtml(q.stem)}</p>`;
     card.addEventListener("click", (e) => {
-      if (e.target.closest(".admin-btn") || e.target.closest(".fav-btn")) return;
+      if (e.target.closest(".admin-btn") || e.target.closest(".fav-btn") || e.target.closest(".bank-check")) return;
       state.returnTo = "bank";
       startAnswer(q);
     });
     list.appendChild(card);
   }
+  const batchBar = $("#bank-batch");
+  if (isOwner) {
+    batchBar.hidden = false;
+    updateBankSelection();
+  } else {
+    batchBar.hidden = true;
+  }
+  list.querySelectorAll(".bank-check").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const id = Number(cb.dataset.id);
+      if (cb.checked) bankSelected.add(id);
+      else bankSelected.delete(id);
+      updateBankSelection();
+    });
+  });
   list.querySelectorAll(".fav-btn").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -371,6 +404,8 @@ async function loadBank() {
       if (btn.dataset.action === "edit") {
         openQuestionModal(id);
       } else if (await uiConfirm("删除该题？将同时删除其全部作答记录。")) {
+        bankSelected.delete(id);
+        updateBankSelection();
         api(`/api/admin/questions/${id}`, { method: "DELETE" }).then(() => loadBank());
       }
     });
@@ -384,6 +419,31 @@ async function loadBank() {
   goto.value = "";
   scrollTop();
   updateHash();
+}
+
+function updateBankSelection() {
+  const n = bankSelected.size;
+  $("#bank-selected-count").textContent = `已选 ${n} 题`;
+  $("#bank-batch-delete").disabled = n === 0;
+}
+
+async function deleteBankSelected() {
+  const ids = [...bankSelected];
+  if (!ids.length) return;
+  if (!(await uiConfirm(`确认批量删除勾选的 ${ids.length} 题？将连带删除全部作答记录，不可恢复。`))) return;
+  try {
+    const res = await api("/api/admin/questions/batch-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    bankSelected.clear();
+    updateBankSelection();
+    uiToast(`已删除 ${res.deleted} 题`);
+    loadBank();
+  } catch (err) {
+    uiToast(err.message, true);
+  }
 }
 
 // --- 收藏 ---
@@ -1989,6 +2049,14 @@ $("#filter-bank-category").addEventListener("change", () => {
   state.bankPage = 1;
   loadBank();
 });
+$("#filter-bank-done").addEventListener("change", () => {
+  state.bankPage = 1;
+  loadBank();
+});
+$("#filter-bank-sort").addEventListener("change", () => {
+  state.bankPage = 1;
+  loadBank();
+});
 $("#bank-search").addEventListener("input", () => {
   state.bankPage = 1;
   loadBank();
@@ -2014,6 +2082,7 @@ $("#bank-page-size").addEventListener("change", (e) => {
   state.bankPage = 1; // 换条数回第一页
   loadBank();
 });
+$("#bank-batch-delete").addEventListener("click", deleteBankSelected);
 $("#detail-back").addEventListener("click", () => {
   sessionStorage.removeItem("detail_state"); // 离开详情页：清除恢复点
   show("history");

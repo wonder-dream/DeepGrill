@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>面试助手</title>
   <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-  <link rel="stylesheet" href="/static/theme.css?v=20260811v14">
-  <link rel="stylesheet" href="/static/style.css?v=20260811v14">
+  <link rel="stylesheet" href="/static/theme.css?v=20260812v4">
+  <link rel="stylesheet" href="/static/style.css?v=20260812v4">
 </head>
 <body>
   <button id="sidebar-hamburger" class="hamburger" title="菜单">☰</button>
@@ -152,6 +152,25 @@
         <label>搜索
           <input type="search" id="bank-search" placeholder="关键词…">
         </label>
+        <label>状态
+          <select id="filter-bank-done">
+            <option value="all">全部</option>
+            <option value="done">已答</option>
+            <option value="todo">未答</option>
+          </select>
+        </label>
+        <label>排序
+          <select id="filter-bank-sort">
+            <option value="newest">最新</option>
+            <option value="oldest">最旧</option>
+            <option value="easy">难度升</option>
+            <option value="hard">难度降</option>
+          </select>
+        </label>
+        <span id="bank-batch" class="bank-batch" hidden>
+          <span class="meta" id="bank-selected-count">已选 0 题</span>
+          <button id="bank-batch-delete" class="admin-btn admin-delete" disabled>批量删除</button>
+        </span>
       </div>
       <div class="card-list" id="bank-list"></div>
       <div class="bank-pager">
@@ -476,7 +495,7 @@
   </div>
   <div id="ui-toast" class="hidden"></div>
 
-  <script src="/static/app.js?v=20260811v14"></script>
+  <script src="/static/app.js?v=20260812v4"></script>
 </body>
 </html>
 
