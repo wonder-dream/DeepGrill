@@ -343,6 +343,22 @@ def test_admin_requires_owner(db):
     assert normal.post("/api/upload", json={"filename": "a.md", "content": "Q: x"}).status_code == 403
 
 
+def test_seed_owner_from_env(monkeypatch, db):
+    """OWNER_USERNAME/OWNER_PASSWORD 预置 owner：无 owner 时创建，幂等不重复。"""
+    from app.web.routes import _seed_owner_if_configured
+
+    monkeypatch.setenv("OWNER_USERNAME", "boss")
+    monkeypatch.setenv("OWNER_PASSWORD", "pass12345")
+    _seed_owner_if_configured()
+    with get_session() as s:
+        u = s.scalars(select(User).where(User.username == "boss")).first()
+        assert u is not None and u.role == "owner"
+    monkeypatch.setenv("OWNER_USERNAME", "boss2")
+    _seed_owner_if_configured()
+    with get_session() as s:
+        assert s.scalars(select(User).where(User.username == "boss2")).first() is None  # 已有 owner 不重复建
+
+
 def test_admin_batch_delete_questions(db):
     q1 = _add_question(db, "批量删 1")
     q2 = _add_question(db, "批量删 2")

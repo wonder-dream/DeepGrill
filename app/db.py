@@ -47,6 +47,9 @@ def init_db(db_url: str) -> None:
             event.listen(_engine, "connect", _enable_sqlite_wal)
             event.listen(_engine, "connect", _enable_sqlite_busy_timeout)
         SQLModel.metadata.create_all(_engine)
+        if db_url.startswith("sqlite"):
+            _migrate_user_picks_unique(_engine)
+            _migrate_sessions_active_unique(_engine)
     except SQLAlchemyError as e:
         raise StorageError(f"cannot init database {db_url}: {e}") from e
     _factory = sessionmaker(bind=_engine, class_=DBSession, expire_on_commit=False)
@@ -95,6 +98,45 @@ def _enable_sqlite_busy_timeout(dbapi_connection, connection_record) -> None:
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA busy_timeout = 5000")
     cursor.close()
+
+
+def _migrate_user_picks_unique(engine: Engine) -> None:
+    """幂等迁移：user_picks 加 (user_id, question_id) 唯一约束（绿地重建后模型新增，旧表缺约束）。
+
+    SQLite 不支持 ALTER TABLE ADD CONSTRAINT，需重建表复制数据（按用户+题去重）。
+    """
+    with engine.begin() as conn:
+        indexes = conn.execute(text("PRAGMA index_list('user_picks')")).fetchall()
+        if any("uq_user_picks" in (r[1] or "") for r in indexes):
+            return
+        conn.execute(text("DROP TABLE IF EXISTS user_picks_new"))
+        conn.execute(text(
+            "CREATE TABLE user_picks_new ("
+            " id INTEGER NOT NULL PRIMARY KEY,"
+            " user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+            " question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,"
+            " picked_at DATETIME NOT NULL,"
+            " CONSTRAINT uq_user_picks UNIQUE (user_id, question_id))"
+        ))
+        conn.execute(text(
+            "INSERT INTO user_picks_new (id, user_id, question_id, picked_at) "
+            "SELECT id, user_id, question_id, MAX(picked_at) FROM user_picks "
+            "GROUP BY user_id, question_id"
+        ))
+        conn.execute(text("DROP TABLE user_picks"))
+        conn.execute(text("ALTER TABLE user_picks_new RENAME TO user_picks"))
+        conn.execute(text(
+            "CREATE INDEX ix_user_picks_user_id ON user_picks (user_id)"
+        ))
+
+
+def _migrate_sessions_active_unique(engine: Engine) -> None:
+    """幂等迁移：同用户同题最多一条 active 会话（partial unique index，防并发双开）。"""
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_active "
+            "ON sessions (user_id, question_id) WHERE status = 'active'"
+        ))
 
 
 @contextmanager
@@ -440,10 +482,17 @@ def pick_questions(
 
     questions = [session.get(Question, qid) for qid in picked]
     now = datetime.now()
-    for q in questions:
-        if q is not None:
-            session.add(UserPick(user_id=user_id, question_id=q.id, picked_at=now))
-    commit(session)
+    rows = [
+        {"user_id": user_id, "question_id": q.id, "picked_at": now}
+        for q in questions
+        if q is not None
+    ]
+    if rows:
+        # on_conflict_do_nothing：并发双开标签页同题重复插入被唯一约束吸收（结果一致，不 500）
+        from sqlalchemy.dialects.sqlite import insert as _sqlite_insert
+
+        session.execute(_sqlite_insert(UserPick).values(rows).on_conflict_do_nothing())
+        commit(session)
     return [q for q in questions if q is not None]
 
 

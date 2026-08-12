@@ -439,7 +439,7 @@ async function deleteBankSelected() {
     });
     bankSelected.clear();
     updateBankSelection();
-    uiToast(`已删除 ${res.deleted} 题`);
+    uiToast(`已删除 ${res.deleted} 题${res.skipped ? `，跳过 ${res.skipped} 题（判分中）` : ""}`);
     loadBank();
   } catch (err) {
     uiToast(err.message, true);

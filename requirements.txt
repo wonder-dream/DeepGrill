@@ -19,7 +19,9 @@ torchvision==0.21.0+cu124
 accelerate
 # 复习卷讲义 markdown 转 HTML（富格式渲染，为后续升级准备）
 Markdown
+# 讲义 HTML 白名单消毒（防存储型 XSS：LLM 输出/题库题干注入）
+bleach
 
 
-# ֪ʶ������������FAISS �ڴ������㣬�����Դ� SQLite��
+# ֪ʶ������������FAISS �ڴ������㣬�����Դ� SQLite��
 faiss-cpu

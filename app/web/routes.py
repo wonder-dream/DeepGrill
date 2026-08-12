@@ -7,6 +7,7 @@
 import base64
 import hashlib
 import logging
+import os
 import re
 import secrets
 import threading
@@ -35,7 +36,7 @@ from ..auth import (
 from ..config import AppConfig, secret_value
 from ..difficulty import max_rounds_for, target_level_for
 from ..embed import Embedder
-from ..errors import AppError
+from ..errors import AppError, DuplicateSource
 from ..judge.chain import resume
 from ..parsers import extract_text
 from ..judge.judge import STATUS_FAILED, judge
@@ -63,6 +64,7 @@ from . import static_dir
 logger = logging.getLogger(__name__)
 
 _shared_embedder = None
+_shared_embedder_lock = threading.Lock()
 
 
 def _default_embedder_factory():
@@ -75,7 +77,9 @@ def _default_embedder_factory():
     def factory() -> Embedder:
         global _shared_embedder
         if _shared_embedder is None:
-            _shared_embedder = Embedder()
+            with _shared_embedder_lock:  # 双检锁：并发首波请求只建一份
+                if _shared_embedder is None:
+                    _shared_embedder = Embedder()
         return _shared_embedder
 
     return factory
@@ -148,8 +152,32 @@ def _ensure_today_picks(session, user_id: int) -> list[UserPick]:
         )
     )
 
-_inflight: set[int] = set()
+_inflight: dict[int, float] = {}  # session_id → 入队时间戳（判分中；超时自动清理防永久 409）
 _inflight_lock = threading.Lock()
+_INFLIGHT_TTL = 600  # 判分中标记有效期（秒）：LLM 判分一般 <60s，超时视为进程已死，允许删除/重试
+
+
+def _inflight_snapshot() -> set[int]:
+    """锁内快照：清理超时标记后返回在途 session_id 集合。"""
+    with _inflight_lock:
+        now = time.time()
+        expired = [sid for sid, ts in _inflight.items() if now - ts > _INFLIGHT_TTL]
+        for sid in expired:
+            _inflight.pop(sid, None)
+        return set(_inflight)
+
+
+def _question_inflight(session, question_id: int) -> bool:
+    """该题是否存在判分中的会话（删除保护：判分中删题会让用户答案静默丢失）。"""
+    inflight = _inflight_snapshot()
+    if not inflight:
+        return False
+    sid = session.scalar(
+        select(Session.id)
+        .where(Session.id.in_(inflight), Session.question_id == question_id)
+        .limit(1)
+    )
+    return sid is not None
 
 _register_lock = threading.Lock()  # 注册串行：防并发注册双 owner / 超名额竞态（B4）
 
@@ -163,7 +191,32 @@ _parse_semaphore = threading.Semaphore(1)  # 二进制解析串行（MinerU 进�
 
 _review_paper_cache: dict[str, dict] = {}
 _review_paper_lock = threading.Lock()
+_review_paper_inflight: dict[str, threading.Event] = {}  # 同 key 生成中：并发请求等待复用，防双份 LLM 调用
 _review_paper_ttl = 3600  # 复习卷缓存有效期（秒），过期后重新生成（讲义按题库变化适度新鲜）
+
+
+def _review_paper_clear_cache() -> None:
+    """管理端改题/删题/词表变更后清缓存（讲义含题目素材，避免推荐已删题/旧题干）。"""
+    with _review_paper_lock:
+        _review_paper_cache.clear()
+
+def _sanitize_html(html: str) -> str:
+    """讲义 HTML 白名单消毒（防存储型 XSS：LLM 输出/题库题干可携带脚本）。"""
+    import bleach
+
+    return bleach.clean(
+        html,
+        tags={
+            "p", "br", "strong", "em", "b", "i", "code", "pre",
+            "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+            "blockquote", "table", "thead", "tbody", "tr", "th", "td",
+            "hr", "a", "span", "div",
+        },
+        attributes={"a": ["href", "title"]},
+        protocols={"http", "https", "mailto"},
+        strip=True,
+    )
+
 
 REVIEW_PAPER_PROMPT = """你是面试复习讲师。针对薄弱主题「{tag}」，结合下面题库中该主题的同类题，生成一份针对性复习讲义。
 
@@ -194,7 +247,14 @@ def create_app(
         lambda: _run_daily_pipeline(config, llm_factory)
     )
 
-    app = FastAPI(title="InterviewAssistant")
+    app = FastAPI(
+        title="InterviewAssistant",
+        # 生产默认禁用 /docs /redoc /openapi.json（公网暴露完整接口结构，降低侦察面）；
+        # 本地调试 .env 配 ENABLE_DOCS=1 恢复
+        docs_url="/docs" if os.environ.get("ENABLE_DOCS") == "1" else None,
+        redoc_url=None,
+        openapi_url="/openapi.json" if os.environ.get("ENABLE_DOCS") == "1" else None,
+    )
 
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
@@ -224,6 +284,8 @@ def create_app(
 
     @app.post("/api/auth/register")
     def auth_register(body: dict):
+        if len(str(body)) > 4096:
+            raise HTTPException(status_code=400, detail="请求体过大")
         username = str(body.get("username", "")).strip()
         password = str(body.get("password", ""))
         err = validate_username(username) or validate_password(password)
@@ -275,6 +337,8 @@ def create_app(
 
     @app.post("/api/auth/login")
     def auth_login(body: dict):
+        if len(str(body)) > 4096:
+            raise HTTPException(status_code=400, detail="请求体过大")
         username = str(body.get("username", "")).strip()
         password = str(body.get("password", ""))
         with db.get_session() as session:
@@ -308,6 +372,7 @@ def create_app(
             from ..tags import reload_tags
 
             reload_tags()  # 词表从 DB 加载（首次写入种子）
+            _seed_owner_if_configured()  # OWNER_USERNAME/OWNER_PASSWORD 预置 owner（防空库抢注）
             scheduler.start_scheduler(config, daily_runner)
 
         @app.on_event("shutdown")
@@ -317,7 +382,8 @@ def create_app(
     @app.exception_handler(AppError)
     async def app_error_handler(request, exc: AppError):
         logger.warning("request failed: %s", exc)
-        return JSONResponse(status_code=500, content={"error": str(exc)})
+        # 不向客户端回显原始异常文本（StorageError 含 SQL/路径，其余可能含内部细节）
+        return JSONResponse(status_code=500, content={"error": "服务内部错误，请稍后重试"})
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request, exc: Exception):
@@ -469,7 +535,24 @@ def create_app(
                 kind=SessionKind(kind),
             )
             session.add(row)
-            db.commit(session)
+            try:
+                db.commit(session)
+            except db.StorageError:
+                # 并发双开同题：partial unique index 拦截 → 复用已存在 active 会话
+                session.rollback()
+                existing = session.scalars(
+                    select(Session)
+                    .where(
+                        Session.question_id == question_id,
+                        Session.user_id == user.id,
+                        Session.status == SessionStatus.active,
+                    )
+                    .order_by(Session.id.desc())
+                    .limit(1)
+                ).first()
+                if existing is not None:
+                    return {"session_id": existing.id, "status": "active", "resumed": True}
+                raise
             session.refresh(row)
         return {"session_id": row.id, "status": "active", "resumed": False}
 
@@ -495,7 +578,7 @@ def create_app(
         with _inflight_lock:
             if session_id in _inflight:
                 raise HTTPException(status_code=409, detail="session is being judged")
-            _inflight.add(session_id)
+            _inflight[session_id] = time.time()
         background.add_task(
             _run_answer_job, session_id, answer, config, llm_factory, embedder_factory
         )
@@ -521,6 +604,8 @@ def create_app(
         with db.get_session() as session:
             if session.get(Question, question_id) is None:
                 raise HTTPException(status_code=404, detail="question not found")
+            if _question_inflight(session, question_id):
+                raise HTTPException(status_code=409, detail="该题正在判分中，请稍后再试")
             rows = session.scalars(
                 select(Session).where(
                     Session.question_id == question_id,
@@ -558,7 +643,7 @@ def create_app(
                     payload["status"] = "done"
                     payload["judgment"] = _judgment_payload(judgment)
                 return payload
-            if session_id in _inflight:
+            if session_id in _inflight_snapshot():
                 payload["status"] = "judging"
             else:
                 payload["rounds_done"] = _count_attempts(session, session_id)
@@ -979,9 +1064,31 @@ def create_app(
             cached = _review_paper_cache.get(cache_key)
             if cached is not None and time.time() - cached["ts"] < _review_paper_ttl:
                 return cached["payload"]
+            inflight_ev = _review_paper_inflight.get(cache_key)
+            if inflight_ev is None:
+                inflight_ev = threading.Event()
+                _review_paper_inflight[cache_key] = inflight_ev  # 本请求承担生成
+                wait_ev = None
+            else:
+                wait_ev = inflight_ev  # 已有请求在生成：等待复用结果，避免双份 LLM 调用
+        if wait_ev is not None:
+            wait_ev.wait(timeout=90)
+            with _review_paper_lock:
+                cached = _review_paper_cache.get(cache_key)
+                if cached is not None and time.time() - cached["ts"] < _review_paper_ttl:
+                    return cached["payload"]
+            return {
+                "paper_html": "",
+                "recommended_ids": [],
+                "error": "复习卷生成中，请稍后重试",
+            }
         with db.get_session() as session:
             questions, fallback, fallback_category = _review_questions(session, tag)
         if not questions:
+            with _review_paper_lock:
+                done_ev = _review_paper_inflight.pop(cache_key, None)
+                if done_ev is not None:
+                    done_ev.set()
             return {"paper_html": "", "recommended_ids": []}
         materials = "\n".join(
             f"- [id={q.id}]（难度 {q.difficulty}/5）{q.stem}"
@@ -999,6 +1106,10 @@ def create_app(
             )
         except Exception as e:
             logger.warning("review paper generate failed for %s: %s", tag, e)
+            with _review_paper_lock:
+                done_ev = _review_paper_inflight.pop(cache_key, None)
+                if done_ev is not None:
+                    done_ev.set()
             return {
                 "paper_html": "",
                 "recommended_ids": [],
@@ -1014,10 +1125,13 @@ def create_app(
         recommended = [i for i in recommended if i in valid_ids][:5]
         from markdown import markdown as _md
 
-        paper_html = _md(paper) if paper else ""
+        paper_html = _sanitize_html(_md(paper)) if paper else ""
         payload = {"paper_html": paper_html, "recommended_ids": recommended}
         with _review_paper_lock:
             _review_paper_cache[cache_key] = {"payload": payload, "ts": time.time()}
+            done_ev = _review_paper_inflight.pop(cache_key, None)
+            if done_ev is not None:
+                done_ev.set()
         return payload
 
     # --- 管理员题库管理（owner） ---
@@ -1057,6 +1171,7 @@ def create_app(
                     setattr(row, field, [str(v) for v in val])
             db.commit(session)
             session.refresh(row)
+        _review_paper_clear_cache()  # 讲义素材含题干，改题后失效
         return {
             "id": row.id,
             "stem": row.stem,
@@ -1073,15 +1188,18 @@ def create_app(
             row = session.get(Question, question_id)
             if row is None:
                 raise HTTPException(status_code=404, detail="question not found")
+            if _question_inflight(session, question_id):
+                raise HTTPException(status_code=409, detail="该题正在判分中，请稍后再试")
             session.delete(row)
             db.commit(session)
+        _review_paper_clear_cache()
         return {"deleted": True}
 
     @app.post("/api/admin/questions/batch-delete")
     def admin_batch_delete_questions(
         body: dict, user: User = Depends(require_owner)
     ):
-        """管理员批量删除题目：ids 列表（单次 ≤500），一条事务，关联 DB 级联清理。"""
+        """管理员批量删除题目：ids 列表（单次 ≤500）；判分中的题跳过（返回 skipped）；分批事务防长锁。"""
         raw_ids = body.get("ids")
         if not isinstance(raw_ids, list) or not raw_ids:
             raise HTTPException(status_code=400, detail="ids 需为非空列表")
@@ -1091,12 +1209,20 @@ def create_app(
             ids = [int(i) for i in raw_ids]
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="ids 必须都是整数")
+        deleted = 0
+        skipped = 0
         with db.get_session() as session:
             rows = list(session.scalars(select(Question).where(Question.id.in_(ids))))
-            for row in rows:
-                session.delete(row)
-            db.commit(session)
-        return {"deleted": len(rows)}
+            rows = [r for r in rows if not _question_inflight(session, r.id)]
+            for i in range(0, len(rows), 50):  # 分批提交：500 题单事务会持写锁超 5s 撞 busy_timeout
+                batch = rows[i : i + 50]
+                for row in batch:
+                    session.delete(row)
+                db.commit(session)
+                deleted += len(batch)
+            skipped = len(ids) - deleted
+        _review_paper_clear_cache()
+        return {"deleted": deleted, "skipped": skipped}
 
     # --- 标签/分类管理（词表数据库化，owner） ---
 
@@ -1170,6 +1296,7 @@ def create_app(
         from ..tags import reload_tags
 
         reload_tags()
+        _review_paper_clear_cache()
         return {"id": cat.id, "name": cat.name, "roles": cat.roles, "lang": cat.lang}
 
     @app.delete("/api/admin/categories/{category_id}")
@@ -1188,6 +1315,7 @@ def create_app(
         from ..tags import reload_tags
 
         reload_tags()
+        _review_paper_clear_cache()
         return {"deleted": True}
 
     @app.post("/api/admin/tags")
@@ -1211,6 +1339,7 @@ def create_app(
         from ..tags import reload_tags
 
         reload_tags()
+        _review_paper_clear_cache()
         return {"id": item.id, "name": item.name}
 
     @app.delete("/api/admin/tags/{tag_id}")
@@ -1227,6 +1356,7 @@ def create_app(
         from ..tags import reload_tags
 
         reload_tags()
+        _review_paper_clear_cache()
         return {"deleted": True}
 
     # --- 数据备份：导出/导入（sqlite 整库备份 zip） ---
@@ -1298,9 +1428,17 @@ def create_app(
         try:
             zf = zipfile.ZipFile(io.BytesIO(data))
             names = zf.namelist()
+            if len(names) > 100:
+                raise HTTPException(status_code=400, detail="备份文件成员过多")
             if "interview.db" not in names:
                 raise HTTPException(status_code=400, detail="备份文件中缺少 interview.db")
-            db_bytes = zf.read("interview.db")
+            max_db = 500 * 1024 * 1024
+            with zf.open("interview.db") as f:
+                db_bytes = f.read(max_db + 1)  # 流式 inflate：超限即停，防解压炸弹
+            if len(db_bytes) > max_db:
+                raise HTTPException(status_code=400, detail="解压后超过 500MB 限制")
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"备份文件无效：{e}")
         if db_bytes[:16] != b"SQLite format 3\x00":
@@ -1335,7 +1473,19 @@ def create_app(
         backup_dir.mkdir(parents=True, exist_ok=True)
         if db_path.exists():
             pre = backup_dir / f"pre_import_{datetime.now():%Y%m%d_%H%M%S}.db"
-            pre.write_bytes(db_path.read_bytes())
+            # sqlite3.backup API：WAL 模式下裸读主文件会丢 -wal 内容（快照陈旧/撕裂）
+            _src = _sqlite3.connect(str(db_path))
+            try:
+                _dst = _sqlite3.connect(str(pre))
+                try:
+                    _src.backup(_dst)
+                finally:
+                    _dst.close()
+            finally:
+                _src.close()
+            # 保留最近 5 份 pre_import 备份，防磁盘无限膨胀
+            for old in sorted(backup_dir.glob("pre_import_*.db"))[:-5]:
+                old.unlink(missing_ok=True)
         with _db._import_lock:
             _db.close()
             tmp_swap = Path(str(db_path) + f".restore_{secrets.token_hex(4)}")
@@ -1352,7 +1502,8 @@ def create_app(
 
                     _time.sleep(0.4)
             if last_err is not None:
-                raise HTTPException(status_code=500, detail=f"数据库文件被占用，恢复失败：{last_err}")
+                logger.error("import backup failed: %s", last_err)
+                raise HTTPException(status_code=500, detail="数据库文件被占用，恢复失败，请稍后重试")
             _db.init_db(_db_url_fn())
         with db.get_session() as session:
             total = session.scalars(select(func.count(Question.id))).one()
@@ -1478,7 +1629,13 @@ def _run_answer_job(
     try:
         with db.get_session() as session:
             row = session.get(Session, session_id)
+            if row is None:
+                logger.warning("answer job skipped: session %s 已被删除", session_id)
+                return
             question = session.get(Question, row.question_id)
+            if question is None:
+                logger.warning("answer job skipped: 题目 %s 已被删除", row.question_id)
+                return
             tags = _question_tag_map(session, [question.id]).get(question.id, [])
         question._tags = tags  # 非持久属性：judge/retrieval 读取题标签
         judge_llm = llm_factory("judge")
@@ -1535,7 +1692,7 @@ def _run_answer_job(
         logger.exception("answer job failed for session %s", session_id)
     finally:
         with _inflight_lock:
-            _inflight.discard(session_id)
+            _inflight.pop(session_id, None)
 
 
 _KNOWLEDGE_CANDIDATE_K = 8  # 自评阶段候选块数（比注入多，供 LLM 筛选）
@@ -1729,8 +1886,14 @@ def _insert_direct_questions(content: str) -> tuple[Source, int]:
                 source_hash=source_hash,
             )
             session.add(source)
-            db.commit(session)
-            session.refresh(source)
+            try:
+                db.commit(session)
+            except DuplicateSource:  # 并发相同内容上传：唯一约束拦截，复用已有 source
+                source = session.scalars(
+                    select(Source).where(Source.source_hash == source_hash)
+                ).first()
+            else:
+                session.refresh(source)
         existing = [
             Question(stem=stem)
             for stem in session.scalars(select(Question.stem)).all()
@@ -1827,6 +1990,9 @@ def _tag_direct_questions(source_id: int, llm_factory) -> None:
                 if row is None:
                     continue
                 if info["verdict"] == "delete":
+                    if _question_inflight(session, q.id):
+                        logger.info("质检跳过删除：题目 %s 正在判分", q.id)
+                        continue
                     sessions = session.scalars(
                         select(Session).where(Session.question_id == q.id)
                     ).all()
@@ -1925,7 +2091,8 @@ def _friendly_upload_error(e: Exception) -> str:
         return "PDF/Word 解析失败（解析器异常），请重试或转用文本格式"
     if "timed out" in text or "Timeout" in text:
         return "解析超时（超过 20 分钟），请重试或改用更小文件"
-    return f"解析失败：{text}"
+    logger.warning("upload parse failed: %s", text)
+    return "解析失败，请重试或转用文本格式"
 
 
 def _start_binary_upload(
@@ -2045,12 +2212,39 @@ def _generate_uploaded_source(source_id: int, llm_factory, embedder_factory) -> 
 
 
 def _run_daily_pipeline(config: AppConfig, llm_factory):
-    from ..embed import Embedder
     from ..pipeline.daily import default_sources, run_daily
 
     return run_daily(
-        config, default_sources(config), llm_factory("generate"), Embedder()
+        # 复用共享单例：每次 new Embedder 会与答题/上传中的单例并存双份 ~2.3GB（OOM 风险）
+        config, default_sources(config), llm_factory("generate"), _default_embedder_factory()()
     )
+
+
+def _seed_owner_if_configured() -> None:
+    """库无 owner 且 .env 配置了 OWNER_USERNAME/OWNER_PASSWORD 时自动创建 owner（幂等）。
+
+    防"首个注册者=owner"抢注窗口：新库/重建/导入覆盖后首次启动即锁定管理员。
+    未配置时回退现状（首注册者=owner）并 WARN。
+    """
+    owner_user = os.environ.get("OWNER_USERNAME", "").strip()
+    owner_pass = os.environ.get("OWNER_PASSWORD", "")
+    if not owner_user or not owner_pass:
+        logger.warning("OWNER_USERNAME/OWNER_PASSWORD 未配置：空库时首个注册用户将成为管理员")
+        return
+    from ..auth import hash_password
+
+    with db.get_session() as session:
+        if session.scalars(select(User).where(User.role == "owner").limit(1)).first() is not None:
+            return
+        if session.scalars(select(User).where(User.username == owner_user)).first() is not None:
+            return
+        session.add(User(
+            username=owner_user,
+            password_hash=hash_password(owner_pass),
+            role="owner",
+        ))
+        db.commit(session)
+        logger.info("seeded owner user %s from OWNER_* env", owner_user)
 
 
 def _db_url() -> str:

@@ -224,17 +224,18 @@ def reload_tags() -> None:
     for c in cats:
         lang_by_cat[c.id] = c.lang
         roles_by_cat[c.id] = tuple(c.roles or ())
-    TAG_CATEGORIES[:] = [
+    TAG_CATEGORIES[:] = [  # 切片赋值原子（GIL 下不中断）；原地变异保持外部 import 绑定生效
         (c.name, tuple(by_cat.get(c.id, ())))
         for c in cats
     ]
     TAG_VOCABULARY[:] = [
         tag for _name, tags in TAG_CATEGORIES for tag in tags
     ]
-    CATEGORY_LANG.clear()
-    CATEGORY_LANG.update({c.name: lang_by_cat.get(c.id) for c in cats})
-    CATEGORY_ROLES.clear()
-    CATEGORY_ROLES.update({c.name: roles_by_cat.get(c.id, ()) for c in cats})
+    # dict 整体替换而非 clear+update：clear 与 update 之间的空窗口会让并发读
+    # 迭代崩溃（RuntimeError: dictionary changed size during iteration）；
+    # 引用方均为函数内 import（每次调用重新绑定，整体替换后拿新对象）
+    CATEGORY_LANG = {c.name: lang_by_cat.get(c.id) for c in cats}
+    CATEGORY_ROLES = {c.name: roles_by_cat.get(c.id, ()) for c in cats}
 
 
 def tag_vocab_text() -> str:

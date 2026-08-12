@@ -19,6 +19,8 @@ beautifulsoup4==4.15.0
     # via
     #   -r requirements.txt
     #   mineru
+bleach==6.4.0
+    # via -r requirements.txt
 certifi==2026.7.22
     # via
     #   httpcore
@@ -49,6 +51,8 @@ distro==1.9.0
     # via openai
 et-xmlfile==2.0.0
     # via openpyxl
+faiss-cpu==1.15.0
+    # via -r requirements.txt
 fast-langdetect==0.2.5
     # via mineru
 fastapi==0.141.1
@@ -145,6 +149,7 @@ networkx==3.6.1
 numpy==2.4.4
     # via
     #   accelerate
+    #   faiss-cpu
     #   mineru
     #   onnxruntime
     #   opencv-python
@@ -170,6 +175,7 @@ openpyxl==3.1.5
 packaging==24.1
     # via
     #   accelerate
+    #   faiss-cpu
     #   huggingface-hub
     #   modelscope
     #   onnxruntime
@@ -346,6 +352,8 @@ uvicorn==0.52.1
     #   mineru
 wcwidth==0.8.2
     # via ftfy
+webencodings==0.5.1
+    # via bleach
 win32-setctime==1.2.0
     # via loguru
 xlsxwriter==3.2.9

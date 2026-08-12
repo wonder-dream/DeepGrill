@@ -585,15 +585,41 @@ def test_delete_session_cascades(db):
 
 
 def test_delete_session_404_and_inflight_409(db):
+    import time as _time
+
     q = add_today_question(db)
     client = make_client(db, FakeLLM([]))
     assert client.delete("/api/sessions/99999").status_code == 404
     sid = client.post("/api/sessions", json={"question_id": q.id, "kind": "chain"}).json()["session_id"]
-    _inflight.add(sid)
+    _inflight[sid] = _time.time()
     try:
         assert client.delete(f"/api/sessions/{sid}").status_code == 409
     finally:
-        _inflight.discard(sid)
+        _inflight.pop(sid, None)
+
+
+def test_delete_question_inflight_protection(db):
+    """判分中删题保护：管理单删/清历史 409；批量删除跳过判分中题目。"""
+    import time as _time
+
+    q1 = add_today_question(db, stem="判分中题", status_today=False)
+    q2 = add_today_question(db, stem="空闲题", status_today=False)
+    client = make_client(db, FakeLLM([]))
+    sid = client.post("/api/sessions", json={"question_id": q1.id, "kind": "chain"}).json()["session_id"]
+    _inflight[sid] = _time.time()
+    try:
+        assert client.delete(f"/api/admin/questions/{q1.id}").status_code == 409
+        assert client.delete(f"/api/questions/{q1.id}/history").status_code == 409
+        resp = client.post(
+            "/api/admin/questions/batch-delete",
+            json={"ids": [q1.id, q2.id]},
+        ).json()
+        assert resp["deleted"] == 1 and resp["skipped"] == 1
+        with get_session() as s:
+            assert s.get(Question, q2.id) is None
+            assert s.get(Question, q1.id) is not None  # 判分中题保留
+    finally:
+        _inflight.pop(sid, None)
 
 
 def test_delete_question_history_keeps_question(db):
@@ -655,6 +681,26 @@ def test_review_paper_generates(db):
     assert "<strong>分层回答</strong>" in data["paper_html"]
     assert sorted(data["recommended_ids"]) == sorted([q1.id, q2.id])
     assert data["paper_html"]  # 非空
+    with db:
+        _review_paper_cache.clear()
+
+
+def test_review_paper_sanitizes_html(db):
+    """讲义 HTML 白名单消毒：脚本/事件属性被清除（防存储型 XSS）。"""
+    from app.web.routes import _review_paper_cache
+
+    add_today_question(db, stem="RAG 题", tags=["RAG"])
+    llm = FakeLLM([{
+        "paper": "## 讲义\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(2)>\n\n[链接](javascript:alert(3))\n\n<a href=\"https://ok.com\" title=\"好\">正常链接</a>",
+        "recommended_ids": [],
+    }])
+    client = make_client(db, llm)
+    data = client.get("/api/review/paper", params={"tag": "RAG"}).json()
+    assert "<script>" not in data["paper_html"]
+    assert "onerror" not in data["paper_html"]
+    assert "javascript:" not in data["paper_html"]
+    assert "正常链接" in data["paper_html"]  # 白名单标签/协议保留
+    assert "<h2>讲义</h2>" in data["paper_html"]
     with db:
         _review_paper_cache.clear()
 
@@ -874,6 +920,24 @@ def test_bank_filter_type_and_category(db):
 
     by_cat = client.get("/api/bank", params={"category": "Java"}).json()
     assert by_cat["total"] == 1  # Java 题在新分类"Java"
+
+
+def test_userpick_unique_conflict_ignored(db):
+    """UserPick 同用户同题唯一：并发重复插入被 on_conflict 吸收；裸插两条被拒。"""
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    from sqlalchemy.exc import IntegrityError
+    from app.models import UserPick
+
+    q = add_today_question(db, status_today=False)
+    user = ensure_test_user(db)
+    values = {"user_id": user.id, "question_id": q.id, "picked_at": datetime.now()}
+    db.execute(sqlite_insert(UserPick).values(values).on_conflict_do_nothing())
+    db.execute(sqlite_insert(UserPick).values(values).on_conflict_do_nothing())
+    commit(db)
+    assert len(db.scalars(select(UserPick)).all()) == 1
+    with pytest.raises(IntegrityError):
+        db.add(UserPick(user_id=user.id, question_id=q.id))
+        db.flush()
 
 
 def test_bank_filter_done_and_sort(db):
@@ -1322,13 +1386,30 @@ def test_judge_failure_returns_failed_and_retryable(db):
     assert body["status"] == "done"
 
 
+def test_session_active_unique(db):
+    """同用户同题最多一条 active 会话：重复创建复用（resumed）；裸插第二条被拒。"""
+    from sqlalchemy.exc import IntegrityError
+
+    q = add_today_question(db)
+    user = ensure_test_user(db)
+    client = make_client(db, FakeLLM([]))
+    r1 = client.post("/api/sessions", json={"question_id": q.id, "kind": "chain"}).json()
+    r2 = client.post("/api/sessions", json={"question_id": q.id, "kind": "chain"}).json()
+    assert r2["session_id"] == r1["session_id"] and r2["resumed"] is True
+    with pytest.raises(IntegrityError):
+        db.add(Session(question_id=q.id, user_id=user.id, kind=SessionKind.open))
+        db.flush()
+
+
 def test_concurrent_answer_409(db):
+    import time as _time
+
     q = add_today_question(db)
     client = make_client(db, FakeLLM([]))
     session_id = client.post("/api/sessions", json={"question_id": q.id, "kind": "chain"}).json()["session_id"]
-    _inflight.add(session_id)
+    _inflight[session_id] = _time.time()
     assert client.post(f"/api/sessions/{session_id}/answer", json={"answer": "回答内容"}).status_code == 409
-    _inflight.discard(session_id)
+    _inflight.pop(session_id, None)
 
 
 def test_answer_after_finished_409(db):
@@ -1404,13 +1485,15 @@ def test_upload_binary_pdf_failed_friendly_error(monkeypatch, db):
 
 
 def test_friendly_upload_error_kinds():
-    """中文错误包装：LibreOffice/MinerU/超时分类提示，未知异常保留原文。"""
+    """中文错误包装：LibreOffice/MinerU/超时分类提示，未知异常脱敏不透传原文。"""
     from app.web.routes import _friendly_upload_error
 
     assert "LibreOffice" in _friendly_upload_error(RuntimeError("未检测到 LibreOffice"))
     assert "解析器异常" in _friendly_upload_error(RuntimeError("MinerU 解析失败：xx"))
     assert "超时" in _friendly_upload_error(RuntimeError("command timed out"))
-    assert "其他奇怪错误" in _friendly_upload_error(RuntimeError("其他奇怪错误"))
+    generic = _friendly_upload_error(RuntimeError("内部路径 C:\\data\\x 其他奇怪错误"))
+    assert "内部路径" not in generic  # 未知异常不向用户透传原始文本
+    assert "解析失败" in generic
 
 
 def test_upload_parse_serialized(monkeypatch, db):

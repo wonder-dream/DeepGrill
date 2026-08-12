@@ -235,6 +235,9 @@ class UserPick(SQLModel, table=True):
     """每用户选题记录：今日题 = 该用户 picked_at 属今天的记录（每用户池单轨）。"""
 
     __tablename__ = "user_picks"
+    __table_args__ = (
+        UniqueConstraint("user_id", "question_id", name="uq_user_picks"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id", ondelete="CASCADE", index=True)
