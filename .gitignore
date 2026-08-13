@@ -2,13 +2,6 @@
 .venv/
 __pycache__/
 .pytest_cache/
-data/interview.db
-data/repos/
-data/uploads/
-data/backup/
-data/logs/
+data/
 deploy_package.tar.gz
-data/interview.db-shm
-data/interview.db-wal
-data/knowledge/
 shield.md
