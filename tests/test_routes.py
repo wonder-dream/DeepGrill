@@ -1370,6 +1370,24 @@ def test_empty_answer_400(db):
         assert client.post(f"/api/sessions/{session_id}/answer", json={"answer": bad}).status_code == 400
 
 
+def test_answer_schema_rejects_non_string_and_overlong(db):
+    """Pydantic schema：非字符串/超长回答 400（防垃圾进 LLM + 成本上限）。"""
+    q = add_today_question(db)
+    client = make_client(db, FakeLLM([]))
+    session_id = client.post("/api/sessions", json={"question_id": q.id, "kind": "chain"}).json()["session_id"]
+    assert client.post(f"/api/sessions/{session_id}/answer", json={"answer": {"a": 1}}).status_code == 400
+    assert client.post(f"/api/sessions/{session_id}/answer", json={"answer": None}).status_code == 400
+    assert client.post(f"/api/sessions/{session_id}/answer", json={"answer": "长" * 8001}).status_code == 400
+
+
+def test_create_session_schema_400(db):
+    """Pydantic schema：question_id 缺失/非法 → 400。"""
+    q = add_today_question(db)
+    client = make_client(db, FakeLLM([]))
+    assert client.post("/api/sessions", json={"kind": "chain"}).status_code == 400
+    assert client.post("/api/sessions", json={"question_id": "abc", "kind": "chain"}).status_code == 400
+
+
 def test_judge_failure_returns_failed_and_retryable(db):
     q = add_today_question(db)
     llm = FakeLLM([FINISH, LLMError("down"), LLMError("down"), JUDGMENT])

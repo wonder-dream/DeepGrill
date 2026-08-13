@@ -28,6 +28,7 @@ logger = logging.getLogger("crawl_kamacoder")
 BASE = "https://notes.kamacoder.com"
 OUT_DIR = Path("data/knowledge/kamacoder")
 DELAY = 0.5  # 请求间隔（秒），礼貌抓取
+ALLOWED_CATS = ("go", "java", "base", "llm")  # --cat 白名单：防 SSRF/路径穿越（仅本脚本手动运行）
 
 
 def fetch(url: str) -> str:
@@ -110,6 +111,8 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="只抓前 N 页（试水）")
     parser.add_argument("--force", action="store_true", help="覆盖已存在文件")
     args = parser.parse_args()
+    if args.cat not in ALLOWED_CATS:
+        parser.error(f"--cat 仅支持 {'/'.join(ALLOWED_CATS)}（收到 {args.cat!r}）")
 
     cat_dir = OUT_DIR / args.cat
     cat_dir.mkdir(parents=True, exist_ok=True)

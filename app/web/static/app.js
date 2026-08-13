@@ -1533,7 +1533,7 @@ function notifyNewQuestions() {
   if (!("Notification" in window)) return;
   if (Notification.permission === "default") Notification.requestPermission();
   if (Notification.permission === "granted") {
-    new Notification("面试助手", { body: "每日题目已更新，快去练习吧" });
+    new Notification("DeepGrill", { body: "每日题目已更新，快去练习吧" });
   }
 }
 

@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import cast, delete, exists, func, or_, select, String, text
@@ -40,6 +41,7 @@ from ..judge.chain import resume
 from ..parsers import extract_text
 from ..judge.judge import STATUS_FAILED, judge
 from ..pipeline.generate import _clamp_difficulty
+from ..ratelimit import allow as _rl_allow
 from ..ratelimit import check as _rl_check
 from ..ratelimit import fail as _rl_fail
 from ..ratelimit import success as _rl_success
@@ -58,6 +60,7 @@ from ..models import (
     UserPick,
 )
 from ..tags import TAG_CATEGORIES, TAG_VOCABULARY
+from .schemas import AdminQuestionUpdate, AnswerBody, CreateSessionBody, UploadBody
 from . import static_dir
 
 logger = logging.getLogger(__name__)
@@ -247,7 +250,7 @@ def create_app(
     )
 
     app = FastAPI(
-        title="InterviewAssistant",
+        title="DeepGrill",
         # 生产默认禁用 /docs /redoc /openapi.json（公网暴露完整接口结构，降低侦察面）；
         # 本地调试 .env 配 ENABLE_DOCS=1 恢复
         docs_url="/docs" if os.environ.get("ENABLE_DOCS") == "1" else None,
@@ -278,6 +281,40 @@ def create_app(
         else:
             _rl_success(ip)
         return response
+
+    WRITE_LIMIT = 60  # 写接口通用突发限流（次/分钟/用户）：防脚本滥用，正常 UI 操作远低于此
+    LLM_COST_LIMIT = 10  # LLM 成本接口更严（answer/upload/daily）：防刷爆 LLM 配额
+
+    @app.middleware("http")
+    async def write_rate_limit_middleware(request: Request, call_next):
+        """写接口通用限流（防脚本滥用）：按 user_id（未登录按 IP）滑动窗口计数。
+
+        answer/upload/daily 会触发 LLM 调用，单独更严的额度；登录/注册已由
+        auth_rate_limit_middleware 覆盖（失败计数制），此处跳过。
+        """
+        if request.method not in ("POST", "PUT", "DELETE"):
+            return await call_next(request)
+        path = request.url.path
+        if not path.startswith("/api/") or path.startswith("/api/auth/"):
+            return await call_next(request)
+        auth = request.headers.get("authorization", "")
+        user = user_from_token(auth.removeprefix("Bearer ").strip())
+        if user is not None:
+            key = f"u{user.id}"
+        elif request.client is not None:
+            key = f"i{request.client.host}"
+        else:
+            return await call_next(request)
+        is_llm_cost = (
+            path == "/api/daily/run"
+            or (path.startswith("/api/sessions/") and path.endswith("/answer"))
+            or path.startswith("/api/upload")
+        )
+        if not _rl_allow(key, WRITE_LIMIT) or (
+            is_llm_cost and not _rl_allow(key, LLM_COST_LIMIT)
+        ):
+            return JSONResponse(status_code=429, content={"detail": "操作过于频繁，请稍后再试"})
+        return await call_next(request)
 
     # --- 认证：注册 / 登录 / 登出 / 当前用户 ---
 
@@ -414,6 +451,15 @@ def create_app(
         # 不向客户端回显原始异常文本（StorageError 含 SQL/路径，其余可能含内部细节）
         return JSONResponse(status_code=500, content={"error": "服务内部错误，请稍后重试"})
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request, exc: RequestValidationError):
+        """Pydantic 校验失败 → 400 + 中文 detail（保持前端 body.detail 字符串契约）。"""
+        first = exc.errors()[0] if exc.errors() else {}
+        msg = str(first.get("msg", "请求参数无效"))
+        if msg.startswith("Value error, "):
+            msg = msg[len("Value error, ") :]
+        return JSONResponse(status_code=400, content={"detail": msg})
+
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request, exc: Exception):
         logger.exception("unhandled error on %s", request.url)
@@ -538,11 +584,9 @@ def create_app(
     # --- 会话 ---
 
     @app.post("/api/sessions")
-    def create_session(body: dict, user: User = Depends(require_user)):
-        question_id = body.get("question_id")
-        kind = body.get("kind", "chain")
-        if kind not in {k.value for k in SessionKind}:
-            raise HTTPException(status_code=400, detail=f"invalid kind: {kind}")
+    def create_session(body: CreateSessionBody, user: User = Depends(require_user)):
+        question_id = body.question_id
+        kind = body.kind
         with db.get_session() as session:
             if session.get(Question, question_id) is None:
                 raise HTTPException(status_code=404, detail="question not found")
@@ -588,13 +632,11 @@ def create_app(
     @app.post("/api/sessions/{session_id}/answer")
     def submit_answer(
         session_id: int,
-        body: dict,
+        body: AnswerBody,
         background: BackgroundTasks,
         user: User = Depends(require_user),
     ):
-        answer = str(body.get("answer", "")).strip()
-        if len(answer) < 2:
-            raise HTTPException(status_code=400, detail="answer too short")
+        answer = body.answer
         with db.get_session() as session:
             row = session.get(Session, session_id)
             if row is None or row.user_id != user.id:
@@ -1167,37 +1209,26 @@ def create_app(
 
     @app.put("/api/admin/questions/{question_id}")
     def admin_update_question(
-        question_id: int, body: dict, user: User = Depends(require_owner)
+        question_id: int, body: AdminQuestionUpdate, user: User = Depends(require_owner)
     ):
         """管理员修改题目：stem/tags/difficulty/good_criteria/bad_criteria 可改（type 不可改）。"""
+        data = body.model_dump(exclude_unset=True)
         with db.get_session() as session:
             row = session.get(Question, question_id)
             if row is None:
                 raise HTTPException(status_code=404, detail="question not found")
-            if "stem" in body:
-                stem = str(body.get("stem", "")).strip()
-                if len(stem) < 6:
-                    raise HTTPException(status_code=400, detail="题干过短")
-                row.stem = stem
-            if "tags" in body:
-                raw_tags = body.get("tags")
-                if not isinstance(raw_tags, list):
-                    raise HTTPException(status_code=400, detail="tags 必须是列表")
-                valid = [t for t in raw_tags if isinstance(t, str) and t in TAG_VOCABULARY][:5]
+            if "stem" in data:
+                row.stem = data["stem"]
+            if "tags" in data:
+                valid = [t for t in data["tags"] if t in TAG_VOCABULARY][:5]
                 _set_question_tags(session, question_id, valid)
-            if "reviewed" in body:
-                row.reviewed_at = datetime.now() if body["reviewed"] else None
-            if "difficulty" in body:
-                d = body.get("difficulty")
-                if not isinstance(d, int) or not 1 <= d <= 5:
-                    raise HTTPException(status_code=400, detail="难度需为 1-5")
-                row.difficulty = d
+            if "reviewed" in data:
+                row.reviewed_at = datetime.now() if data["reviewed"] else None
+            if "difficulty" in data:
+                row.difficulty = data["difficulty"]
             for field in ("good_criteria", "bad_criteria"):
-                if field in body:
-                    val = body.get(field)
-                    if not isinstance(val, list) or not val:
-                        raise HTTPException(status_code=400, detail=f"{field} 需为非空列表")
-                    setattr(row, field, [str(v) for v in val])
+                if field in data:
+                    setattr(row, field, data[field])
             db.commit(session)
             session.refresh(row)
         _review_paper_clear_cache()  # 讲义素材含题干，改题后失效
@@ -1411,7 +1442,7 @@ def create_app(
             with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.write(tmp_db, "interview.db")
                 meta = {
-                    "app": "InterviewAssistant",
+                    "app": "DeepGrill",
                     "exported_at": datetime.now().isoformat(),
                     "questions": total,
                 }
@@ -1551,12 +1582,12 @@ def create_app(
 
     @app.post("/api/upload")
     def upload_questions(
-        body: dict, background: BackgroundTasks, user: User = Depends(require_owner)
+        body: UploadBody, background: BackgroundTasks, user: User = Depends(require_owner)
     ):
-        filename = str(body.get("filename", ""))
-        content = str(body.get("content", ""))
-        content_base64 = str(body.get("content_base64", ""))
-        up_type = body.get("type", "auto")
+        filename = body.filename
+        content = body.content
+        content_base64 = body.content_base64
+        up_type = body.type
         suffix = Path(filename).suffix.lower()
         if suffix not in {".md", ".txt", ".pdf", ".doc", ".docx"}:
             raise HTTPException(status_code=400, detail="仅支持 .md/.txt/.pdf/.doc/.docx 文件")
@@ -1570,7 +1601,7 @@ def create_app(
             if not data:
                 raise HTTPException(status_code=400, detail="文件内容为空")
             token = _start_binary_upload(
-                filename, data, up_type, body.get("count"), llm_factory, embedder_factory, user.id
+                filename, data, up_type, body.count, llm_factory, embedder_factory, user.id
             )
             return {"mode": "parsing", "token": token}
         if len(content.encode("utf-8")) > 20 * 1024 * 1024:
@@ -1578,7 +1609,7 @@ def create_app(
         if not content.strip():
             raise HTTPException(status_code=400, detail="文件内容为空")
         if up_type == "resume":
-            count = _clamp_resume_count(body.get("count"))
+            count = _clamp_resume_count(body.count)
             source = _import_resume(content)
             token = _start_resume_parse(source.id, count, llm_factory, user.id)
             return {"mode": "resume", "token": token, "source_id": source.id}

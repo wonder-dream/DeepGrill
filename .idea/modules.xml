@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/InterviewAssistant.iml" filepath="$PROJECT_DIR$/.idea/InterviewAssistant.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/DeepGrill.iml" filepath="$PROJECT_DIR$/.idea/DeepGrill.iml" />
     </modules>
   </component>
 </project>

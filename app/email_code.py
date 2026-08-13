@@ -99,11 +99,11 @@ def send_smtp_code(email: str, code: str) -> None:
         raise RuntimeError("SMTP 未配置（SMTP_HOST/SMTP_USER/SMTP_PASS）")
     port = int(os.environ.get("SMTP_PORT", "465"))
     msg = MIMEText(
-        f"【面试助手】你的注册验证码是 {code}，5 分钟内有效。若非本人操作请忽略。",
+        f"【DeepGrill】你的注册验证码是 {code}，5 分钟内有效。若非本人操作请忽略。",
         "plain",
         "utf-8",
     )
-    msg["Subject"] = Header("面试助手注册验证码", "utf-8")
+    msg["Subject"] = Header("DeepGrill 注册验证码", "utf-8")
     msg["From"] = user
     msg["To"] = email
     with smtplib.SMTP_SSL(host, port, timeout=15) as server:

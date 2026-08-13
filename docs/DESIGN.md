@@ -1,4 +1,4 @@
-# 面试助手 Agent — 设计文档
+# DeepGrill — 设计文档
 
 > 状态：设计定稿，实现完成（M1-M14 + Phase 2，251 测试全绿）
 > 更新日期：2026-08-07（收尾同步）
@@ -165,7 +165,7 @@ sources:
 ## 7. 目录结构
 
 ```
-InterviewAssistant/
+DeepGrill/
 ├── config.yaml
 ├── requirements.txt
 ├── .env.example             # 密钥模板（.env 本体 gitignore 排除）

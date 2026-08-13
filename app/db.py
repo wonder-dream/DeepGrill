@@ -150,9 +150,16 @@ def _migrate_users_email(engine: Engine) -> None:
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info('users')")).fetchall()]
         if "email" in cols:
             return
-        # 先清引用 users 的子表（FK 约束），再重建 users
-        for table in ("user_tokens", "user_picks", "user_favorites", "attempts", "judgments", "sessions"):
-            conn.execute(text(f"DELETE FROM {table}"))
+        # 先清引用 users 的子表（FK 约束），再重建 users（表名全部为代码内硬编码常量，非用户输入）
+        for _sql in (
+            "DELETE FROM user_tokens",
+            "DELETE FROM user_picks",
+            "DELETE FROM user_favorites",
+            "DELETE FROM attempts",
+            "DELETE FROM judgments",
+            "DELETE FROM sessions",
+        ):
+            conn.execute(text(_sql))
         conn.execute(text("DROP TABLE users"))
         conn.execute(text(
             "CREATE TABLE users ("
