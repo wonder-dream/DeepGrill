@@ -221,7 +221,12 @@ def test_today_questions_respected_quota_types(db):
     db.add(user)
     commit(db)
     db.refresh(user)
-    # 每用户池按 D8 配额（knowledge 3/design 2/project 1）选取
+    # 流水线生成题默认审核中（不进选题池）；owner 审核通过后按 D8 配额（knowledge 3/design 2/project 1）选取
+    from app.models import Question as _Q
+
+    for q in db.scalars(select(_Q)).all():
+        q.reviewed_at = datetime.now()
+    commit(db)
     picked = []
     for qtype, limit in (
         (QuestionType.knowledge, 3),
@@ -248,7 +253,7 @@ def test_rerun_idempotent(db):
 
 
 def test_picked_questions_flow_through_generation(db):
-    """生成入库后题可被用户按需选中（每用户池）；无 finished 会话的题可被再次选。"""
+    """生成入库后审核通过，题可被用户按需选中（每用户池）；无 finished 会话的题可被再次选。"""
     s = add_source(db)
     llm = FakeLLM([Q1])
     report = run_daily(make_config(), [FakeSource("a", [s])], llm, EMBEDDER)
@@ -263,6 +268,13 @@ def test_picked_questions_flow_through_generation(db):
 
     from app.db import list_today_questions, pick_questions
 
+    # 审核中题目不可选；owner 审核通过后进入选题池
+    assert pick_questions(db, user.id, 5) == []
+    from app.models import Question as _Q
+
+    for q in db.scalars(select(_Q)).all():
+        q.reviewed_at = datetime.now()
+    commit(db)
     picked = pick_questions(db, user.id, 5)
     assert [q.stem for q in picked] == ["讲一下 HashMap 底层原理"]
     assert [q.stem for q in list_today_questions(db, user.id)] == ["讲一下 HashMap 底层原理"]

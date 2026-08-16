@@ -144,6 +144,7 @@ def add_today_question(db, stem="讲一下 HashMap 底层原理", status_today=T
         stem=stem,
         good_criteria=["完整、准确"],
         bad_criteria=["答非所问"],
+        reviewed_at=datetime.now(),  # 测试默认已审核（可见）；审核门禁用例单独构造未审核题
     )
     db.add(q)
     commit(db)
@@ -1835,4 +1836,92 @@ def test_sqlite_busy_timeout_set(db):
 
     with engine().connect() as conn:
         assert conn.execute(_t("PRAGMA busy_timeout")).scalar() == 5000
+
+
+# --- 审核门禁（立即更新爬取的题先进审核队列，审核通过才进题库） ---
+
+
+def _add_pending_question(db, stem="待审核题"):
+    src = Source(type=SourceType.nowcoder, source_hash=f"h-pending-{stem}", cleaned_text="x")
+    db.add(src)
+    commit(db)
+    db.refresh(src)
+    q = Question(
+        source_id=src.id,
+        type=QuestionType.knowledge,
+        stem=stem,
+        good_criteria=["完整"],
+        bad_criteria=["答非所问"],
+        reviewed_at=None,
+    )
+    db.add(q)
+    commit(db)
+    db.refresh(q)
+    return q
+
+
+def test_pending_questions_hidden_until_reviewed(db):
+    """审核门禁：未审核题对普通用户全站不可见；owner 审核通过后可见。"""
+    q = _add_pending_question(db)
+    owner = make_client(db, FakeLLM([]))
+    viewer = make_client(db, FakeLLM([]), user_role="user", username="viewer")
+
+    # 普通用户：题库/今日/统计/详情/开会话/复习 全不可见
+    assert viewer.get("/api/bank").json()["total"] == 0
+    assert viewer.get("/api/today").json() == []
+    assert viewer.get("/api/stats").json()["bank_total"] == 0
+    assert viewer.get(f"/api/questions/{q.id}").status_code == 404
+    assert viewer.post("/api/sessions", json={"question_id": q.id, "kind": "chain"}).status_code == 404
+    assert viewer.get("/api/review", params={"tag": "Java"}).json()["items"] == []
+    # reviewed 过滤参数仅 owner 可用
+    assert viewer.get("/api/bank", params={"reviewed": "0"}).status_code == 403
+
+    # owner：审核队列可见（reviewed=false 标记），已审核/普通列表不含
+    queue = owner.get("/api/bank", params={"reviewed": "0"}).json()
+    assert queue["total"] == 1
+    assert queue["items"][0]["reviewed"] is False
+    assert owner.get("/api/bank", params={"reviewed": "1"}).json()["total"] == 0
+    assert owner.get(f"/api/questions/{q.id}").status_code == 200
+    latest = owner.get("/api/daily/latest").json()
+    assert latest["pending_count"] == 1
+    assert latest["last_run"] is None
+
+    # owner 审核通过（保存）→ 全站可见
+    resp = owner.put(
+        f"/api/admin/questions/{q.id}",
+        json={"reviewed": True, "tags": ["Java"], "difficulty": 2},
+    )
+    assert resp.status_code == 200
+    assert viewer.get("/api/bank").json()["total"] == 1
+    assert viewer.get(f"/api/questions/{q.id}").status_code == 200
+    assert viewer.get("/api/stats").json()["bank_total"] == 1
+    assert owner.get("/api/daily/latest").json()["pending_count"] == 0
+
+    # 已审核题在审核页「已审核」列表可再编辑
+    done = owner.get("/api/bank", params={"reviewed": "1"}).json()
+    assert done["total"] == 1 and done["items"][0]["reviewed"] is True
+
+
+def test_daily_latest_reports_run_and_pending(db):
+    """/api/daily/latest：最近运行报告 + 待审核计数（owner 轮询「立即更新」完成态）。"""
+    from app.pipeline.daily import run_daily
+    from tests.fakes import FakeSource
+
+    src = Source(type=SourceType.nowcoder, source_hash="h-nowcoder-run", cleaned_text="一面：\n问了 HashMap。")
+    db.add(src)
+    commit(db)
+    db.refresh(src)
+    payload = [{
+        "type": "knowledge", "stem": "讲一下 HashMap 底层原理", "tags": ["Java"],
+        "difficulty": 2, "good_criteria": [], "bad_criteria": [],
+    }]
+    report = run_daily(make_config(), [FakeSource("a", [src])], FakeLLM([payload]), FakeEmbedder())
+    assert report["new_questions"] == 1
+
+    client = make_client(db, FakeLLM([]))
+    data = client.get("/api/daily/latest").json()
+    assert data["pending_count"] == 1
+    assert data["last_run"]["status"] == "success"
+    assert data["last_run"]["fetched_count"] == 1
+    assert data["last_run"]["generated_count"] == 1
 

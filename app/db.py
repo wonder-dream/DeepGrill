@@ -51,6 +51,7 @@ def init_db(db_url: str) -> None:
             _migrate_user_picks_unique(_engine)
             _migrate_sessions_active_unique(_engine)
             _migrate_users_email(_engine)
+            _migrate_backfill_reviewed(_engine)
     except SQLAlchemyError as e:
         raise StorageError(f"cannot init database {db_url}: {e}") from e
     _factory = sessionmaker(bind=_engine, class_=DBSession, expire_on_commit=False)
@@ -174,6 +175,34 @@ def _migrate_users_email(engine: Engine) -> None:
             " CONSTRAINT uq_users_email UNIQUE (email))"
         ))
         conn.execute(text("CREATE INDEX ix_users_email ON users (email)"))
+
+
+def _migrate_backfill_reviewed(engine: Engine) -> None:
+    """一次性迁移：存量题目回填为已审核（reviewed_at=created_at）。
+
+    审核门禁上线前，题库所有题目均视为已审核（保持可见）；此后新增题
+    默认 reviewed_at=NULL（审核中），审核通过才可见。
+
+    PRAGMA user_version 作迁移标记（>=1 已迁移，跳过）；回填仅当库内
+    无任何已审核题时执行（P0 修复：避免每次启动批量审批现存待审核队列，
+    也让已运行过门禁的库保留队列原状）。
+    """
+    with engine.begin() as conn:
+        version = conn.execute(text("PRAGMA user_version")).scalar()
+        if version >= 1:
+            return
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info('questions')")).fetchall()]
+        if "reviewed_at" not in cols:
+            conn.execute(text("ALTER TABLE questions ADD COLUMN reviewed_at DATETIME"))
+        has_approved = conn.execute(text(
+            "SELECT 1 FROM questions WHERE reviewed_at IS NOT NULL LIMIT 1"
+        )).fetchone()
+        if has_approved is None:
+            conn.execute(text(
+                "UPDATE questions SET reviewed_at = created_at "
+                "WHERE reviewed_at IS NULL AND created_at IS NOT NULL"
+            ))
+        conn.execute(text("PRAGMA user_version = 1"))
 
 
 @contextmanager
@@ -464,7 +493,10 @@ def pick_questions(
         UserPick.user_id == user_id,
         UserPick.picked_at >= _today_start(),
     )
-    base = select(Question.id).where(Question.id.not_in(picked_today_qids))
+    base = select(Question.id).where(
+        Question.id.not_in(picked_today_qids),
+        Question.reviewed_at.is_not(None),  # 审核中题目不进今日选题池
+    )
     if qtype is not None:
         base = base.where(Question.type == qtype)
     done_qids = select(Session.question_id).where(

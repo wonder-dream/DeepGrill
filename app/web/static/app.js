@@ -314,6 +314,7 @@ async function loadBank() {
     page: state.bankPage,
     page_size: state.bankPageSize,
   });
+  params.set("reviewed", "1"); // 普通题库页只显示已审核题；待审核题仅审核页可见（owner 同规则）
   const typeFilter = $("#filter-bank-type").value;
   const categoryFilter = $("#filter-bank-category").value;
   const difficultyFilter = $("#filter-bank-difficulty").value;
@@ -776,6 +777,7 @@ function renderAnswer() {
   $("#answer-bad").innerHTML = q.bad_criteria.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
   $("#answer-input").value = "";
   $("#answer-status").textContent = "";
+  $("#answer-submit").disabled = false;
 }
 
 async function submitAnswer() {
@@ -1508,19 +1510,37 @@ async function runDaily() {
   btn.disabled = true;
   btn.textContent = "运行中…";
   try {
+    let before = null;
+    try {
+      const latest = await api("/api/daily/latest");
+      before = latest.last_run ? latest.last_run.ran_at : null;
+    } catch (e) { /* 无历史运行记录，等首条报告即可 */ }
     await api("/api/daily/run", { method: "POST" });
-    // 首次同步需真实 LLM 生成题目（可能 10-20 分钟），持续轮询直到有当日题
+    // 流水线需真实 LLM 生成题目（可能 10-20 分钟），轮询运行报告直到本轮完成
+    // （爬取的题进入审核队列，不会出现在今日页，不能按 /api/today 判完成）
     for (let i = 0; i < 240; i++) {
       await sleep(5000);
       btn.textContent = `运行中… ${Math.round(((i + 1) * 5) / 60 * 10) / 10} 分钟`;
-      const items = await api("/api/today");
-      if (items.length) {
+      let data;
+      try {
+        data = await api("/api/daily/latest");
+      } catch (e) {
+        continue;
+      }
+      const run = data.last_run;
+      if (run && run.ran_at !== before) {
+        if (run.status === "success") {
+          uiToast(`已爬取 ${run.fetched_count} 条面经，生成 ${run.generated_count} 题待审核`);
+        } else {
+          uiToast(`流水线完成（${run.status}）：${run.error || "部分步骤失败"}`, run.status !== "success");
+        }
+        notifyNewQuestions(data.pending_count);
+        refreshReviewBadge(data.pending_count);
         await loadToday();
-        notifyNewQuestions();
         return;
       }
     }
-    await loadToday();
+    uiToast("流水线超时，请稍后到审核页查看", true);
   } catch (e) {
     uiToast(e.message, true);
   } finally {
@@ -1529,11 +1549,26 @@ async function runDaily() {
   }
 }
 
-function notifyNewQuestions() {
+function refreshReviewBadge(pendingCount) {
+  const badge = $("#reviewer-badge");
+  if (!badge) return;
+  if (pendingCount === undefined) {
+    api("/api/daily/latest")
+      .then((data) => refreshReviewBadge(data.pending_count))
+      .catch(() => {});
+    return;
+  }
+  badge.textContent = pendingCount;
+  badge.classList.toggle("hidden", !pendingCount);
+}
+
+function notifyNewQuestions(pendingCount) {
   if (!("Notification" in window)) return;
   if (Notification.permission === "default") Notification.requestPermission();
   if (Notification.permission === "granted") {
-    new Notification("DeepGrill", { body: "每日题目已更新，快去练习吧" });
+    new Notification("DeepGrill", {
+      body: pendingCount ? `已生成 ${pendingCount} 道题待审核，去题库审核页处理` : "流水线运行完成",
+    });
   }
 }
 
@@ -2272,6 +2307,7 @@ function applyRoleUI() {
   $("#daily-run").classList.toggle("hidden", !isOwner);
   $("#upload-btn").classList.toggle("hidden", !isOwner);
   $("#reviewer-link").style.display = isOwner ? "flex" : "none";
+  if (isOwner) refreshReviewBadge();
 }
 
 async function initAuth() {

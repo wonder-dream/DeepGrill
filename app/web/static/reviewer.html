@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>题库审核</title>
-  <link rel="stylesheet" href="/static/theme.css?v=2">
-  <link rel="stylesheet" href="/static/reviewer.css?v=2">
+  <link rel="stylesheet" href="/static/theme.css?v=3">
+  <link rel="stylesheet" href="/static/reviewer.css?v=3">
 </head>
 <body>
   <script>
@@ -31,9 +31,9 @@
     </label>
     <label>状态
       <select id="rv-filter-status">
-        <option value="all">全部</option>
+        <option value="todo" selected>待审核</option>
         <option value="done">已审核</option>
-        <option value="todo">未审核</option>
+        <option value="all">全部</option>
       </select>
     </label>
     <input type="search" id="rv-search" placeholder="搜索题干…">
@@ -79,6 +79,6 @@
   </div>
 
   <div id="rv-toast" class="rv-toast hidden"></div>
-  <script src="/static/reviewer.js?v=2"></script>
+  <script src="/static/reviewer.js?v=3"></script>
 </body>
 </html>

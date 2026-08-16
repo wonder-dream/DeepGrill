@@ -241,3 +241,11 @@ def reload_tags() -> None:
 def tag_vocab_text() -> str:
     """词表渲染为 prompt 片段。"""
     return "\n".join(f"- {t}" for t in TAG_VOCABULARY)
+
+
+def category_of_tag(tag: str) -> str:
+    """标签 → 所属分类名（词表内标签唯一归一分）；未命中返回空串。"""
+    for name, tags in TAG_CATEGORIES:
+        if tag in tags:
+            return name
+    return ""

@@ -52,7 +52,13 @@ def add_source(session, source_hash=None, **kw):
 
 def add_question(session, type=QuestionType.knowledge, stem="问题", **kw):
     source = kw.pop("source", None) or add_source(session)
-    question = Question(source_id=source.id, type=type, stem=stem, **kw)
+    question = Question(
+        source_id=source.id,
+        type=type,
+        stem=stem,
+        reviewed_at=kw.pop("reviewed_at", datetime.now()),  # 测试默认已审核（可见）；审核门禁用例传 None
+        **kw,
+    )
     session.add(question)
     commit(session)
     session.refresh(question)
@@ -202,6 +208,39 @@ def test_multiple_active_sessions_coexist(db):
     s2 = add_session(db)
     assert db.get(Session, s1.id).status == SessionStatus.active
     assert db.get(Session, s2.id).status == SessionStatus.active
+
+
+def test_backfill_reviewed_migration(db):
+    """一次性回填迁移（P0 修复）：无已审核证据时存量回填一次并置标记；
+    有证据/已置标记时跳过——待审核队列不被自动审批。"""
+    from app.db import _migrate_backfill_reviewed, engine
+
+    def reset_version():
+        with engine().begin() as conn:
+            conn.execute(text("PRAGMA user_version = 0"))
+
+    # 场景 1：无任何已审核题 → 存量全部回填一次，并置标记
+    add_question(db, stem="存量0", reviewed_at=None)
+    add_question(db, stem="存量1", reviewed_at=None)
+    reset_version()
+    _migrate_backfill_reviewed(engine())
+    db.expire_all()
+    for i in range(2):
+        q = db.scalars(select(Question).where(Question.stem == f"存量{i}")).one()
+        assert q.reviewed_at is not None
+
+    # 场景 2：已存在已审核题（门禁已运行过）→ 待审核队列原样保留
+    reset_version()
+    q_new = add_question(db, stem="新题", reviewed_at=None)
+    _migrate_backfill_reviewed(engine())
+    db.expire_all()
+    assert db.get(Question, q_new.id).reviewed_at is None
+
+    # 场景 3：标记已置（user_version>=1）→ 完全跳过
+    q_new2 = add_question(db, stem="新题2", reviewed_at=None)
+    _migrate_backfill_reviewed(engine())
+    db.expire_all()
+    assert db.get(Question, q_new2.id).reviewed_at is None
 
 
 def test_pick_questions_per_user_pool(db):

@@ -62,6 +62,13 @@ def test_generate_from_source_three_questions(db):
     assert all(q.source_id == source.id for q in questions)
     assert questions[0]._pending_tags == ["Java", "数据结构"]
     assert questions[0].difficulty == 2
+    # 审核建议快照：生成时直接映射（无额外 LLM 调用），供审核页预填
+    assert questions[0].suggested_tags == ["Java", "数据结构"]
+    assert questions[0].suggested_difficulty == 2
+    assert questions[0].suggested_category == "Java"
+    assert questions[0].suggested_at is not None
+    assert questions[1].suggested_category == "通用"
+    assert questions[0].reviewed_at is None  # 生成题默认审核中
 
 
 def test_generate_batches_by_rounds(db):

@@ -492,7 +492,7 @@ def create_app(
             questions = [
                 q
                 for q in (session.get(Question, p.question_id) for p in picks)
-                if q is not None
+                if q is not None and q.reviewed_at is not None  # 审核中题目不展示
             ]
             payload = []
             tag_map = _question_tag_map(session, [q.id for q in questions])
@@ -517,6 +517,8 @@ def create_app(
         with db.get_session() as session:
             q = session.get(Question, question_id)
             if q is None:
+                raise HTTPException(status_code=404, detail="question not found")
+            if user.role != "owner" and q.reviewed_at is None:  # 审核中题目仅 owner 可见
                 raise HTTPException(status_code=404, detail="question not found")
             return {
                 "id": q.id,
@@ -589,6 +591,13 @@ def create_app(
         kind = body.kind
         with db.get_session() as session:
             if session.get(Question, question_id) is None:
+                raise HTTPException(status_code=404, detail="question not found")
+            if user.role != "owner" and (
+                session.scalars(
+                    select(Question.reviewed_at).where(Question.id == question_id)
+                ).one()
+                is None
+            ):
                 raise HTTPException(status_code=404, detail="question not found")
             existing = session.scalars(
                 select(Session)
@@ -807,7 +816,11 @@ def create_app(
         """
         today = datetime.now().date()
         with db.get_session() as session:
-            bank_total = session.scalar(select(func.count()).select_from(Question))
+            bank_total = session.scalar(
+                select(func.count())
+                .select_from(Question)
+                .where(Question.reviewed_at.is_not(None))
+            )
             rows = session.execute(
                 select(
                     func.date(Session.ended_at),
@@ -863,13 +876,22 @@ def create_app(
         difficulty: int | None = None,
         done: str | None = None,
         sort: str | None = None,
+        reviewed: str | None = None,
         user: User = Depends(require_user),
     ):
-        """全部题目分页浏览（id 倒序）；type/category/difficulty/done 筛选；sort 排序；q 关键词搜题干+标签；每项带 done 标志。"""
+        """全部题目分页浏览（id 倒序）；type/category/difficulty/done 筛选；sort 排序；q 关键词搜题干+标签；每项带 done 标志。
+
+        reviewed=0/1 仅 owner 可用（审核页）：0=待审核队列，1=已审核；缺省时非 owner 只见已审核。
+        """
         from ..models import QuestionType as _QT
 
         if page < 1 or not 1 <= page_size <= 50:
             raise HTTPException(status_code=400, detail="invalid page or page_size")
+        is_owner = user.role == "owner"
+        if reviewed is not None and not is_owner:
+            raise HTTPException(status_code=403, detail="permission denied")
+        if reviewed is not None and reviewed not in ("0", "1"):
+            raise HTTPException(status_code=400, detail="invalid reviewed: must be 0 or 1")
         qtype = None
         if type is not None:
             try:
@@ -892,6 +914,10 @@ def create_app(
         with db.get_session() as session:
             # 筛选/排序/分页全部下推 SQL：Python 层全量过滤 2293 行在 GIL 下并发膨胀（单请求 65ms → 10 并发 ~1s）
             filters = []
+            if reviewed == "0":
+                filters.append(Question.reviewed_at.is_(None))  # owner 审核队列
+            elif reviewed == "1" or not is_owner:
+                filters.append(Question.reviewed_at.is_not(None))  # 已审核（非 owner 只能看已审核）
             if qtype is not None:
                 filters.append(Question.type == qtype)
             if difficulty is not None:
@@ -925,7 +951,8 @@ def create_app(
             )
             rows = session.execute(
                 select(
-                    Question.id, Question.stem, Question.type, Question.difficulty
+                    Question.id, Question.stem, Question.type, Question.difficulty,
+                    Question.reviewed_at,
                 )
                 .where(*filters)
                 .order_by(*([order_by] if not isinstance(order_by, tuple) else order_by))
@@ -953,6 +980,7 @@ def create_app(
                     "tags": tag_map.get(q.id, []),
                     "done": q.id in latest,
                     "favorited": q.id in fav_ids,
+                    "reviewed": q.reviewed_at is not None,
                 }
                 for q in rows
             ]
@@ -1679,6 +1707,35 @@ def create_app(
         background.add_task(_run_daily_safe, daily_runner)
         return {"status": "running"}
 
+    @app.get("/api/daily/latest")
+    def daily_latest(user: User = Depends(require_owner)):
+        """最近一次流水线运行报告（TaskLog）+ 当前待审核题数（前端轮询「立即更新」完成态）。"""
+        from ..models import TaskLog
+
+        with db.get_session() as session:
+            log = session.scalars(
+                select(TaskLog).order_by(TaskLog.id.desc()).limit(1)
+            ).first()
+            pending_count = session.scalar(
+                select(func.count())
+                .select_from(Question)
+                .where(Question.reviewed_at.is_(None))
+            )
+        return {
+            "pending_count": pending_count or 0,
+            "last_run": (
+                {
+                    "status": log.status,
+                    "fetched_count": log.fetched_count,
+                    "generated_count": log.generated_count,
+                    "error": log.error,
+                    "ran_at": log.ran_at.isoformat(),
+                }
+                if log is not None
+                else None
+            ),
+        }
+
     return app
 
 
@@ -1976,6 +2033,16 @@ def _insert_direct_questions(content: str) -> tuple[Source, int]:
     return source, len(kept)
 
 
+def _set_suggestions(row: Question, tags: list[str], difficulty: int) -> None:
+    """写入审核建议快照（审核页预填）；不额外调 LLM，直接映射已有标签/难度。"""
+    from ..tags import category_of_tag
+
+    row.suggested_tags = list(tags)
+    row.suggested_difficulty = difficulty
+    row.suggested_category = category_of_tag(tags[0]) if tags else ""
+    row.suggested_at = datetime.now()
+
+
 def _tag_direct_questions(source_id: int, llm_factory) -> None:
     """直接模式后台校验 + 补标签/难度（≤20 题一次调用）：verdict=delete 删除、rewrite 改写题干、keep 仅补标签难度。"""
     try:
@@ -2063,9 +2130,11 @@ def _tag_direct_questions(source_id: int, llm_factory) -> None:
                     row.stem = info["new_stem"]
                     _set_question_tags(session, row.id, info["tags"])
                     row.difficulty = info["difficulty"]
+                    _set_suggestions(row, info["tags"], info["difficulty"])
                 else:
                     _set_question_tags(session, row.id, info["tags"])
                     row.difficulty = info["difficulty"]
+                    _set_suggestions(row, info["tags"], info["difficulty"])
             db.commit(session)
     except Exception as e:
         logger.warning("tag direct questions failed (留空): %s", e)
@@ -2238,6 +2307,12 @@ def _confirm_project_questions(source_id: int, items: list[dict], embedder_facto
             )
             for i in valid
         ]
+        for q, i in zip(questions, valid):
+            tags = [
+                t for t in (i.get("tags") or [])
+                if isinstance(t, str) and t in TAG_VOCABULARY
+            ][:5]
+            _set_suggestions(q, tags, q.difficulty)
         kept = dedup(questions, pool, embedder_factory())
         with db.get_session() as session:
             session.add_all(kept)
@@ -2389,7 +2464,7 @@ def _review_questions(session, tag: str, limit: int = 30):
     questions = list(
         session.scalars(
             select(Question)
-            .where(_tags_exists(tag))
+            .where(_tags_exists(tag), Question.reviewed_at.is_not(None))
             .order_by(Question.created_at.desc())
             .limit(limit)
         )
@@ -2405,7 +2480,7 @@ def _review_questions(session, tag: str, limit: int = 30):
     questions = list(
         session.scalars(
             select(Question)
-            .where(or_(*(_tags_exists(t) for t in cat_tags)))
+            .where(or_(*(_tags_exists(t) for t in cat_tags)), Question.reviewed_at.is_not(None))
             .order_by(Question.created_at.desc())
             .limit(limit)
         )

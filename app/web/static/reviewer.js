@@ -1,6 +1,7 @@
 ﻿"use strict";
 
-// 题库人工审核页：AI 参考（现有标签快照）+ 人工编辑 + 采用建议 + 批量操作 + 进度
+// 题库人工审核页：AI 参考（生成侧建议快照）+ 人工编辑 + 采用建议 + 批量操作 + 进度
+// 审核状态存 DB（reviewed_at）：审核中题目仅审核页可见，保存（reviewed:true）后进入题库
 const state = {
   token: localStorage.getItem("token") || null,
   page: 1,
@@ -9,7 +10,6 @@ const state = {
   questions: [],
   categories: [],
   tags: [],
-  reviewed: new Set(JSON.parse(localStorage.getItem("rv_reviewed") || "[]")),
 };
 
 const $ = (s) => document.querySelector(s);
@@ -69,10 +69,6 @@ async function loadTags() {
   }
 }
 
-function reviewedOf(q) {
-  return state.reviewed.has(q.id);
-}
-
 async function loadQuestions() {
   const params = new URLSearchParams({
     page: state.page,
@@ -81,40 +77,43 @@ async function loadQuestions() {
   const cat = $("#rv-filter-cat").value;
   const diff = $("#rv-filter-diff").value;
   const kw = $("#rv-search").value.trim();
+  const status = $("#rv-filter-status").value;
   if (cat !== "all") params.set("category", cat);
   if (diff !== "all") params.set("difficulty", diff);
   if (kw) params.set("q", kw);
+  // 审核状态过滤走服务端（DB reviewed_at）：todo=待审核队列，done=已审核
+  if (status !== "all") params.set("reviewed", status === "done" ? "1" : "0");
   const data = await api(`/api/bank?${params}`);
   state.totalPages = Math.max(1, data.total_pages);
-  // 已审/未审：当前页前端过滤（进度存本地）
-  const status = $("#rv-filter-status").value;
-  let items = data.items;
-  if (status === "done") items = items.filter((i) => reviewedOf(i));
-  if (status === "todo") items = items.filter((i) => !reviewedOf(i));
-  // 拉取建议与已审状态
-  const ids = items.map((i) => i.id).join(",");
+  // 拉取建议快照
+  const ids = data.items.map((i) => i.id).join(",");
   const sugg = ids ? await api(`/api/review/suggestions?ids=${ids}`) : {};
-  renderList(items, sugg.suggestions || {});
+  renderList(data.items, sugg.suggestions || {});
   updatePager(data);
-  updateProgress();
+  updateProgress(data.total);
 }
 
 function renderList(items, suggestions) {
   const list = $("#rv-list");
   list.innerHTML = "";
   for (const q of items) {
-    const s = suggestions[q.id] || { suggested_tags: [], suggested_difficulty: 1, suggested_category: "" };
+    const s = suggestions[q.id] || {};
+    const tagPrefill = (s.suggested_tags && s.suggested_tags.length)
+      ? s.suggested_tags
+      : (q.tags || []);
+    const diffPrefill = s.suggested_difficulty || q.difficulty || 1;
+    const catPrefill = s.suggested_category || categoryOfFirst(tagPrefill);
     const card = document.createElement("div");
-    card.className = "card rv-card" + (reviewedOf(q) ? " rv-reviewed" : "");
+    card.className = "card rv-card" + (q.reviewed ? " rv-reviewed" : "");
     card.innerHTML = `
       <div class="rv-card-head">
         <input type="checkbox" class="rv-check" data-id="${q.id}">
         <span class="rv-id">#${q.id}</span>
         <span class="badge">${q.type}</span>
-        <span class="badge">${reviewedOf(q) ? "已审核" : "未审核"}</span>
+        <span class="badge">${q.reviewed ? "已审核" : "审核中"}</span>
       </div>
       <p class="rv-stem">${escapeHtml(q.stem)}</p>
-      <div class="rv-ref">AI 建议：${escapeHtml(s.suggested_category || "—")} ｜ ${(s.suggested_tags || []).map(escapeHtml).join("、") || "无"} ｜ 难度 ${"★".repeat(Math.max(1, Math.min(5, s.suggested_difficulty || 1)))}</div>
+      <div class="rv-ref">AI 建议：${escapeHtml(catPrefill || "—")} ｜ ${tagPrefill.map(escapeHtml).join("、") || "无"} ｜ 难度 ${"★".repeat(Math.max(1, Math.min(5, diffPrefill || 1)))}</div>
       <div class="rv-edit">
         <label>分类 <select class="rv-cat" data-id="${q.id}"></select></label>
         <label>标签 <input class="rv-tags-in" data-id="${q.id}" placeholder="逗号分隔，可自定义"></label>
@@ -122,15 +121,25 @@ function renderList(items, suggestions) {
           ${[1,2,3,4,5].map(d => `<option value="${d}">${"★".repeat(d)}</option>`).join("")}
         </select></label>
         <button class="rv-use-sugg" data-id="${q.id}">采用AI建议</button>
-        <button class="rv-save" data-id="${q.id}">保存</button>
+        <button class="rv-save" data-id="${q.id}">${q.reviewed ? "保存" : "通过审核"}</button>
+        ${q.reviewed ? `<button class="rv-unreview" data-id="${q.id}">标记为待审核</button>` : ""}
         <button class="rv-del rv-danger" data-id="${q.id}">删除</button>
       </div>`;
     list.appendChild(card);
-    fillCatSelect(card.querySelector(".rv-cat"), s.suggested_category);
-    card.querySelector(".rv-tags-in").value = (s.suggested_tags || []).join(", ");
-    card.querySelector(".rv-diff").value = String(s.suggested_difficulty || 1);
+    fillCatSelect(card.querySelector(".rv-cat"), catPrefill);
+    card.querySelector(".rv-tags-in").value = tagPrefill.join(", ");
+    card.querySelector(".rv-diff").value = String(diffPrefill);
   }
   bindCardEvents();
+}
+
+function categoryOfFirst(tags) {
+  for (const c of state.categories) {
+    for (const t of tags) {
+      if ((c.tags || []).includes(t)) return c.name;
+    }
+  }
+  return "";
 }
 
 function fillCatSelect(sel, selected) {
@@ -167,8 +176,25 @@ function bindCardEvents() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ tags: saveTags, difficulty, reviewed: true }),
         });
-        markReviewed(id);
         toast("已保存 #" + id);
+        loadQuestions(); // 通过审核后离开待审核队列
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+  });
+  document.querySelectorAll(".rv-unreview").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = Number(btn.dataset.id);
+      if (!(await uiConfirm(`标记题目 #${id} 为待审核？将从题库隐藏，回到审核队列。`))) return;
+      try {
+        await api(`/api/admin/questions/${id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reviewed: false }),
+        });
+        toast("已标记 #" + id + " 为待审核");
+        loadQuestions();
       } catch (e) {
         toast(e.message, true);
       }
@@ -189,17 +215,9 @@ function bindCardEvents() {
   });
 }
 
-function markReviewed(id) {
-  state.reviewed.add(id);
-  localStorage.setItem("rv_reviewed", JSON.stringify([...state.reviewed]));
-  const card = document.querySelector(`.rv-card .rv-save[data-id="${id}"]`);
-  if (card) card.closest(".rv-card").classList.add("rv-reviewed");
-  updateProgress();
-}
-
-function updateProgress() {
-  const total = state.totalPages ? state.totalPages * state.pageSize : 0;
-  $("#rv-progress").textContent = `已审 ${state.reviewed.size} 题 / 题库 ${total} 题`;
+function updateProgress(total) {
+  const label = { todo: "待审核", done: "已审核", all: "全部" }[$("#rv-filter-status").value] || "全部";
+  $("#rv-progress").textContent = `${label} ${total} 题`;
 }
 
 function updatePager(data) {
@@ -240,7 +258,6 @@ $("#rv-batch-apply").addEventListener("click", async () => {
     const tags = card.querySelector(".rv-tags-in").value.split(/[,，]/).map(t => t.trim()).filter(Boolean).slice(0, 5);
     const difficulty = Number(card.querySelector(".rv-diff").value);
     await api(`/api/admin/questions/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tags, difficulty, reviewed: true }) });
-    markReviewed(id);
   }
   toast(`已批量采用并保存 ${ids.length} 题`);
   loadQuestions();
@@ -254,7 +271,6 @@ $("#rv-batch-save").addEventListener("click", async () => {
     const tags = card.querySelector(".rv-tags-in").value.split(/[,，]/).map(t => t.trim()).filter(Boolean).slice(0, 5);
     const difficulty = Number(card.querySelector(".rv-diff").value);
     await api(`/api/admin/questions/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tags, difficulty, reviewed: true }) });
-    markReviewed(id);
   }
   toast(`已批量保存 ${ids.length} 题`);
   loadQuestions();
@@ -268,7 +284,6 @@ $("#rv-batch-delete").addEventListener("click", async () => {
   for (const id of ids) {
     try {
       await api(`/api/admin/questions/${id}`, { method: "DELETE" });
-      state.reviewed.add(id);
       ok += 1;
     } catch (e) {
       toast(`#${id} 删除失败：${e.message}`, true);

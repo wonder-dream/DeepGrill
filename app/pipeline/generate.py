@@ -3,11 +3,12 @@
 仅生成并校验，不落库——由 M12 去重（M9）后统一入库，保证 D16 计数与去重语义正确。
 """
 import logging
+from datetime import datetime
 
 from ..difficulty import DIFFICULTY_SCALE_TEXT
 from ..errors import GenerationError, LLMError, LLMJsonError
 from ..models import Question, QuestionType, Source
-from ..tags import MAX_TAGS, TAG_VOCABULARY, tag_vocab_text
+from ..tags import MAX_TAGS, TAG_VOCABULARY, category_of_tag, tag_vocab_text
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,11 @@ def _validate_questions(
             ),
         )
         q._pending_tags = tags  # 非持久属性：入库后由调用方写入 question_tags 关联
+        # 审核建议快照（人工审核页预填；无额外 LLM 调用，直接映射生成结果）
+        q.suggested_tags = list(tags)
+        q.suggested_difficulty = q.difficulty
+        q.suggested_category = category_of_tag(tags[0]) if tags else ""
+        q.suggested_at = datetime.now()
         questions.append(q)
     return questions
 

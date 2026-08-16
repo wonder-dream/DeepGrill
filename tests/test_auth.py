@@ -296,7 +296,8 @@ def _add_question(db, stem):
     commit(db)
     db.refresh(src)
     q = Question(source_id=src.id, type=QuestionType.knowledge, stem=stem,
-                 tags=["Java"], good_criteria=["完整"], bad_criteria=["答非所问"])
+                 tags=["Java"], good_criteria=["完整"], bad_criteria=["答非所问"],
+                 reviewed_at=datetime.now())  # 测试默认已审核（可见）
     db.add(q)
     commit(db)
     db.refresh(q)
