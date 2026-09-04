@@ -57,6 +57,6 @@ DailyReport = {
 
 ## 7. 实现提示
 
-- 采集源注册表：`default_sources(config) -> list[SourceProvider]`（nowcoder/github/importer/social 占位），测试注入替换
+- 采集源注册表：`default_sources(config) -> list[SourceProvider]`（importer 固定；github 有仓库才注册；nowcoder 仅 `sources.nowcoder_enabled=True` 才注册，默认关闭用于生产/公开，本地个人学习可显式开启），测试注入替换
 - 阶段函数独立：`_collect / _generate / _dedup / _pick_today`，各自可单测
 - 报告结构稳定后即为 M13 与 Web 手动触发的返回体

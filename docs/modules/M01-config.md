@@ -22,7 +22,7 @@ class AppConfig(BaseModel):
     daily: DailyConfig      # max_new_questions, knowledge_limit, design_limit,
                             # project_limit, chain_max_rounds, schedule
     notification: NotificationConfig  # enabled
-    sources: SourcesConfig  # github_repos: list[str]
+    sources: SourcesConfig  # github_repos: list[str]; nowcoder_enabled: bool(默认 False)
 ```
 
 ## 3. 关键决策

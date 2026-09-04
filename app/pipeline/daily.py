@@ -48,11 +48,15 @@ class SourceProvider:
 
 
 def default_sources(config: AppConfig) -> list[SourceProvider]:
-    """默认源注册表：手动导入 + 牛客 + GitHub（配置了仓库才启用）。"""
+    """默认源注册表：手动导入 + GitHub（配置了仓库才启用）+ 可选牛客。
+
+    牛客默认不注册（sources.nowcoder_enabled=False），需要本地个人采集时显式开启。
+    """
     providers = [SourceProvider("importer", lambda: importer.collect())]
-    providers.append(
-        SourceProvider("nowcoder", lambda: nowcoder.collect(config.nowcoder))
-    )
+    if config.sources.nowcoder_enabled:
+        providers.append(
+            SourceProvider("nowcoder", lambda: nowcoder.collect(config.nowcoder))
+        )
     if config.sources.github_repos:
         providers.append(
             SourceProvider(

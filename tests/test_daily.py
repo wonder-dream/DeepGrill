@@ -51,7 +51,7 @@ Q2 = [
 ]
 
 
-def make_config(daily_overrides=None, github_repos=None):
+def make_config(daily_overrides=None, github_repos=None, nowcoder_enabled=False):
     daily_defaults = dict(
         max_new_questions=36,
         knowledge_limit=3,
@@ -69,7 +69,10 @@ def make_config(daily_overrides=None, github_repos=None):
         nowcoder=NowcoderConfig(cookie_env="NOWCODER_COOKIE", request_interval=0, retries=1),
         daily=DailyConfig(**daily_defaults),
         notification=NotificationConfig(enabled=False),
-        sources=SourcesConfig(github_repos=github_repos or []),
+        sources=SourcesConfig(
+            github_repos=github_repos or [],
+            nowcoder_enabled=nowcoder_enabled,
+        ),
     )
 
 
@@ -114,8 +117,13 @@ def test_happy_full_flow(db):
 def test_default_sources_registry():
     names = [p.name for p in default_sources(make_config())]
     assert "importer" in names
-    assert "nowcoder" in names
+    # 生产/公开默认不注册牛客，避免账号 Cookie + 私有 API 进入公开流水线
+    assert "nowcoder" not in names
     assert "github" not in names  # 未配置仓库不启用
+
+    # 显式开启牛客：仅本地个人学习场景使用
+    names = [p.name for p in default_sources(make_config(nowcoder_enabled=True))]
+    assert "nowcoder" in names
 
     names = [p.name for p in default_sources(make_config(github_repos=["a/b"]))]
     assert "github" in names

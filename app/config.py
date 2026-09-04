@@ -47,6 +47,8 @@ class SMTPConfig(_FrozenModel):
 
 class SourcesConfig(_FrozenModel):
     github_repos: list[str] = []
+    # 牛客采集源开关：公开/生产默认关闭，仅本地个人学习场景显式开启
+    nowcoder_enabled: bool = False
 
 
 class AppConfig(BaseModel):

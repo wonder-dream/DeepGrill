@@ -27,7 +27,7 @@ VALID_YAML = {
         "schedule": "08:00",
     },
     "notification": {"enabled": True},
-    "sources": {"github_repos": ["a/b"]},
+    "sources": {"github_repos": ["a/b"], "nowcoder_enabled": True},
 }
 
 
@@ -65,6 +65,7 @@ def test_full_config_maps_correctly(tmp_path, env):
     assert cfg.daily.schedule == "08:00"
     assert cfg.notification.enabled is True
     assert cfg.sources.github_repos == ["a/b"]
+    assert cfg.sources.nowcoder_enabled is True
 
 
 def test_secrets_read_from_dotenv_file(tmp_path, monkeypatch):
@@ -98,6 +99,7 @@ def test_optional_fields_use_defaults(tmp_path, env):
     assert cfg.daily.schedule == "08:00"
     assert cfg.notification.enabled is True
     assert cfg.sources.github_repos == []
+    assert cfg.sources.nowcoder_enabled is False
 
 
 def test_extra_fields_ignored(tmp_path, env):
