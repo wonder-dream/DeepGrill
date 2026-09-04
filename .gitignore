@@ -3,6 +3,8 @@
 __pycache__/
 .pytest_cache/
 .pytest_tmp/
+rt_*/
+.idea/
 data/
 deploy_package.tar.gz
 interview_backup_*.zip
