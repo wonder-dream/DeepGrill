@@ -28,7 +28,7 @@ M7 github ───────────────────► M10 judge
 | E2 | 检索（Phase 2 §9.3） | `app/retrieval.py` | ~140 行 | E1 + numpy |
 | M4 | 清洗 | `app/pipeline/clean.py` | ~150 行 | BeautifulSoup4 |
 | M5 | 面经/简历导入 | `app/crawler/importer.py` | ~150 行 | 标准库 |
-| M6 | 牛客爬虫 | `app/crawler/nowcoder.py` | ~250 行 | httpx |
+| M6 | 牛客采集（仅本地，默认关闭） | `app/crawler/nowcoder.py` | ~250 行 | httpx |
 | M7 | GitHub 面经源 | `app/crawler/github.py` | ~200 行 | subprocess git |
 | M8 | 题目生成 | `app/pipeline/generate.py` | ~250 行 | M3, M2 |
 | M9 | 去重 | `app/pipeline/dedup.py` | ~120 行 | E1 + numpy |
@@ -81,7 +81,7 @@ M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 → M10 → M11 → M
 
 **接口**：
 - `load_config(path: Path) -> AppConfig`
-- `AppConfig`：`llm(base_url, api_key_env, generate_model, judge_model)`、`nowcoder(cookie_env, request_interval, retries)`、`daily(max_new_questions, knowledge_limit, design_limit, project_limit, chain_max_rounds, schedule)`、`notification(enabled)`、`sources(github_repos)`
+- `AppConfig`：`llm(base_url, api_key_env, generate_model, judge_model)`、`nowcoder(cookie_env, request_interval, retries)`、`daily(max_new_questions, knowledge_limit, design_limit, project_limit, chain_max_rounds, schedule)`、`notification(enabled)`、`sources(github_repos, nowcoder_enabled)`
 
 **关键决策**：
 - 密钥（API key/cookie）仅声明环境变量名；`load_config` 先加载 config.yaml 同目录 `.env`（python-dotenv，gitignore 排除），真实环境变量优先、`.env` 兜底；不落配置文件
@@ -205,9 +205,9 @@ M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 → M10 → M11 → M
 
 ---
 
-### M6 牛客爬虫 `app/crawler/nowcoder.py`
+### M6 牛客采集（仅本地个人学习，默认关闭） `app/crawler/nowcoder.py`
 
-**职责**：拉取面经列表（分页）→ 详情 → 清洗 → 入库；cookie 鉴权、限速、重试。
+**职责**：本地个人学习场景下拉取面经列表（分页）→ 清洗 → 入库；cookie 鉴权、限速、重试。仅 `sources.nowcoder_enabled=true` 时注册，默认关闭，不进入公开/生产流水线。
 
 **接口**：
 - `collect() -> list[Source]`
@@ -218,6 +218,7 @@ M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 → M10 → M11 → M
 - 解析与 HTTP 分离：解析函数纯函数，用 fixture HTML 单测；HTTP 层用 `httpx.MockTransport` 测限速/重试
 - 限速：请求间随机间隔（config.request_interval 基准 ±30%）
 - 登录态失效（401/指定响应特征）→ 记录日志并停用本日牛客源（不重试、不提示重登）
+- 默认关闭：`default_sources()` 仅在 `sources.nowcoder_enabled=true` 时创建牛客源
 
 **测试计划**：
 - 解析层（fixture HTML）：happy（正常列表页→条目、详情页→正文标题）、edge（空列表页、字段缺失容错）、fail（验证码页、登录失效页、改版后结构变化抛 NowcoderError 但消息可读）
@@ -227,7 +228,7 @@ M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 → M10 → M11 → M
 **选型**：`httpx`（sync Client）。
 - 优：`MockTransport` 测试基建成熟（离网跑测试是硬要求）、超时/限速控制粒度细、与 openai SDK 共用 http 栈
 - 缺：async 心智成本（本项目用 sync 模式规避）
-- 理由：requests 无 MockTransport 等价物；实现参考 `agent-interview-hub/scripts/collect_interviews.py` 的接口结构
+- 理由：requests 无 MockTransport 等价物；本模块仅限本地个人学习使用
 
 ---
 

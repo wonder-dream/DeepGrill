@@ -4,7 +4,7 @@ llm:
   generate_model: deepseek-chat
   judge_model: deepseek-reasoner  # 可配更强模型
 nowcoder:
-  cookie_env: NOWCODER_COOKIE     # 浏览器 DevTools 复制, gitignore 排除
+  cookie_env: NOWCODER_COOKIE     # 仅本地个人牛客源使用, gitignore 排除
   request_interval: 1.5           # 秒
   retries: 3
 daily:

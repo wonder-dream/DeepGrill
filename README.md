@@ -1,6 +1,6 @@
 # DeepGrill
 
-把"看面经"升级为"模拟被问 + 获得判分反馈"的个人求职准备工具：每天自动从牛客/GitHub 面经仓库采集最新面经，基于面经生成面试题，向你提问，答案由 LLM 按面试官标准四维判分并给出可行动的反馈。
+把"看面经"升级为"模拟被问 + 获得判分反馈"的个人求职准备工具：从 GitHub 面经仓库 / 手动导入（牛客仅本地个人可选）生成面试题，向你提问，答案由 LLM 按面试官标准四维判分并给出可行动的反馈。
 
 求职方向：**LLM 应用开发 / Agent 开发**。
 
@@ -23,7 +23,7 @@ uv pip install torch --index-url https://download.pytorch.org/whl/cu124
 cp config.yaml 配置到你的实际值（可选）
 # 密钥写入 .env（不落 git）：
 # LLM_API_KEY=sk-xxx
-# NOWCODER_COOKIE=浏览器 DevTools 复制
+# NOWCODER_COOKIE=仅本地个人牛客采集（可选，默认关闭）
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -40,7 +40,7 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 | ![题库](docs/screenshots/04-bank.png) | ![薄弱点复习](docs/screenshots/03-review.png) |
 
 > 首次「立即更新」会 clone 面经仓库 + 用 LLM 生成 36 道题，耗时 10-20 分钟（一次性成本）；之后每日增量运行很快。
-> 牛客源需 .env 中配置有效 `NOWCODER_COOKIE`（登录后 F12 复制），cookie 过期会自动安静停用该源，GitHub 源与手动导入不受影响（详见 docs/modules/M06-nowcoder.md）。
+> 牛客采集**仅限本地个人学习，默认关闭**（`config.yaml` 中 `sources.nowcoder_enabled: false`）。本地如需启用，改为 `true` 并在 `.env` 配置有效 `NOWCODER_COOKIE`；cookie 过期会自动安静停用该源，GitHub 源与手动导入不受影响（详见 docs/modules/M06-nowcoder.md）。公开/生产部署请保持关闭。
 
 手动导入面经/简历：
 
@@ -61,9 +61,9 @@ uv run pytest
 
 ```
 ┌─ 数据采集层 ────┐   ┌─ 生成层 ─────┐   ┌─ 交互层 ────┐   ┌─ 判分层 ────┐
-│ nowcoder 爬虫   │   │ 清洗/规范化   │   │ 今日题目列表 │   │ 四维判分     │
-│ github 仓库拉取  │ → │ 哈希+LLM去重  │ → │ 答题页(追问链)│ → │ 参考答案生成  │
-│ 手动导入 CLI    │   │ 题目生成(LLM) │   │ 历史/判分展示 │   │ 薄弱点标签提取 │
+│ GitHub 仓库拉取  │   │ 清洗/规范化   │   │ 今日题目列表 │   │ 四维判分     │
+│ 手动导入/用户提交│ → │ 哈希+LLM去重  │ → │ 答题页(追问链)│ → │ 参考答案生成  │
+│ 牛客(本地可选)  │   │ 题目生成(LLM) │   │ 历史/判分展示 │   │ 薄弱点标签提取 │
 └───────┬────────┘   └──────┬───────┘   └──────┬─────┘   └──────┬──────┘
         └─────────────────── SQLite (SQLModel) ────────────────┘
 ```
@@ -130,4 +130,4 @@ docs/                  # DESIGN / MODULES / 模块设计 / 方案 / 审查与修
 
 - API key / cookie 一律走 `.env`（gitignore 排除），配置只声明变量名
 - 服务只绑 127.0.0.1
-- 牛客源：随机间隔限速 + 重试退避 + 登录态失效安静停用
+- 牛客源（仅本地个人，默认关闭）：随机间隔限速 + 重试退避 + 登录态失效安静停用
