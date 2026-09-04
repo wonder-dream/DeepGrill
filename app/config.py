@@ -3,9 +3,20 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from .errors import ConfigError, EnvVarMissing
+
+# GitHub 源默认许可白名单：允许存储/改写/再分发的宽松许可
+DEFAULT_ALLOWED_LICENSES = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unlicense",
+    "CC0-1.0",
+]
 
 
 class _FrozenModel(BaseModel):
@@ -45,10 +56,37 @@ class SMTPConfig(_FrozenModel):
     pass_env: str = "SMTP_PASS"
 
 
+class GitHubRepo(_FrozenModel):
+    """单个 GitHub 源配置：repo 必填；expected_license/manual_license 可选。"""
+
+    repo: str
+    expected_license: str | None = None
+    manual_license: str | None = None
+
+
 class SourcesConfig(_FrozenModel):
-    github_repos: list[str] = []
+    # github_repos 支持字符串简写（"owner/repo"）或对象（GitHubRepo）；validator 归一化
+    github_repos: list[GitHubRepo] = []
+    github_require_license: bool = True
+    github_allowed_licenses: list[str] = DEFAULT_ALLOWED_LICENSES
     # 牛客采集源开关：公开/生产默认关闭，仅本地个人学习场景显式开启
     nowcoder_enabled: bool = False
+
+    @field_validator("github_repos", mode="before")
+    @classmethod
+    def _coerce_github_repos(cls, v):
+        """兼容旧配置：纯字符串 "owner/repo" 归一化为 GitHubRepo 对象。"""
+        if v is None:
+            return []
+        out = []
+        for item in v:
+            if isinstance(item, str):
+                out.append({"repo": item})
+            elif isinstance(item, dict):
+                out.append(item)
+            else:
+                raise ValueError(f"invalid github_repos item: {item!r}")
+        return out
 
 
 class AppConfig(BaseModel):

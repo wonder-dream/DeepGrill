@@ -64,8 +64,44 @@ def test_full_config_maps_correctly(tmp_path, env):
     assert cfg.daily.chain_max_rounds == 20
     assert cfg.daily.schedule == "08:00"
     assert cfg.notification.enabled is True
-    assert cfg.sources.github_repos == ["a/b"]
+    assert [r.repo for r in cfg.sources.github_repos] == ["a/b"]
+    assert cfg.sources.github_repos[0].manual_license is None
+    assert cfg.sources.github_repos[0].expected_license is None
     assert cfg.sources.nowcoder_enabled is True
+
+
+def test_sources_license_policy_and_object_form(tmp_path, env):
+    data = {
+        **VALID_YAML,
+        "sources": {
+            "nowcoder_enabled": False,
+            "github_require_license": True,
+            "github_allowed_licenses": ["MIT", "Apache-2.0"],
+            "github_repos": [
+                "owner/plain",
+                {"repo": "owner/manual", "manual_license": "with-author-permission"},
+                {"repo": "owner/expected", "expected_license": "Apache-2.0"},
+            ],
+        },
+    }
+    cfg = load_config(write_yaml(tmp_path, data))
+
+    assert cfg.sources.github_require_license is True
+    assert cfg.sources.github_allowed_licenses == ["MIT", "Apache-2.0"]
+    assert [r.repo for r in cfg.sources.github_repos] == [
+        "owner/plain",
+        "owner/manual",
+        "owner/expected",
+    ]
+    assert cfg.sources.github_repos[1].manual_license == "with-author-permission"
+    assert cfg.sources.github_repos[2].expected_license == "Apache-2.0"
+
+
+def test_github_require_license_defaults_true(tmp_path, env):
+    data = {**VALID_YAML, "sources": {"github_repos": ["a/b"]}}
+    cfg = load_config(write_yaml(tmp_path, data))
+    assert cfg.sources.github_require_license is True
+    assert "MIT" in cfg.sources.github_allowed_licenses
 
 
 def test_secrets_read_from_dotenv_file(tmp_path, monkeypatch):

@@ -61,7 +61,12 @@ def default_sources(config: AppConfig) -> list[SourceProvider]:
         providers.append(
             SourceProvider(
                 "github",
-                lambda: github.collect(config.sources.github_repos, GITHUB_CACHE_DIR),
+                lambda: github.collect(
+                    config.sources.github_repos,
+                    GITHUB_CACHE_DIR,
+                    require_license=config.sources.github_require_license,
+                    allowed_licenses=config.sources.github_allowed_licenses,
+                ),
             )
         )
     return providers

@@ -12,6 +12,7 @@ from ..db import commit, find_source_by_hash, get_session
 from ..errors import DuplicateSource, GitHubError
 from ..models import Source, SourceType
 from ..pipeline.clean import clean_text
+from . import license as license_mod
 
 logger = logging.getLogger(__name__)
 
@@ -21,18 +22,47 @@ MAX_FILE_SIZE = 1_000_000
 _GIT_TIMEOUT = 120
 
 
-def collect(repos: list[str], cache_dir: Path) -> list[Source]:
-    """本日增量采集：逐仓库 clone/pull + 逐文件入库；单仓库/单文件失败隔离。"""
+def collect(
+    repos: list,
+    cache_dir: Path,
+    *,
+    require_license: bool = False,
+    allowed_licenses: list[str] | None = None,
+) -> list[Source]:
+    """本日增量采集：逐仓库 clone/pull + 逐文件入库；单仓库/单文件失败隔离。
+
+    repos 元素可为字符串 "owner/repo" 或带 repo/expected_license/manual_license 的配置对象。
+    require_license=True 时，无许可或不在 allowed_licenses 白名单的仓库整仓跳过。
+    """
     if shutil.which("git") is None:
         logger.warning("git not found; skipping github source")
         return []
     sources: list[Source] = []
     for repo in repos:
+        repo_name = _repo_name(repo)
         try:
-            repo_path = _ensure_repo(repo, cache_dir)
-            sources.extend(_import_repo(repo, repo_path))
+            repo_path = _ensure_repo(repo_name, cache_dir)
+            ok, license_id = _resolve_repo_license(
+                repo,
+                repo_path,
+                require_license=require_license,
+                allowed_licenses=allowed_licenses,
+            )
+            if not ok:
+                logger.warning("github repo %s skipped: no allowed license", repo_name)
+                continue
+            owner = repo_name.split("/")[0] if "/" in repo_name else repo_name
+            sources.extend(
+                _import_repo(
+                    repo_name,
+                    repo_path,
+                    license_id=license_id,
+                    author=owner,
+                    repo_url=f"{CLONE_BASE}/{repo_name}",
+                )
+            )
         except GitHubError as e:
-            logger.warning("github repo %s skipped: %s", repo, e)
+            logger.warning("github repo %s skipped: %s", repo_name, e)
     return sources
 
 
@@ -47,6 +77,39 @@ def ensure_repos(repos: list[str], cache_dir: Path) -> list[Path]:
         except GitHubError as e:
             logger.warning("github repo %s skipped: %s", repo, e)
     return paths
+
+
+def _repo_name(repo) -> str:
+    """repo 可为字符串或 GitHubRepo 配置对象。"""
+    return repo.repo if not isinstance(repo, str) else repo
+
+
+def _repo_manual_license(repo) -> str | None:
+    """返回人工授权许可（GitHubRepo.manual_license）；字符串简写无。"""
+    if isinstance(repo, str):
+        return None
+    return getattr(repo, "manual_license", None)
+
+
+def _resolve_repo_license(repo, repo_path: Path, *, require_license: bool, allowed_licenses: list[str] | None):
+    """返回 (是否放行, license_id)。manual_license 优先；否则本地检测 LICENSE。
+
+    expected_license（如配置）用于校验：检测到的许可与其不一致时按不通过处理。
+    """
+    manual = _repo_manual_license(repo)
+    if manual:
+        return True, manual
+    expected = None if isinstance(repo, str) else getattr(repo, "expected_license", None)
+    detected = license_mod.detect_license(repo_path)
+    if detected:
+        if expected and detected != expected:
+            return False, detected
+        if allowed_licenses and detected not in allowed_licenses:
+            return False, detected
+        return True, detected
+    if require_license:
+        return False, None
+    return True, None
 
 
 def _ensure_repo(repo: str, cache_dir: Path) -> Path:
@@ -78,7 +141,14 @@ def _git(cwd: Path, *args: str) -> str:
     return result.stdout
 
 
-def _import_repo(repo: str, repo_path: Path) -> list[Source]:
+def _import_repo(
+    repo: str,
+    repo_path: Path,
+    *,
+    license_id: str | None = None,
+    author: str | None = None,
+    repo_url: str | None = None,
+) -> list[Source]:
     sources = []
     for file in sorted(repo_path.rglob("*.md")):
         rel = file.relative_to(repo_path)
@@ -87,7 +157,14 @@ def _import_repo(repo: str, repo_path: Path) -> list[Source]:
         if file.stat().st_size > MAX_FILE_SIZE:
             continue
         try:
-            source = _import_file(repo, file, rel)
+            source = _import_file(
+                repo,
+                file,
+                rel,
+                license_id=license_id,
+                author=author,
+                repo_url=repo_url,
+            )
             if source is not None:
                 sources.append(source)
         except Exception as e:
@@ -95,7 +172,15 @@ def _import_repo(repo: str, repo_path: Path) -> list[Source]:
     return sources
 
 
-def _import_file(repo: str, file: Path, rel: Path) -> Source | None:
+def _import_file(
+    repo: str,
+    file: Path,
+    rel: Path,
+    *,
+    license_id: str | None = None,
+    author: str | None = None,
+    repo_url: str | None = None,
+) -> Source | None:
     raw = file.read_bytes()
     content = _decode_text(raw, rel)
     hash_ = hashlib.sha256(raw).hexdigest()
@@ -108,6 +193,9 @@ def _import_file(repo: str, file: Path, rel: Path) -> Source | None:
             title=_extract_title(content, rel),
             cleaned_text=clean_text(content),
             source_hash=hash_,
+            license=license_id,
+            author=author,
+            repo_url=repo_url,
         )
         session.add(source)
         try:

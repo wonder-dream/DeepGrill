@@ -1,4 +1,4 @@
-﻿import json as _json
+import json as _json
 from datetime import datetime
 from enum import Enum
 from typing import Optional
@@ -72,6 +72,10 @@ class Source(SQLModel, table=True):
     cleaned_text: str = ""  # 生成管线的唯一输入（raw_text 已移除）
     fetched_at: datetime = Field(default_factory=datetime.now)
     source_hash: str = Field(unique=True, index=True)
+    # 来源溯源（GitHub 源）：许可 SPDX / 作者(owner) / 仓库 URL；历史行与手动源可空
+    license: Optional[str] = None
+    author: Optional[str] = None
+    repo_url: Optional[str] = None
 
 
 class Question(SQLModel, table=True):

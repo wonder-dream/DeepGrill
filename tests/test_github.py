@@ -247,3 +247,77 @@ def test_git_timeout_wraps_as_github_error(monkeypatch, tmp_path):
     monkeypatch.setattr(gh.subprocess, "run", boom)
     with pytest.raises(gh.GitHubError, match="timed out|failed"):
         gh._ensure_repo("owner/repo1", tmp_path / "cache")
+
+
+# --- license whitelist / provenance ---
+
+
+MIT_LICENSE = """MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction.
+The Software is provided "as is", without warranty of any kind.
+"""
+
+
+def test_no_license_skipped_when_required(tmp_path, monkeypatch, db, caplog):
+    root = make_remote(tmp_path, files={"a.md": "一面：\n问了 A。"})
+    monkeypatch.setattr(gh, "CLONE_BASE", str(root))
+    with caplog.at_level("WARNING"):
+        assert gh.collect(["owner/repo1"], tmp_path / "cache", require_license=True) == []
+    assert "no allowed license" in caplog.text
+    assert count_sources(db) == 0
+
+
+def test_license_allowed_and_provenance_fields(tmp_path, monkeypatch, db):
+    root = make_remote(
+        tmp_path,
+        files={
+            "LICENSE": MIT_LICENSE,
+            "a.md": "一面：\n问了 A。",
+        },
+    )
+    monkeypatch.setattr(gh, "CLONE_BASE", str(root))
+    sources = gh.collect(
+        ["owner/repo1"], tmp_path / "cache",
+        require_license=True, allowed_licenses=["MIT"],
+    )
+    assert len(sources) == 1
+    assert sources[0].license == "MIT"
+    assert sources[0].author == "owner"
+    assert sources[0].repo_url.endswith("owner/repo1")
+
+
+def test_disallowed_license_skipped(tmp_path, monkeypatch, db, caplog):
+    root = make_remote(
+        tmp_path,
+        files={
+            "LICENSE": "GNU GENERAL PUBLIC LICENSE\nVersion 3",
+            "a.md": "一面：\n问了 A。",
+        },
+    )
+    monkeypatch.setattr(gh, "CLONE_BASE", str(root))
+    with caplog.at_level("WARNING"):
+        assert gh.collect(
+            ["owner/repo1"], tmp_path / "cache",
+            require_license=True, allowed_licenses=["MIT"],
+        ) == []
+    assert "no allowed license" in caplog.text
+
+
+class FakeManualRepo:
+    repo = "owner/repo1"
+    expected_license = None
+    manual_license = "with-author-permission"
+
+
+def test_manual_license_override_imports(tmp_path, monkeypatch, db):
+    root = make_remote(tmp_path, files={"a.md": "一面：\n问了 A。"})
+    monkeypatch.setattr(gh, "CLONE_BASE", str(root))
+    sources = gh.collect(
+        [FakeManualRepo()], tmp_path / "cache",
+        require_license=True, allowed_licenses=["MIT"],
+    )
+    assert len(sources) == 1
+    assert sources[0].license == "with-author-permission"

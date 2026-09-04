@@ -1,17 +1,19 @@
 # M7 GitHub 面经源模块
 
-> 路径：`app/crawler/github.py` ｜ 规模：~200 行 ｜ 依赖：subprocess 调 git
-> 更新日期：2026-08-08（实现偏差与修复记录）
+> 路径：`app/crawler/github.py` ｜ 规模：~200 行 ｜ 依赖：subprocess 调 git + `app/crawler/license.py`
+> 更新日期：2026-08-08（实现偏差与修复记录）；2026-08-16（许可白名单与来源溯源）
 
 ## 1. 职责
 
-按配置的仓库列表 `git pull`（首拉 clone），遍历 markdown 文件提取标题/正文，清洗后入库。
+按配置的仓库列表 `git pull`（首拉 clone），校验仓库 LICENSE（生产默认白名单），遍历 markdown 文件提取标题/正文，连同 `license/author/repo_url` 溯源字段清洗后入库。
 
 ## 2. 接口
 
 ```python
-def collect(repos: list[str], cache_dir: Path) -> list[Source]
-    """入口：本日增量采集，返回入库的 Source 列表"""
+def collect(repos: list, cache_dir: Path, *,
+            require_license: bool = False,
+            allowed_licenses: list[str] | None = None) -> list[Source]
+    """入口：本日增量采集；repo 可为字符串或 GitHubRepo 配置对象；无许可整仓跳过"""
 
 def ensure_repos(repos: list[str], cache_dir: Path) -> list[Path]
     """clone（不存在）或 pull（已存在），返回仓库本地路径列表"""
@@ -19,7 +21,9 @@ def ensure_repos(repos: list[str], cache_dir: Path) -> list[Path]
 
 ## 3. 关键决策
 
-- **单仓库隔离**：单仓库失败（网络/认证/冲突）跳过该仓库，不影响其他仓库与其他源
+- **单仓库隔离**：单仓库失败（网络/认证/冲突/无许可）跳过该仓库，不影响其他仓库与其他源
+- **许可白名单（2026-08-16）**：`github_require_license=true`（默认）时，无 LICENSE 或不在 `allowed_licenses` 的仓库整仓跳过；`manual_license` 支持人工授权仓库
+- **来源溯源（2026-08-16）**：每个 `Source` 写 `license`（SPDX）、`author`（owner）、`repo_url`
 - **文件过滤**：跳过 README/非 markdown/代码目录（如 `code/`、`scripts/`）/二进制/超 1MB 文件
 - **增量**：仓库已 pull 的最新内容哈希入库，UNIQUE 天然去重
 - **仓库缓存目录**：放数据目录（如 `data/repos/`），gitignore 排除，不污染项目仓库

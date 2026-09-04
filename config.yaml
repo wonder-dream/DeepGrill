@@ -23,7 +23,16 @@ smtp:
   pass_env: SMTP_PASS          # 授权码（非登录密码；从 .env 读）
 sources:
   nowcoder_enabled: false      # 牛客采集开关：生产/公开默认关闭，仅本地个人学习显式开启
-  github_repos:                # 面经仓库列表（可增删）
+  github_require_license: true # 无许可/不在白名单的 GitHub 仓库整仓跳过
+  github_allowed_licenses:     # 允许存储/改写/再分发的宽松许可白名单
+    - MIT
+    - Apache-2.0
+    - BSD-2-Clause
+    - BSD-3-Clause
+    - ISC
+    - Unlicense
+    - CC0-1.0
+  github_repos:                # 面经仓库列表（可增删；也支持对象写法带 manual_license/expected_license）
     - Zchary1106/agent-interview-hub
     - houchenll/origin-llm
     - adongwanai/AgentGuide

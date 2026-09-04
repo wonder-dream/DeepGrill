@@ -115,6 +115,20 @@ def test_crud_roundtrip(db):
     assert db.get(Source, source.id) is None
 
 
+def test_source_provenance_fields_roundtrip(db):
+    source = add_source(
+        db,
+        type=SourceType.github,
+        license="MIT",
+        author="owner",
+        repo_url="https://github.com/owner/repo1",
+    )
+    loaded = db.get(Source, source.id)
+    assert loaded.license == "MIT"
+    assert loaded.author == "owner"
+    assert loaded.repo_url == "https://github.com/owner/repo1"
+
+
 def test_cascade_delete_session(db):
     s = add_session(db)
     a1 = Attempt(session_id=s.id, round_no=0, answer_text="回答1")

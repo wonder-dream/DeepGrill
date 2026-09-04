@@ -52,6 +52,7 @@ def init_db(db_url: str) -> None:
             _migrate_sessions_active_unique(_engine)
             _migrate_users_email(_engine)
             _migrate_backfill_reviewed(_engine)
+            _migrate_source_provenance(_engine)
     except SQLAlchemyError as e:
         raise StorageError(f"cannot init database {db_url}: {e}") from e
     _factory = sessionmaker(bind=_engine, class_=DBSession, expire_on_commit=False)
@@ -203,6 +204,18 @@ def _migrate_backfill_reviewed(engine: Engine) -> None:
                 "WHERE reviewed_at IS NULL AND created_at IS NOT NULL"
             ))
         conn.execute(text("PRAGMA user_version = 1"))
+
+
+def _migrate_source_provenance(engine: Engine) -> None:
+    """幂等迁移：sources 表加来源溯源列（license/author/repo_url）。
+
+    历史行保持 NULL，不猜测许可；后续新导入的 GitHub 源写入元数据。
+    """
+    with engine.begin() as conn:
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info('sources')")).fetchall()]
+        for column in ("license", "author", "repo_url"):
+            if column not in cols:
+                conn.execute(text(f"ALTER TABLE sources ADD COLUMN {column} VARCHAR"))
 
 
 @contextmanager
