@@ -126,7 +126,8 @@ def test_register_first_user_is_owner(db):
     body = resp.json()
     assert body["user"]["role"] == "owner"
     assert body["user"]["username"] == "alice"  # 显示名 = 邮箱前缀
-    assert body["token"]
+    assert "token" not in body  # 原始 token 不再返回给 JS，改 HttpOnly Cookie
+    assert resp.cookies.get("session_token")
 
 
 def test_register_second_user_is_user(db):
@@ -207,7 +208,8 @@ def test_login_success_and_wrong_password(db):
     register(c, "alice@163.com", "pass1234")
     ok = c.post("/api/auth/login", json={"email": "alice@163.com", "password": "pass1234"})
     assert ok.status_code == 200
-    assert ok.json()["token"]
+    assert "token" not in ok.json()
+    assert ok.cookies.get("session_token")
     bad = c.post("/api/auth/login", json={"email": "alice@163.com", "password": "wrong123"})
     assert bad.status_code == 401
 
@@ -244,7 +246,7 @@ def test_register_rate_limit_429(db):
 
 def test_me_and_logout(db):
     c = bare_client()
-    token = register(c, "alice@163.com").json()["token"]
+    token = register(c, "alice@163.com").cookies.get("session_token")
     me = c.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me.json()["username"] == "alice"
     c.post("/api/auth/logout", headers={"Authorization": f"Bearer {token}"})
@@ -258,7 +260,7 @@ def test_token_expiry_401_and_lazy_cleanup(db):
     from app.models import UserToken
 
     c = bare_client()
-    token = register(c, "alice@163.com").json()["token"]
+    token = register(c, "alice@163.com").cookies.get("session_token")
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     with get_session() as s:
         row = s.scalars(select(UserToken).where(UserToken.token_hash == token_hash)).one()
@@ -275,8 +277,44 @@ def test_token_expiry_401_and_lazy_cleanup(db):
 def test_token_not_expired_still_valid(db):
     """未过期 token 正常放行（expires_at 在将来）。"""
     c = bare_client()
-    token = register(c, "alice@163.com").json()["token"]
+    token = register(c, "alice@163.com").cookies.get("session_token")
     assert c.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+
+def test_cookie_auth_me_and_logout(db):
+    """HttpOnly Cookie 登录态：/api/auth/me 只带 Cookie 可访问，登出后 Cookie 失效。"""
+    c = bare_client()
+    register(c, "alice@163.com", "pass1234")
+    resp = c.post("/api/auth/login", json={"email": "alice@163.com", "password": "pass1234"})
+    assert resp.status_code == 200
+    assert "token" not in resp.json()
+    assert resp.cookies.get("session_token")
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=lax" in set_cookie
+    me = c.get("/api/auth/me")  # 浏览器自动带 Cookie
+    assert me.status_code == 200
+    assert me.json()["username"] == "alice"
+    logout = c.post("/api/auth/logout", headers={"X-Requested-With": "fetch"})
+    assert logout.status_code == 200
+    assert "Max-Age=0" in (logout.headers.get("set-cookie", "") or "")
+    assert c.get("/api/auth/me").status_code == 401
+
+
+def test_cookie_write_csrf_requires_custom_header(db):
+    """Cookie 认证的写操作必须带 X-Requested-With: fetch，否则 403（CSRF）。"""
+    c = bare_client()
+    register(c, "alice@163.com", "pass1234")
+    c.post("/api/auth/login", json={"email": "alice@163.com", "password": "pass1234"})
+    # 不带自定义头的 Cookie 写请求被拒
+    assert c.put("/api/auth/profile", json={"focus": None, "focus_lang": None}).status_code == 403
+    # 带自定义头放行
+    ok = c.put(
+        "/api/auth/profile",
+        json={"focus": None, "focus_lang": None},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert ok.status_code == 200
 
 
 def test_unauthorized_401(db):

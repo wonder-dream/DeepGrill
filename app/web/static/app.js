@@ -3,7 +3,7 @@
 const state = {
   view: "today",
   user: null,
-  token: localStorage.getItem("token") || null,
+  token: null, // 原始 token 改 HttpOnly Cookie（JS 不再持有/落 localStorage）
   question: null,
   sessionId: null,
   kind: "chain",
@@ -237,10 +237,11 @@ function uiConfirm(message) {
 
 async function api(path, options) {
   const opts = options || {};
+  // Cookie 自动携带；X-Requested-With 供后端 CSRF 校验（跨站表单无法附加）
   opts.headers = Object.assign(
     {},
     opts.headers || {},
-    state.token ? { Authorization: `Bearer ${state.token}` } : {}
+    { "X-Requested-With": "fetch" }
   );
   const method = (opts.method || "GET").toUpperCase();
   const retries = method === "GET" ? 2 : 0; // 仅幂等 GET 重试（POST 重试会重复触发判分轮次）
@@ -257,7 +258,7 @@ async function api(path, options) {
     }
     if (resp.status === 401) {
       state.token = null;
-      localStorage.removeItem("token");
+      resetPerUserState();
       showAuth();
       throw new Error("登录已过期，请重新登录");
     }
@@ -1619,10 +1620,9 @@ $("#logout-btn").addEventListener("click", async () => {
   try {
     await api("/api/auth/logout", { method: "POST" });
   } catch (e) {
-    // 网络失败也照常本地登出（token 一并清除）
+    // 网络失败也照常本地登出（后端未撤销时 Cookie 过期兜底）
   }
   state.token = null;
-  localStorage.removeItem("token");
   resetPerUserState();
   showAuth();
 });
@@ -1668,7 +1668,7 @@ function uploadWithProgress(payload, onProgress) {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/upload");
     xhr.setRequestHeader("Content-Type", "application/json");
-    xhr.setRequestHeader("Authorization", `Bearer ${state.token}`);
+    xhr.setRequestHeader("X-Requested-With", "fetch");
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
     };
@@ -1682,7 +1682,7 @@ function uploadWithProgress(payload, onProgress) {
       }
       if (xhr.status === 401) {
         state.token = null;
-        localStorage.removeItem("token");
+        resetPerUserState();
         showAuth();
         reject(new Error("登录已过期，请重新登录"));
         return;
@@ -1872,16 +1872,15 @@ $("#candidate-confirm").addEventListener("click", async () => {
   }
 });
 
-// 数据备份：导出（fetch blob 带 Authorization，裸 <a href> 会 401）；导入为 zip 文件
+// 数据备份：导出（fetch blob + HttpOnly Cookie，裸 <a href> 会 401）；导入为 zip 文件
 $("#export-btn").addEventListener("click", async (e) => {
   e.preventDefault();
   try {
     const resp = await fetch("/api/export", {
-      headers: state.token ? { Authorization: `Bearer ${state.token}` } : {},
+      headers: { "X-Requested-With": "fetch" },
     });
     if (resp.status === 401) {
       state.token = null;
-      localStorage.removeItem("token");
       resetPerUserState();
       showAuth();
       return;
@@ -1931,9 +1930,7 @@ $("#import-file").addEventListener("change", async (e) => {
       body: JSON.stringify({ content_base64: btoa(bin) }),
     });
     if (resp.new_token) {
-      // 导入库含当前用户 → 用新 token 保持登录态（否则刷新后 401 退出）
-      state.token = resp.new_token;
-      localStorage.setItem("token", resp.new_token);
+      // 后端已把 new_token 写入 HttpOnly Cookie；前端不再持有原始 token
     }
     uiToast(`恢复成功：题库 ${resp.questions} 题，页面即将刷新`);
     setTimeout(() => location.reload(), 1200);
@@ -2248,7 +2245,7 @@ $("#auth-submit").addEventListener("click", async () => {
   try {
     const body = await fetch(authMode === "login" ? "/api/auth/login" : "/api/auth/register", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
       body: JSON.stringify(payload),
     }).then(async (r) => {
       if (!r.ok) {
@@ -2257,8 +2254,7 @@ $("#auth-submit").addEventListener("click", async () => {
       }
       return r.json();
     });
-    state.token = body.token;
-    localStorage.setItem("token", body.token);
+    state.token = null; // token 仅存 HttpOnly Cookie，不落 JS/localStorage
     state.user = body.user;
     resetPerUserState();
     applyRoleUI();
@@ -2315,10 +2311,8 @@ function applyRoleUI() {
 }
 
 async function initAuth() {
-  if (!state.token) {
-    showAuth();
-    return;
-  }
+  // 登录态只存 HttpOnly Cookie：无本地 token 判断，直接请求 /api/auth/me，
+  // 未登录/过期由 api() 的 401 分支统一跳登录页
   // 网络抖动/服务器繁忙时退避重试，不直接丢登录页（登录已过期由 api() 内 401 分支处理）
   for (let attempt = 0; attempt < 3; attempt++) {
     try {

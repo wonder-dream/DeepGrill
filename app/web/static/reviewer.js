@@ -3,7 +3,7 @@
 // 题库人工审核页：AI 参考（生成侧建议快照）+ 人工编辑 + 采用建议 + 批量操作 + 进度
 // 审核状态存 DB（reviewed_at）：审核中题目仅审核页可见，保存（reviewed:true）后进入题库
 const state = {
-  token: localStorage.getItem("token") || null,
+  token: null, // token 仅存 HttpOnly Cookie
   page: 1,
   pageSize: 20,
   totalPages: 1,
@@ -19,11 +19,10 @@ async function api(path, options) {
   opts.headers = Object.assign(
     {},
     opts.headers || {},
-    state.token ? { Authorization: `Bearer ${state.token}` } : {}
+    { "X-Requested-With": "fetch" }
   );
   const resp = await fetch(path, opts);
   if (resp.status === 401) {
-    localStorage.removeItem("token");
     location.href = "/";
     throw new Error("登录已过期");
   }
@@ -44,10 +43,7 @@ function toast(msg, isError) {
 }
 
 async function init() {
-  if (!state.token) {
-    location.href = "/";
-    return;
-  }
+  // 登录态只存 HttpOnly Cookie，未登录由 401 统一跳回主页
   try {
     await Promise.all([loadTags(), loadQuestions()]);
   } catch (e) {

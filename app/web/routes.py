@@ -16,7 +16,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +25,7 @@ from sqlalchemy import cast, delete, exists, func, or_, select, String, text
 from .. import db
 from ..auth import (
     MAX_USERS,
+    TOKEN_TTL_DAYS,
     create_token,
     hash_password,
     revoke_token,
@@ -93,9 +94,33 @@ def _default_embedder_factory():
     return factory
 
 
-def require_user(authorization: str = Header(default="")) -> User:
-    """认证依赖：Bearer token → 当前用户；无效 401。"""
-    token = authorization.removeprefix("Bearer ").strip()
+SESSION_COOKIE = "session_token"
+
+
+def _extract_token(authorization: str = "", session_token: str = "") -> str:
+    """兼容旧客户端 Authorization: Bearer，新前端走 HttpOnly Cookie。"""
+    return authorization.removeprefix("Bearer ").strip() or session_token.strip()
+
+
+def _set_auth_cookie(response: Response, token: str) -> None:
+    """登录/注册/导入后写入 HttpOnly Cookie（JS 不可读，降低 XSS 窃取面）。"""
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=token,
+        max_age=TOKEN_TTL_DAYS * 24 * 3600,
+        httponly=True,
+        samesite="lax",
+        secure=os.environ.get("COOKIE_SECURE") == "1",
+        path="/",
+    )
+
+
+def require_user(
+    authorization: str = Header(default=""),
+    session_token: str = Cookie(default=""),
+) -> User:
+    """认证依赖：Bearer token（旧/脚本）或 HttpOnly Cookie → 当前用户；无效 401。"""
+    token = _extract_token(authorization, session_token)
     user = user_from_token(token)
     if user is None:
         raise HTTPException(status_code=401, detail="未登录或登录已过期")
@@ -304,7 +329,8 @@ def create_app(
         if not path.startswith("/api/") or path.startswith("/api/auth/"):
             return await call_next(request)
         auth = request.headers.get("authorization", "")
-        user = user_from_token(auth.removeprefix("Bearer ").strip())
+        cookie_token = request.cookies.get(SESSION_COOKIE, "")
+        user = user_from_token(_extract_token(auth, cookie_token))
         if user is not None:
             key = f"u{user.id}"
         elif request.client is not None:
@@ -320,6 +346,21 @@ def create_app(
             is_llm_cost and not _rl_allow(key, LLM_COST_LIMIT)
         ):
             return JSONResponse(status_code=429, content={"detail": "操作过于频繁，请稍后再试"})
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def csrf_protect_middleware(request: Request, call_next):
+        """Cookie 认证写操作防 CSRF：非 Bearer 时必须带 X-Requested-With: fetch。
+
+        SameSite=Lax 已挡跨站 POST；自定义头作纵深防御（跨站表单无法附加）。
+        """
+        if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+            path = request.url.path
+            if path.startswith("/api/") and not any(path.startswith(x) for x in ("/api/auth/send-code", "/api/auth/login", "/api/auth/register")):
+                auth = request.headers.get("authorization", "")
+                if not auth.startswith("Bearer "):
+                    if request.headers.get("x-requested-with") != "fetch":
+                        return JSONResponse(status_code=403, content={"detail": "CSRF 校验失败"})
         return await call_next(request)
 
     # --- 认证：注册 / 登录 / 登出 / 当前用户 ---
@@ -348,7 +389,7 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/auth/register")
-    def auth_register(body: dict):
+    def auth_register(body: dict, response: Response):
         if len(str(body)) > 4096:
             raise HTTPException(status_code=400, detail="请求体过大")
         from ..email_code import validate_email, verify_code
@@ -387,8 +428,8 @@ def create_app(
                 db.commit(session)
                 session.refresh(user)
         token = create_token(user.id)
+        _set_auth_cookie(response, token)
         return {
-            "token": token,
             "user": {"id": user.id, "username": user.username, "role": user.role,
                      "focus": user.focus, "focus_lang": user.focus_lang},
         }
@@ -407,7 +448,7 @@ def create_app(
                 "focus_lang": row.focus_lang}
 
     @app.post("/api/auth/login")
-    def auth_login(body: dict):
+    def auth_login(body: dict, response: Response):
         if len(str(body)) > 4096:
             raise HTTPException(status_code=400, detail="请求体过大")
         email = str(body.get("email", "")).strip().lower()
@@ -419,15 +460,21 @@ def create_app(
             if user is None or not verify_password(password, user.password_hash):
                 raise HTTPException(status_code=401, detail="邮箱或密码错误")
         token = create_token(user.id)
+        _set_auth_cookie(response, token)
         return {
-            "token": token,
             "user": {"id": user.id, "username": user.username, "role": user.role,
                      "focus": user.focus, "focus_lang": user.focus_lang},
         }
 
     @app.post("/api/auth/logout")
-    def auth_logout(user: User = Depends(require_user), authorization: str = Header(default="")):
-        revoke_token(authorization.removeprefix("Bearer ").strip())
+    def auth_logout(
+        user: User = Depends(require_user),
+        authorization: str = Header(default=""),
+        session_token: str = Cookie(default=""),
+        response: Response = None,
+    ):
+        revoke_token(_extract_token(authorization, session_token))
+        response.delete_cookie(SESSION_COOKIE, path="/")
         return {"ok": True}
 
     @app.get("/api/auth/me")
@@ -1499,7 +1546,7 @@ def create_app(
             tmp_db.unlink(missing_ok=True)
 
     @app.post("/api/import")
-    def import_backup(body: dict, user: User = Depends(require_owner)):
+    def import_backup(body: dict, response: Response, user: User = Depends(require_owner)):
         """从备份 zip 恢复：解压校验 → 当前库备份 → 原子替换 → 重建引擎。
 
         替换运行中 SQLite 文件前先 dispose 引擎连接；恢复后调用方刷新页面。
@@ -1610,6 +1657,7 @@ def create_app(
                 from ..auth import create_token
 
                 new_token = create_token(imported_user.id)  # 备份库中同用户 → 补新 token 保持登录态
+                _set_auth_cookie(response, new_token)
         return {"restored": True, "questions": total, "new_token": new_token}
 
     # --- 用户上传题目（格式：题目列表 / 面经文本 / 简历；支持 pdf/docx/doc 二进制） ---
