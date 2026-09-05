@@ -1,4 +1,4 @@
-﻿"""M14 Web 路由层：请求编排与校验，业务委托下层模块；LLM 调用放后台任务 + 前端轮询。
+"""M14 Web 路由层：请求编排与校验，业务委托下层模块；LLM 调用放后台任务 + 前端轮询。
 
 - AppError → 500 统一 JSON；未知异常 → 500 + 日志
 - 并发作答同一会话 → 409（in-flight 集合）
@@ -58,9 +58,15 @@ from ..models import (
     User,
     UserFavorite,
     UserPick,
+    Submission,
+    SubmissionKind,
+    SubmissionStatus,
+    QuestionFeedback,
+    FeedbackCategory,
+    FeedbackStatus,
 )
 from ..tags import TAG_CATEGORIES, TAG_VOCABULARY
-from .schemas import AdminQuestionUpdate, AnswerBody, CreateSessionBody, UploadBody
+from .schemas import (AdminQuestionUpdate, AnswerBody, CreateSessionBody, FeedbackBody, SubmitBody, UploadBody)
 from . import static_dir
 
 logger = logging.getLogger(__name__)
@@ -1736,6 +1742,182 @@ def create_app(
             ),
         }
 
+
+    # --- UGC 用户提交 ---
+
+    @app.post("/api/ugc/submissions")
+    def ugc_create_submission(body: SubmitBody, background: BackgroundTasks, user: User = Depends(require_user)):
+        if not config.ugc.enabled:
+            raise HTTPException(status_code=403, detail="UGC 提交已关闭")
+        if config.ugc.require_consent and not body.consent:
+            raise HTTPException(status_code=400, detail="必须勾选内容授权声明")
+        if len(body.content.encode("utf-8")) > config.ugc.max_content_bytes:
+            raise HTTPException(status_code=400, detail="内容超过大小限制")
+        with db.get_session() as session:
+            start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            count = session.scalar(
+                select(func.count())
+                .select_from(Submission)
+                .where(Submission.user_id == user.id, Submission.created_at >= start)
+            )
+            if count and count >= config.ugc.max_per_user_per_day:
+                raise HTTPException(status_code=429, detail="今日提交次数已达上限")
+            sub = Submission(
+                user_id=user.id,
+                kind=body.kind,
+                title=(body.title or "")[:200],
+                content=body.content,
+                consent=body.consent,
+                status=SubmissionStatus.pending,
+            )
+            session.add(sub)
+            db.commit(session)
+            session.refresh(sub)
+            sub_id = sub.id
+        background.add_task(_process_ugc_submission, sub_id, llm_factory, embedder_factory)
+        return {"id": sub_id, "status": SubmissionStatus.pending.value}
+
+    @app.get("/api/ugc/submissions/me")
+    def ugc_my_submissions(user: User = Depends(require_user)):
+        with db.get_session() as session:
+            rows = session.scalars(
+                select(Submission)
+                .where(Submission.user_id == user.id)
+                .order_by(Submission.id.desc())
+            ).all()
+        return [_submission_payload(s) for s in rows]
+
+    @app.get("/api/ugc/submissions/{submission_id}")
+    def ugc_get_submission(submission_id: int, user: User = Depends(require_user)):
+        with db.get_session() as session:
+            sub = session.get(Submission, submission_id)
+            if sub is None:
+                raise HTTPException(status_code=404, detail="submission not found")
+            if sub.user_id != user.id and user.role != "owner":
+                raise HTTPException(status_code=403, detail="无权查看")
+            return _submission_payload(sub)
+
+    @app.get("/api/admin/ugc/submissions")
+    def admin_ugc_submissions(status: str = "", user: User = Depends(require_owner)):
+        with db.get_session() as session:
+            stmt = select(Submission).order_by(Submission.id.desc())
+            if status:
+                stmt = stmt.where(Submission.status == status)
+            rows = session.scalars(stmt).all()
+        return [_submission_payload(s) for s in rows]
+
+    @app.post("/api/admin/ugc/submissions/{submission_id}/retry")
+    def admin_ugc_retry(submission_id: int, background: BackgroundTasks, user: User = Depends(require_owner)):
+        with db.get_session() as session:
+            sub = session.get(Submission, submission_id)
+            if sub is None or sub.status not in (SubmissionStatus.failed,):
+                raise HTTPException(status_code=404, detail="submission not found or not retryable")
+            sub.status = SubmissionStatus.pending
+            sub.error = ""
+            sub.updated_at = datetime.now()
+            db.commit(session)
+        background.add_task(_process_ugc_submission, submission_id, llm_factory, embedder_factory)
+        return {"id": submission_id, "status": SubmissionStatus.pending.value}
+
+    @app.post("/api/admin/ugc/submissions/{submission_id}/remove")
+    def admin_ugc_remove(submission_id: int, user: User = Depends(require_owner)):
+        """下架标记：保留 submission 溯源；派生题目由 owner 用现有删题入口处理。"""
+        with db.get_session() as session:
+            sub = session.get(Submission, submission_id)
+            if sub is None:
+                raise HTTPException(status_code=404, detail="submission not found")
+            sub.status = SubmissionStatus.removed
+            sub.updated_at = datetime.now()
+            db.commit(session)
+        return {"id": submission_id, "status": SubmissionStatus.removed.value}
+
+    # --- 题目质量反馈（非举报） ---
+
+    @app.post("/api/feedback")
+    def create_feedback(body: FeedbackBody, user: User = Depends(require_user)):
+        if not config.feedback.enabled:
+            raise HTTPException(status_code=403, detail="反馈已关闭")
+        is_dup = body.category == FeedbackCategory.duplicate
+        dup_ids = list(dict.fromkeys(int(i) for i in body.duplicate_question_ids if i > 0))
+        if is_dup and not dup_ids:
+            raise HTTPException(status_code=400, detail="duplicate 反馈必须勾选疑似重复题")
+        if is_dup and len(dup_ids) > config.feedback.duplicate_max_select:
+            raise HTTPException(status_code=400, detail=f"最多选择 {config.feedback.duplicate_max_select} 道疑似重复题")
+        if not is_dup and dup_ids:
+            raise HTTPException(status_code=400, detail="仅 duplicate 分类可携带重复题")
+        with db.get_session() as session:
+            question = session.get(Question, body.question_id)
+            if question is None or question.reviewed_at is None:
+                raise HTTPException(status_code=404, detail="题目不存在或未公开")
+            existing = session.scalars(
+                select(QuestionFeedback).where(
+                    QuestionFeedback.question_id == body.question_id,
+                    QuestionFeedback.user_id == user.id,
+                    QuestionFeedback.status == FeedbackStatus.open,
+                )
+            ).first()
+            if existing is not None:
+                raise HTTPException(status_code=409, detail="你已反馈过该题，待管理员处理")
+            fb = QuestionFeedback(
+                question_id=body.question_id,
+                user_id=user.id,
+                category=body.category,
+                duplicate_question_ids=dup_ids if is_dup else [],
+                comment=(body.comment or "").strip()[:2000],
+                status=FeedbackStatus.open,
+            )
+            session.add(fb)
+            db.commit(session)
+            session.refresh(fb)
+            return _feedback_payload(fb)
+
+    @app.get("/api/feedback/my")
+    def my_feedback(user: User = Depends(require_user)):
+        with db.get_session() as session:
+            rows = session.scalars(
+                select(QuestionFeedback)
+                .where(QuestionFeedback.user_id == user.id)
+                .order_by(QuestionFeedback.id.desc())
+            ).all()
+        return [_feedback_payload(f) for f in rows]
+
+    @app.get("/api/admin/feedback")
+    def admin_feedback(status: str = "open", user: User = Depends(require_owner)):
+        with db.get_session() as session:
+            stmt = select(QuestionFeedback).order_by(QuestionFeedback.id.desc())
+            if status:
+                stmt = stmt.where(QuestionFeedback.status == status)
+            rows = session.scalars(stmt).all()
+        return [_feedback_payload(f) for f in rows]
+
+    @app.post("/api/admin/feedback/{feedback_id}/resolve")
+    def admin_feedback_resolve(feedback_id: int, user: User = Depends(require_owner)):
+        with db.get_session() as session:
+            fb = session.get(QuestionFeedback, feedback_id)
+            if fb is None:
+                raise HTTPException(status_code=404, detail="feedback not found")
+            fb.status = FeedbackStatus.resolved
+            fb.resolved_at = datetime.now()
+            db.commit(session)
+            return _feedback_payload(fb)
+
+    @app.post("/api/admin/feedback/{feedback_id}/dismiss")
+    def admin_feedback_dismiss(feedback_id: int, user: User = Depends(require_owner)):
+        with db.get_session() as session:
+            fb = session.get(QuestionFeedback, feedback_id)
+            if fb is None:
+                raise HTTPException(status_code=404, detail="feedback not found")
+            fb.status = FeedbackStatus.dismissed
+            fb.resolved_at = datetime.now()
+            db.commit(session)
+            return _feedback_payload(fb)
+
+    @app.get("/api/questions/{question_id}/similar")
+    def question_similar(question_id: int, user: User = Depends(require_user)):
+        """duplicate 反馈候选：余弦相似度 >= feedback.duplicate_candidate_min_sim 的公开题。"""
+        min_sim = config.feedback.duplicate_candidate_min_sim
+        return _similar_questions_for_feedback(question_id, min_sim=min_sim)
+
     return app
 
 
@@ -2593,3 +2775,118 @@ def _judgment_payload(j: Judgment) -> dict:
         "reference_used": bool(j.scores.get("reference_used")),
         "created_at": j.created_at.isoformat(),
     }
+
+
+# --- UGC / feedback helpers ---
+
+
+def _submission_payload(sub: Submission) -> dict:
+    return {
+        "id": sub.id,
+        "kind": sub.kind.value if hasattr(sub.kind, "value") else str(sub.kind),
+        "title": sub.title,
+        "status": sub.status.value if hasattr(sub.status, "value") else str(sub.status),
+        "source_id": sub.source_id,
+        "error": sub.error,
+        "created_at": sub.created_at.isoformat(),
+    }
+
+
+def _feedback_payload(fb: QuestionFeedback) -> dict:
+    return {
+        "id": fb.id,
+        "question_id": fb.question_id,
+        "category": fb.category.value if hasattr(fb.category, "value") else str(fb.category),
+        "duplicate_question_ids": list(fb.duplicate_question_ids or []),
+        "comment": fb.comment,
+        "status": fb.status.value if hasattr(fb.status, "value") else str(fb.status),
+        "created_at": fb.created_at.isoformat(),
+        "resolved_at": fb.resolved_at.isoformat() if fb.resolved_at else None,
+    }
+
+
+def _process_ugc_submission(submission_id: int, llm_factory, embedder_factory) -> None:
+    """后台处理 UGC 提交：pending → processing → completed/failed。
+
+    生成出的题目默认 reviewed_at=NULL，进入现有 owner 题目审核门禁。
+    """
+    try:
+        with db.get_session() as session:
+            sub = session.get(Submission, submission_id)
+            if sub is None or sub.status != SubmissionStatus.pending:
+                return
+            sub.status = SubmissionStatus.processing
+            sub.updated_at = datetime.now()
+            db.commit(session)
+            kind = sub.kind.value if hasattr(sub.kind, "value") else str(sub.kind)
+            content = sub.content
+            title = sub.title or "ugc.md"
+        source_id = None
+        if kind == SubmissionKind.facejing.value:
+            source = _import_facejing(content, title)
+            source_id = source.id
+            _generate_uploaded_source(source.id, llm_factory, embedder_factory)
+        elif kind == SubmissionKind.resume.value:
+            source = _import_resume(content)
+            source_id = source.id
+            _generate_uploaded_source(source.id, llm_factory, embedder_factory)
+        elif kind == SubmissionKind.direct.value:
+            source, _count = _insert_direct_questions(content)
+            source_id = source.id
+            _tag_direct_questions(source.id, llm_factory)
+        else:
+            raise ValueError(f"unsupported submission kind: {kind}")
+        with db.get_session() as session:
+            sub = session.get(Submission, submission_id)
+            if sub is not None:
+                sub.status = SubmissionStatus.completed
+                sub.source_id = source_id
+                sub.error = ""
+                sub.updated_at = datetime.now()
+                db.commit(session)
+        logger.info("ugc submission %s completed source=%s", submission_id, source_id)
+    except Exception as e:
+        logger.warning("ugc submission %s failed: %s", submission_id, e)
+        with db.get_session() as session:
+            sub = session.get(Submission, submission_id)
+            if sub is not None:
+                sub.status = SubmissionStatus.failed
+                sub.error = str(e)[:500]
+                sub.updated_at = datetime.now()
+                db.commit(session)
+
+
+def _similar_questions_for_feedback(question_id: int, min_sim: float = 0.78, limit: int = 50) -> list[dict]:
+    """返回与指定题余弦相似度 >= min_sim 的公开(reviewed)题候选，按相似度降序。"""
+    import numpy as np
+
+    from ..embed import from_bytes
+
+    with db.get_session() as session:
+        target = session.get(Question, question_id)
+        if target is None or not target.embedding:
+            return []
+        others = session.scalars(
+            select(Question)
+            .where(Question.id != question_id, Question.reviewed_at.isnot(None), Question.embedding.isnot(None))
+        ).all()
+        if not others:
+            return []
+        vec = from_bytes(target.embedding)
+        vecs = np.stack([from_bytes(o.embedding) for o in others])
+        sims = vec @ vecs.T
+        hits = [
+            (float(sims[i]), others[i])
+            for i in range(len(others))
+            if sims[i] >= min_sim
+        ]
+    hits.sort(key=lambda x: x[0], reverse=True)
+    return [
+        {
+            "id": q.id,
+            "stem": q.stem,
+            "difficulty": q.difficulty,
+            "sim": round(sim, 4),
+        }
+        for sim, q in hits[:limit]
+    ]

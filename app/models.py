@@ -54,6 +54,34 @@ class SessionStatus(str, Enum):
     finished = "finished"
 
 
+class SubmissionKind(str, Enum):
+    facejing = "facejing"
+    resume = "resume"
+    direct = "direct"
+
+
+class SubmissionStatus(str, Enum):
+    pending = "pending"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+    removed = "removed"
+
+
+class FeedbackCategory(str, Enum):
+    wrong = "wrong"
+    unclear = "unclear"
+    duplicate = "duplicate"
+    not_interview = "not_interview"
+    other = "other"
+
+
+class FeedbackStatus(str, Enum):
+    open = "open"
+    resolved = "resolved"
+    dismissed = "dismissed"
+
+
 class Source(SQLModel, table=True):
     """题目来源（爬取/导入管线）：只增不改，source_hash 幂等去重。"""
 
@@ -294,3 +322,59 @@ class KnowledgeMeta(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     version: int = Field(default=0)
+
+
+class Submission(SQLModel, table=True):
+    """UGC 用户提交原稿：保存授权记录与溯源；题目质量由 Question 审核门禁把关。"""
+
+    __tablename__ = "submissions"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('facejing', 'resume', 'direct')",
+            name="ck_submissions_kind",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'completed', 'failed', 'removed')",
+            name="ck_submissions_status",
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", ondelete="CASCADE", index=True)
+    kind: SubmissionKind
+    title: str = ""
+    content: str = ""
+    consent: bool = False
+    status: SubmissionStatus = SubmissionStatus.pending
+    source_id: Optional[int] = Field(default=None, foreign_key="sources.id")
+    error: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+class QuestionFeedback(SQLModel, table=True):
+    """用户对公开题目的质量反馈（非版权举报）：wrong/unclear/duplicate/not_interview/other。"""
+
+    __tablename__ = "question_feedback"
+    __table_args__ = (
+        CheckConstraint(
+            "category IN ('wrong', 'unclear', 'duplicate', 'not_interview', 'other')",
+            name="ck_question_feedback_category",
+        ),
+        CheckConstraint(
+            "status IN ('open', 'resolved', 'dismissed')",
+            name="ck_question_feedback_status",
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    question_id: int = Field(foreign_key="questions.id", ondelete="CASCADE", index=True)
+    user_id: int = Field(foreign_key="users.id", ondelete="CASCADE", index=True)
+    category: FeedbackCategory
+    duplicate_question_ids: list[int] = Field(
+        default_factory=list, sa_column=Column(JSONUtf8)
+    )
+    comment: str = ""
+    status: FeedbackStatus = FeedbackStatus.open
+    created_at: datetime = Field(default_factory=datetime.now)
+    resolved_at: Optional[datetime] = None

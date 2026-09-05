@@ -5,7 +5,7 @@
 """
 from pydantic import BaseModel, Field, field_validator
 
-from ..models import SessionKind
+from ..models import FeedbackCategory, SessionKind, SubmissionKind
 
 ANSWER_MAX_LEN = 8000  # 回答长度上限：防超大输入刷 LLM 成本
 UPLOAD_TYPES = ("auto", "direct", "facejing", "resume")
@@ -74,3 +74,38 @@ class UploadBody(BaseModel):
         if v not in UPLOAD_TYPES:
             raise ValueError(f"type 仅支持 {'/'.join(UPLOAD_TYPES)}")
         return v
+
+
+
+class SubmitBody(BaseModel):
+    """UGC 用户提交原稿：facejing / resume / direct。"""
+
+    kind: SubmissionKind
+    title: str = ""
+    content: str = ""
+    consent: bool = False
+
+    @field_validator("content")
+    @classmethod
+    def _content_strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("内容不能为空")
+        return v
+
+
+class FeedbackBody(BaseModel):
+    """用户对公开题目的质量反馈（非版权举报）。"""
+
+    question_id: int = Field(gt=0)
+    category: FeedbackCategory
+    duplicate_question_ids: list[int] = Field(default_factory=list)
+    comment: str = ""
+
+    @field_validator("duplicate_question_ids")
+    @classmethod
+    def _dup_ids_valid(cls, v: list[int]) -> list[int]:
+        dedup = sorted(set(int(i) for i in v if i > 0))
+        if dedup and len(dedup) > 3:
+            raise ValueError("最多选择 3 道疑似重复题")
+        return dedup

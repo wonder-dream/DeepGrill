@@ -42,3 +42,13 @@ sources:
     - limouren2000/llms-dev-study
     - guoguo-tju/agent_java_offer
     - GongLingRui/llm-agents-interview
+
+ugc:
+  enabled: true
+  max_per_user_per_day: 10
+  max_content_bytes: 20971520      # 20MB
+  require_consent: true
+feedback:
+  enabled: true
+  duplicate_candidate_min_sim: 0.78   # 含边界
+  duplicate_max_select: 3

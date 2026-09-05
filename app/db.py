@@ -53,6 +53,7 @@ def init_db(db_url: str) -> None:
             _migrate_users_email(_engine)
             _migrate_backfill_reviewed(_engine)
             _migrate_source_provenance(_engine)
+            _migrate_question_feedback_open_unique(_engine)
     except SQLAlchemyError as e:
         raise StorageError(f"cannot init database {db_url}: {e}") from e
     _factory = sessionmaker(bind=_engine, class_=DBSession, expire_on_commit=False)
@@ -216,6 +217,15 @@ def _migrate_source_provenance(engine: Engine) -> None:
         for column in ("license", "author", "repo_url"):
             if column not in cols:
                 conn.execute(text(f"ALTER TABLE sources ADD COLUMN {column} VARCHAR"))
+
+
+def _migrate_question_feedback_open_unique(engine: Engine) -> None:
+    """幂等迁移：同一用户对同一题目最多一条 open 反馈（partial unique index）。"""
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_feedback_open "
+            "ON question_feedback (question_id, user_id) WHERE status = 'open'"
+        ))
 
 
 @contextmanager

@@ -89,6 +89,19 @@ class SourcesConfig(_FrozenModel):
         return out
 
 
+class UgcConfig(_FrozenModel):
+    enabled: bool = True
+    max_per_user_per_day: int = 10
+    max_content_bytes: int = 20 * 1024 * 1024
+    require_consent: bool = True
+
+
+class FeedbackConfig(_FrozenModel):
+    enabled: bool = True
+    duplicate_candidate_min_sim: float = 0.78  # 含边界
+    duplicate_max_select: int = 3
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
@@ -98,6 +111,8 @@ class AppConfig(BaseModel):
     notification: NotificationConfig
     sources: SourcesConfig
     smtp: SMTPConfig = SMTPConfig()
+    ugc: UgcConfig = UgcConfig()
+    feedback: FeedbackConfig = FeedbackConfig()
 
 
 def load_config(path: Path) -> AppConfig:
