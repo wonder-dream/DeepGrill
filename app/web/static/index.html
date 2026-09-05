@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh">
 <head>
   <meta charset="utf-8">
@@ -22,6 +22,8 @@
       <button data-view="history">历史记录</button>
       <button data-view="review">复习</button>
       <button data-view="favorites">收藏</button>
+        <button data-view="ugc">提交内容</button>
+        <button data-view="ugcadmin" id="nav-ugc-admin" class="hidden">提交/反馈管理</button>
     </nav>
     <div class="theme-switcher" id="theme-switcher" title="切换主题">
       <button class="theme-dot" data-theme="retro" style="background:#f6f4ef;border-color:#c0392b" title="纸质档案"></button>
@@ -384,6 +386,48 @@
         <button id="detail-delete">删除本次记录</button>
       </div>
     </section>
+    <section id="view-ugc" class="view hidden">
+      <div class="card">
+        <h2>提交面经 / 题目</h2>
+        <p class="meta">提交后系统自动生成候选题目，管理员审核通过后才进入公共题库。请勿提交他人隐私、联系方式、薪资或公司保密内容。</p>
+        <label>类型
+          <select id="ugc-kind">
+            <option value="direct">题目列表</option>
+            <option value="facejing">面经文本</option>
+            <option value="resume">简历</option>
+          </select>
+        </label>
+        <label>标题 / 文件名（可选）
+          <input type="text" id="ugc-title" placeholder="例如：后端一面">
+        </label>
+        <label>内容
+          <textarea id="ugc-content" rows="8" placeholder="粘贴题目列表 / 面经 / 简历内容…"></textarea>
+        </label>
+        <label>
+          <input type="checkbox" id="ugc-consent">
+          我确认本人拥有或有权提交该内容，并同意平台进行清洗、脱敏与 AI 出题加工
+        </label>
+        <div class="upload-row">
+          <button id="ugc-submit" class="primary">提交</button>
+        </div>
+        <p class="meta" id="ugc-msg"></p>
+      </div>
+      <div class="card">
+        <h2>我的提交</h2>
+        <div id="ugc-my-list" class="card-list"></div>
+      </div>
+    </section>
+
+    <section id="view-ugcadmin" class="view hidden">
+      <div class="card">
+        <h2>UGC 提交管理</h2>
+        <div id="ugc-admin-list" class="card-list"></div>
+      </div>
+      <div class="card">
+        <h2>题目反馈管理</h2>
+        <div id="fb-admin-list" class="card-list"></div>
+      </div>
+    </section>
   </main>
 
   <div id="rv-tags-modal2" class="modal hidden">
@@ -497,9 +541,38 @@
       </div>
     </div>
   </div>
+    <div id="feedback-modal" class="modal hidden">
+      <div class="modal-card">
+        <h2>题目反馈</h2>
+        <p class="meta" id="fb-question-stem"></p>
+        <label>问题类型
+          <select id="fb-category">
+            <option value="wrong">题目/答案有错</option>
+            <option value="unclear">表述不清</option>
+            <option value="duplicate">与其他题重复</option>
+            <option value="not_interview">不适合当面试题</option>
+            <option value="other">其他</option>
+          </select>
+        </label>
+        <div id="fb-dup-area" class="hidden">
+          <p class="meta">勾选你认为重复的题（最多 3 道）</p>
+          <input type="search" id="fb-dup-search" placeholder="搜索题干以补充勾选…">
+          <div id="fb-dup-candidates" class="card-list"></div>
+        </div>
+        <label>补充说明（可选）
+          <textarea id="fb-comment" rows="3"></textarea>
+        </label>
+        <div class="upload-row">
+          <button id="fb-submit" class="primary">提交反馈</button>
+          <button id="fb-cancel">取消</button>
+        </div>
+        <p class="meta" id="fb-msg"></p>
+      </div>
+    </div>
+    
   <div id="ui-toast" class="hidden"></div>
 
-  <script src="/static/app.js?v=20260813v1"></script>
+  <script src="/static/app.js?v=20260816v1"></script>
 </body>
 </html>
 

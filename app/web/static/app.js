@@ -110,6 +110,8 @@ function show(view) {
   if (view === "favorites") {
     loadFavorites();
   }
+  if (view === "ugc") loadMySubmissions();
+  if (view === "ugcadmin") { loadAdminSubmissions(); loadAdminFeedback(); }
   if (HASHABLE.has(view)) updateHash();
 }
 
@@ -362,6 +364,7 @@ async function loadBank() {
         ${badge}
         <span class="badge">${q.type}</span>
         <span class="badge">难度 ${difficultyStars(q.difficulty)}</span>
+        <button class="admin-btn fb-open" data-id="${q.id}" title="反馈题目质量">反馈</button>
         ${adminBtns}
       </div>
       <p>${escapeHtml(q.stem)}</p>`;
@@ -2307,6 +2310,7 @@ function applyRoleUI() {
   $("#daily-run").classList.toggle("hidden", !isOwner);
   $("#upload-btn").classList.toggle("hidden", !isOwner);
   $("#reviewer-link").style.display = isOwner ? "flex" : "none";
+  $("#nav-ugc-admin").classList.toggle("hidden", !isOwner);
   if (isOwner) refreshReviewBadge();
 }
 
@@ -2406,3 +2410,200 @@ $("#qm-save").addEventListener("click", async () => {
     }
   });
 })();
+
+// --- UGC 提交 ---
+
+async function loadMySubmissions() {
+  const box = $("#ugc-my-list");
+  if (!box) return;
+  try {
+    const rows = await api("/api/ugc/submissions/me");
+    box.innerHTML = rows.length ? rows.map((s) =>
+      `<div class="card question-card"><div class="question-head">
+         <span class="badge">${escapeHtml(s.kind)}</span>
+         <span class="badge">${escapeHtml(s.status)}</span>
+       </div>
+       <p class="meta">#${s.id} ${escapeHtml(s.title || "")}</p>
+       ${s.error ? `<p class="meta">${escapeHtml(s.error)}</p>` : ""}</div>`
+    ).join("") : emptyState("暂无提交", "提交后系统会自动生成候选题目，等待管理员审核");
+  } catch (e) { box.innerHTML = `<p class="meta">${escapeHtml(e.message)}</p>`; }
+}
+
+async function loadAdminSubmissions() {
+  const box = $("#ugc-admin-list");
+  if (!box) return;
+  try {
+    const rows = await api("/api/admin/ugc/submissions?status=");
+    box.innerHTML = rows.length ? rows.map((s) =>
+      `<div class="card question-card"><div class="question-head">
+         <span class="badge">#${s.id}</span><span class="badge">${escapeHtml(s.kind)}</span>
+         <span class="badge">${escapeHtml(s.status)}</span>
+       </div>
+       <p class="meta">${escapeHtml(s.title || "")} · source=${s.source_id || "-"}</p>
+       ${s.error ? `<p class="meta">${escapeHtml(s.error)}</p>` : ""}
+       ${s.status === "failed" ? `<button class="admin-btn" data-retry="${s.id}">重试</button>` : ""}</div>`
+    ).join("") : emptyState("暂无提交", "");
+    box.querySelectorAll("[data-retry]").forEach((b) => b.addEventListener("click", async () => {
+      try { await api(`/api/admin/ugc/submissions/${b.dataset.retry}/retry`, { method: "POST" }); loadAdminSubmissions(); }
+      catch (err) { uiToast(err.message); }
+    }));
+  } catch (e) { box.innerHTML = `<p class="meta">${escapeHtml(e.message)}</p>`; }
+}
+
+async function loadAdminFeedback() {
+  const box = $("#fb-admin-list");
+  if (!box) return;
+  try {
+    const rows = await api("/api/admin/feedback?status=open");
+    box.innerHTML = rows.length ? rows.map((f) =>
+      `<div class="card question-card"><div class="question-head">
+         <span class="badge">${escapeHtml(f.category)}</span><span class="badge">Q#${f.question_id}</span>
+         <span class="badge">${f.status}</span>
+       </div>
+       ${f.duplicate_question_ids && f.duplicate_question_ids.length ? `<p class="meta">疑似重复：${f.duplicate_question_ids.join(", ")}</p>` : ""}
+       ${f.comment ? `<p>${escapeHtml(f.comment)}</p>` : ""}
+       <div class="upload-row">
+         <button class="admin-btn" data-fb-resolve="${f.id}">处理完成</button>
+         <button class="admin-btn" data-fb-dismiss="${f.id}">忽略</button>
+       </div></div>`
+    ).join("") : emptyState("暂无待处理反馈", "");
+    box.querySelectorAll("[data-fb-resolve]").forEach((b) => b.addEventListener("click", async () => {
+      try { await api(`/api/admin/feedback/${b.dataset.fbResolve}/resolve`, { method: "POST" }); loadAdminFeedback(); }
+      catch (err) { uiToast(err.message); }
+    }));
+    box.querySelectorAll("[data-fb-dismiss]").forEach((b) => b.addEventListener("click", async () => {
+      try { await api(`/api/admin/feedback/${b.dataset.fbDismiss}/dismiss`, { method: "POST" }); loadAdminFeedback(); }
+      catch (err) { uiToast(err.message); }
+    }));
+  } catch (e) { box.innerHTML = `<p class="meta">${escapeHtml(e.message)}</p>`; }
+}
+
+$("#ugc-submit").addEventListener("click", async () => {
+  const msg = $("#ugc-msg");
+  msg.textContent = "";
+  try {
+    const consent = $("#ugc-consent").checked;
+    if (!consent) throw new Error("请先勾选内容授权声明");
+    const body = {
+      kind: $("#ugc-kind").value,
+      title: $("#ugc-title").value.trim(),
+      content: $("#ugc-content").value,
+      consent,
+    };
+    await api("/api/ugc/submissions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    $("#ugc-title").value = "";
+    $("#ugc-content").value = "";
+    $("#ugc-consent").checked = false;
+    msg.textContent = "提交成功，已进入自动出题队列，等待管理员审核";
+    loadMySubmissions();
+  } catch (err) { msg.textContent = err.message; }
+});
+
+// --- 题目质量反馈 ---
+
+const feedbackState = { questionId: null, selected: new Set(), candidates: [] };
+
+async function openFeedbackModal(id, stem) {
+  feedbackState.questionId = id;
+  feedbackState.selected = new Set();
+  feedbackState.candidates = [];
+  $("#fb-question-stem").textContent = stem;
+  $("#fb-category").value = "wrong";
+  $("#fb-comment").value = "";
+  $("#fb-msg").textContent = "";
+  $("#fb-dup-search").value = "";
+  toggleFeedbackDup();
+  $("#feedback-modal").classList.remove("hidden");
+}
+
+function toggleFeedbackDup() {
+  const dup = $("#fb-category").value === "duplicate";
+  $("#fb-dup-area").classList.toggle("hidden", !dup);
+  if (dup) loadFeedbackSimilar();
+}
+
+async function loadFeedbackSimilar() {
+  const box = $("#fb-dup-candidates");
+  box.innerHTML = "";
+  try {
+    const list = await api(`/api/questions/${feedbackState.questionId}/similar`);
+    feedbackState.candidates = list || [];
+    renderFeedbackCandidates();
+  } catch (e) { box.innerHTML = `<p class="meta">${escapeHtml(e.message)}</p>`; }
+}
+
+function renderFeedbackCandidates() {
+  const box = $("#fb-dup-candidates");
+  box.innerHTML = feedbackState.candidates.length ? feedbackState.candidates.map((c) =>
+    `<label class="card question-card feedback-opt">
+       <input type="checkbox" data-id="${c.id}" ${feedbackState.selected.has(c.id) ? "checked" : ""}>
+       <span>${escapeHtml(c.stem)} <span class="badge">${(c.sim * 100).toFixed(1)}%</span></span>
+     </label>`
+  ).join("") : `<p class="meta">未找到相似度 &gt;= 0.78 的候选</p>`;
+  box.querySelectorAll("input[type=checkbox]").forEach((cb) => cb.addEventListener("change", () => {
+    const id = Number(cb.dataset.id);
+    if (cb.checked) {
+      if (feedbackState.selected.size >= 3) { cb.checked = false; uiToast("最多选择 3 道"); return; }
+      feedbackState.selected.add(id);
+    } else {
+      feedbackState.selected.delete(id);
+    }
+  }));
+}
+
+$("#fb-category").addEventListener("change", toggleFeedbackDup);
+$("#fb-cancel").addEventListener("click", () => $("#feedback-modal").classList.add("hidden"));
+$("#fb-dup-search").addEventListener("input", async (e) => {
+  const q = e.target.value.trim();
+  if (!q) { feedbackState.candidates = []; loadFeedbackSimilar(); return; }
+  try {
+    const data = await api(`/api/bank?q=${encodeURIComponent(q)}&reviewed=1&page_size=20`);
+    const seen = new Set(feedbackState.candidates.map((c) => c.id));
+    const add = (data.items || []).filter((x) => x.id !== feedbackState.questionId && !seen.has(x.id)).map((x) => ({ id: x.id, stem: x.stem, sim: 0 }));
+    feedbackState.candidates = feedbackState.candidates.concat(add);
+    renderFeedbackCandidates();
+  } catch (err) { uiToast(err.message); }
+});
+$("#fb-submit").addEventListener("click", async () => {
+  const msg = $("#fb-msg");
+  msg.textContent = "";
+  try {
+    const category = $("#fb-category").value;
+    const body = {
+      question_id: feedbackState.questionId,
+      category,
+      duplicate_question_ids: category === "duplicate" ? [...feedbackState.selected] : [],
+      comment: $("#fb-comment").value.trim(),
+    };
+    if (category === "duplicate" && !body.duplicate_question_ids.length) throw new Error("请至少勾选一道疑似重复题");
+    await api("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    $("#feedback-modal").classList.add("hidden");
+    uiToast("反馈已提交，感谢你的帮助");
+  } catch (err) { msg.textContent = err.message; }
+});
+
+// 题库卡片增加「反馈」按钮
+const bankCardClickGuard = (e) => {
+  if (e.target.closest(".fb-open")) return;
+};
+document.addEventListener("click", async (e) => {
+  const fbBtn = e.target.closest(".fb-open");
+  if (fbBtn) {
+    e.stopPropagation();
+    const id = Number(fbBtn.dataset.id);
+    try {
+      let stem = fbBtn.dataset.stem || "";
+      if (!stem) { const d = await api(`/api/questions/${id}`); stem = d.stem || ""; }
+      openFeedbackModal(id, stem);
+    } catch (err) { uiToast(err.message); }
+    return;
+  }
+});
