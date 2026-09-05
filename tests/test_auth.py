@@ -376,15 +376,16 @@ def test_cookie_invalid_and_expired_token_401(db):
     c.cookies.set("session_token", "invalid-token")
     assert c.get("/api/auth/me").status_code == 401
 
-    # 有效 token 后强制过期
-    resp = c.post("/api/auth/login", json={"email": "alice@163.com", "password": "pass1234"})
+    # 有效 token 后强制过期：用全新客户端避免手动设置 invalid cookie 污染 CookieJar
+    c2 = bare_client()
+    resp = c2.post("/api/auth/login", json={"email": "alice@163.com", "password": "pass1234"})
     token = resp.cookies.get("session_token")
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     with get_session() as s:
         row = s.scalars(select(UserToken).where(UserToken.token_hash == token_hash)).one()
         row.expires_at = datetime.now() - timedelta(seconds=1)
         commit(s)
-    assert c.get("/api/auth/me").status_code == 401
+    assert c2.get("/api/auth/me").status_code == 401
     with get_session() as s:
         assert s.scalars(
             select(UserToken).where(UserToken.token_hash == token_hash)
