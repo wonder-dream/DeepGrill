@@ -358,7 +358,10 @@ def create_app(
             path = request.url.path
             if path.startswith("/api/") and not any(path.startswith(x) for x in ("/api/auth/send-code", "/api/auth/login", "/api/auth/register")):
                 auth = request.headers.get("authorization", "")
-                if not auth.startswith("Bearer "):
+                cookie_token = request.cookies.get(SESSION_COOKIE, "")
+                # 仅当请求携带登录 Cookie 且未走 Bearer 时才要求自定义头；
+                # 匿名写请求交给鉴权依赖返回 401，而不是被 CSRF 中间件吞成 403。
+                if cookie_token and not auth.startswith("Bearer "):
                     if request.headers.get("x-requested-with") != "fetch":
                         return JSONResponse(status_code=403, content={"detail": "CSRF 校验失败"})
         return await call_next(request)

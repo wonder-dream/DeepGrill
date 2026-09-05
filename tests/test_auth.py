@@ -317,6 +317,204 @@ def test_cookie_write_csrf_requires_custom_header(db):
     assert ok.status_code == 200
 
 
+
+# --- HttpOnly Cookie 迁移：happy / edge / bad 全覆盖 ---
+
+
+def _login_cookie_client(email="alice@163.com", password="pass1234"):
+    """注册 + 登录并返回已持有 session_token Cookie 的 TestClient。"""
+    c = bare_client()
+    assert register(c, email, password).status_code == 200
+    resp = c.post("/api/auth/login", json={"email": email, "password": password})
+    assert resp.status_code == 200
+    assert resp.cookies.get("session_token")
+    return c
+
+
+def test_register_cookie_full_attributes_and_immediate_auth(db):
+    """注册即种 HttpOnly Cookie：属性完整、响应不含 token、立即可访问受保护接口。"""
+    c = bare_client()
+    resp = register(c, "alice@163.com", "pass1234")
+    assert resp.status_code == 200
+    assert "token" not in resp.json()
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "session_token=" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=lax" in set_cookie
+    assert "Path=/" in set_cookie
+    assert "Max-Age=2592000" in set_cookie
+    assert c.get("/api/auth/me").status_code == 200
+    assert c.get("/api/review/tags").status_code == 200
+
+
+def test_cookie_secure_flag_controlled_by_env(monkeypatch, db):
+    """COOKIE_SECURE=1 才带 Secure；0/未配不带（HTTP 开发环境可用）。"""
+    monkeypatch.setenv("COOKIE_SECURE", "0")
+    c0 = bare_client()
+    r0 = register(c0, "plain@163.com", "pass1234")
+    assert r0.status_code == 200
+    assert "Secure" not in r0.headers.get("set-cookie", "")
+
+    monkeypatch.setenv("COOKIE_SECURE", "1")
+    c1 = bare_client()
+    r1 = register(c1, "secure@163.com", "pass1234")
+    assert r1.status_code == 200
+    assert "Secure" in r1.headers.get("set-cookie", "")
+
+
+def test_cookie_invalid_and_expired_token_401(db):
+    """无效 Cookie / 过期 Cookie 均 401；过期行惰性删除。"""
+    from datetime import timedelta
+
+    from app.models import UserToken
+
+    c = bare_client()
+    register(c, "alice@163.com", "pass1234")
+    c.post("/api/auth/login", json={"email": "alice@163.com", "password": "pass1234"})
+
+    # 无效 token
+    c.cookies.set("session_token", "invalid-token")
+    assert c.get("/api/auth/me").status_code == 401
+
+    # 有效 token 后强制过期
+    resp = c.post("/api/auth/login", json={"email": "alice@163.com", "password": "pass1234"})
+    token = resp.cookies.get("session_token")
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with get_session() as s:
+        row = s.scalars(select(UserToken).where(UserToken.token_hash == token_hash)).one()
+        row.expires_at = datetime.now() - timedelta(seconds=1)
+        commit(s)
+    assert c.get("/api/auth/me").status_code == 401
+    with get_session() as s:
+        assert s.scalars(
+            select(UserToken).where(UserToken.token_hash == token_hash)
+        ).first() is None
+
+
+def test_bearer_only_authentication_regression(db):
+    """纯 Authorization: Bearer（不带 Cookie）仍可鉴权，兼容脚本/测试。"""
+    c = bare_client()
+    token = register(c, "alice@163.com", "pass1234").cookies.get("session_token")
+    c2 = bare_client()  # 无 Cookie 的全新客户端
+    me = c2.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200
+    assert me.json()["username"] == "alice"
+
+
+def test_authorization_header_precedence_over_cookie(db):
+    """同时带 Cookie 与 Bearer 时 Bearer 优先（_extract_token 的 or 语义）。"""
+    from app.auth import create_token
+
+    c = _login_cookie_client("alice@163.com")
+    with get_session() as s:
+        bob = s.scalars(select(User).where(User.email == "bob@test.com")).first()
+        if bob is None:
+            bob = User(email="bob@test.com", username="bob",
+                       password_hash=hash_password("pass1234"), role="user")
+            s.add(bob)
+            commit(s)
+            s.refresh(bob)
+        bob_token = create_token(bob.id)
+    me = c.get("/api/auth/me", headers={"Authorization": f"Bearer {bob_token}"})
+    assert me.status_code == 200
+    assert me.json()["username"] == "bob"
+
+
+def test_cookie_logout_revokes_server_token_and_clears_cookie(db):
+    """Cookie 登出：服务端 UserToken 被删，Cookie 以 Max-Age=0 清除。"""
+    from app.models import UserToken
+
+    c = _login_cookie_client("alice@163.com")
+    token = c.cookies.get("session_token")
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    logout = c.post("/api/auth/logout", headers={"X-Requested-With": "fetch"})
+    assert logout.status_code == 200
+    assert "Max-Age=0" in (logout.headers.get("set-cookie", "") or "")
+    with get_session() as s:
+        assert s.scalars(
+            select(UserToken).where(UserToken.token_hash == token_hash)
+        ).first() is None
+    assert c.get("/api/auth/me").status_code == 401
+
+
+def test_csrf_cookie_write_requires_fetch_header_exact(db):
+    """Cookie 写接口：无头 / 错误自定义头 403，只有 X-Requested-With: fetch 放行。"""
+    c = _login_cookie_client("alice@163.com")
+    payload = {"focus": "backend", "focus_lang": "java"}
+    assert c.put("/api/auth/profile", json=payload).status_code == 403
+    assert c.put(
+        "/api/auth/profile", json=payload,
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    ).status_code == 403
+    ok = c.put(
+        "/api/auth/profile", json=payload,
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["focus"] == "backend"
+
+
+def test_csrf_bearer_write_bypasses_custom_header(db):
+    """Bearer 写请求不需要 X-Requested-With（旧客户端兼容，不走 Cookie 自动携带）。"""
+    c = authed_client("alice", role="user")
+    resp = c.put("/api/auth/profile", json={"focus": "backend", "focus_lang": "java"})
+    assert resp.status_code == 200
+
+
+def test_csrf_failed_logout_keeps_session_until_header_present(db):
+    """CSRF 拦截的登出不撤销会话；带自定义头后可正常登出。"""
+    c = _login_cookie_client("alice@163.com")
+    assert c.post("/api/auth/logout").status_code == 403
+    assert c.get("/api/auth/me").status_code == 200  # 会话仍有效
+    assert c.post("/api/auth/logout", headers={"X-Requested-With": "fetch"}).status_code == 200
+    assert c.get("/api/auth/me").status_code == 401
+
+
+def test_csrf_anonymous_write_returns_401_not_403(db):
+    """无 Cookie 的匿名写请求由鉴权返回 401，不被 CSRF 中间件提前 403。"""
+    c = bare_client()
+    assert c.post("/api/auth/logout").status_code == 401
+    # 带自定义头但无 Cookie 同样应 401（未登录）
+    assert c.post("/api/auth/logout", headers={"X-Requested-With": "fetch"}).status_code == 401
+
+
+def test_login_register_failure_does_not_set_cookie(db):
+    """登录/注册失败不种 Cookie，也不返回原始 token。"""
+    c = bare_client()
+    # 注册失败：错误验证码
+    resp = register(c, "fail@163.com", code="000000")
+    assert resp.status_code == 400
+    assert not resp.cookies.get("session_token")
+    # 注册失败：弱密码
+    resp2 = register(c, "fail@163.com", "onlyletters")
+    assert resp2.status_code == 400
+    assert not resp2.cookies.get("session_token")
+    # 登录失败（用全新客户端避免残留注册 Cookie）
+    register(c, "alice@163.com", "pass1234")
+    c2 = bare_client()
+    bad = c2.post("/api/auth/login", json={"email": "alice@163.com", "password": "wrong123"})
+    assert bad.status_code == 401
+    assert not bad.cookies.get("session_token")
+    assert c2.get("/api/auth/me").status_code == 401
+
+
+def test_logout_without_login_401_and_bearer_logout_clears_cookie(db):
+    """未登录登出 401；Bearer 登出兼容（无 Cookie 场景）也能撤销。"""
+    from app.models import UserToken
+
+    c = bare_client()
+    token = register(c, "alice@163.com", "pass1234").cookies.get("session_token")
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    c2 = bare_client()
+    assert c2.post("/api/auth/logout").status_code == 401
+    # 用全新无 Cookie 客户端走 Bearer 登出
+    assert c2.post("/api/auth/logout", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    with get_session() as s:
+        assert s.scalars(
+            select(UserToken).where(UserToken.token_hash == token_hash)
+        ).first() is None
+
+
 def test_unauthorized_401(db):
     c = bare_client()
     assert c.get("/api/today").status_code == 401
