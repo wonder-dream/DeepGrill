@@ -115,8 +115,8 @@ def main() -> None:
     print("| 题 | 结果 |")
     print("|---|---|")
     for item in sample:
-    q = make_question(item["stem"])
-    k = _knowledge_for(q.stem, getattr(q, "_tags", []), lambda: embedder, k=5)
+        q = make_question(item["stem"])
+        k = _knowledge_for(q.stem, getattr(q, "_tags", []), lambda: embedder, k=5)
         a = judge_once(llm, q, k)
         b = judge_once(llm, q, None)
         if not a or not b:

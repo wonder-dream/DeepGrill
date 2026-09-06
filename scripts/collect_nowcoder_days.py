@@ -13,15 +13,12 @@ import hashlib
 import logging
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import select
-
 from app.config import load_config, secret_value
-from app.crawler import nowcoder
 from app.crawler.nowcoder import NowcoderAPI
 from app.db import commit, find_source_by_hash, get_session, init_db
 from app.models import Source, SourceType
@@ -44,7 +41,6 @@ def import_entry(entry: dict) -> bool:
             type=SourceType.nowcoder,
             url=entry["url"],
             title=entry["title"],
-            raw_text=entry["content"],
             cleaned_text=clean_text(entry["content"]),
             source_hash=url_hash,
         )
