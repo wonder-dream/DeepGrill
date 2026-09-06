@@ -283,21 +283,6 @@ def _wrap_storage(func):
     return inner
 
 
-@_wrap_storage
-def list_today_questions(session: DBSession, user_id: int) -> list[Question]:
-    """今日题目（每用户池单轨）：该用户 picked_at 属今天的题。
-
-    昨日及更早的 picks 自然不在今日列表（按日期过滤）；未完成的题明天自动回到候选。
-    """
-    stmt = (
-        select(Question)
-        .join(UserPick, UserPick.question_id == Question.id)
-        .where(UserPick.user_id == user_id, UserPick.picked_at >= _today_start())
-        .order_by(Question.created_at)
-    )
-    return list(session.scalars(stmt))
-
-
 def _today_start() -> datetime:
     return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -504,10 +489,3 @@ def latest_task_log(session: DBSession, task_name: str) -> TaskLog | None:
         .limit(1)
     )
     return session.scalars(stmt).first()
-
-
-@_wrap_storage
-def count_questions_created_since(session: DBSession, since: datetime) -> int:
-    """供 D16 每日新入库不重复问题上限计数。"""
-    stmt = select(func.count()).select_from(Question).where(Question.created_at >= since)
-    return session.scalars(stmt).one()

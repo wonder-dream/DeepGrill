@@ -8,7 +8,6 @@ from app.config import (
     AppConfig,
     DailyConfig,
     LLMConfig,
-    NotificationConfig,
     NowcoderConfig,
     SourcesConfig,
 )
@@ -33,7 +32,6 @@ def make_config(schedule="08:00"):
             max_new_questions=36, knowledge_limit=3, design_limit=2,
             project_limit=1, chain_max_rounds=20, schedule=schedule,
         ),
-        notification=NotificationConfig(enabled=False),
         sources=SourcesConfig(github_repos=[]),
     )
 

@@ -6,7 +6,6 @@ from app.config import (
     AppConfig,
     DailyConfig,
     LLMConfig,
-    NotificationConfig,
     NowcoderConfig,
     SourcesConfig,
 )
@@ -68,7 +67,6 @@ def make_config(daily_overrides=None, github_repos=None, nowcoder_enabled=False)
         ),
         nowcoder=NowcoderConfig(cookie_env="NOWCODER_COOKIE", request_interval=0, retries=1),
         daily=DailyConfig(**daily_defaults),
-        notification=NotificationConfig(enabled=False),
         sources=SourcesConfig(
             github_repos=github_repos or [],
             nowcoder_enabled=nowcoder_enabled,
@@ -274,7 +272,7 @@ def test_picked_questions_flow_through_generation(db):
     commit(db)
     db.refresh(user)
 
-    from app.db import list_today_questions, pick_questions
+    from app.db import pick_questions
 
     # 审核中题目不可选；owner 审核通过后进入选题池
     assert pick_questions(db, user.id, 5) == []
@@ -285,7 +283,6 @@ def test_picked_questions_flow_through_generation(db):
     commit(db)
     picked = pick_questions(db, user.id, 5)
     assert [q.stem for q in picked] == ["讲一下 HashMap 底层原理"]
-    assert [q.stem for q in list_today_questions(db, user.id)] == ["讲一下 HashMap 底层原理"]
 
 
 # --- fail ---

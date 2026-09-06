@@ -45,17 +45,6 @@ class DailyConfig(_FrozenModel):
     schedule: str = "08:00"
 
 
-class NotificationConfig(_FrozenModel):
-    enabled: bool = True
-
-
-class SMTPConfig(_FrozenModel):
-    host_env: str = "SMTP_HOST"
-    port_env: str = "SMTP_PORT"
-    user_env: str = "SMTP_USER"
-    pass_env: str = "SMTP_PASS"
-
-
 class GitHubRepo(_FrozenModel):
     """单个 GitHub 源配置：repo 必填；expected_license/manual_license 可选。"""
 
@@ -108,9 +97,7 @@ class AppConfig(BaseModel):
     llm: LLMConfig
     nowcoder: NowcoderConfig
     daily: DailyConfig
-    notification: NotificationConfig
     sources: SourcesConfig
-    smtp: SMTPConfig = SMTPConfig()
     ugc: UgcConfig = UgcConfig()
     feedback: FeedbackConfig = FeedbackConfig()
 

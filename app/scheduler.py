@@ -48,7 +48,10 @@ def shutdown() -> None:
 
 
 def trigger_now() -> None:
-    """手动触发（Web"立即更新"按钮调用）；任务运行中则直接返回。"""
+    """手动触发一次调度任务（测试/调试入口）；任务运行中则直接返回。
+
+    注意：Web「立即更新」实际走 BackgroundTasks 直跑 daily_runner，不经过本函数。
+    """
     _run_locked()
 
 

@@ -494,7 +494,7 @@ def create_app(
             from ..tags import reload_tags
 
             reload_tags()  # 词表从 DB 加载（首次写入种子）
-            _seed_owner_if_configured()  # OWNER_USERNAME/OWNER_PASSWORD 预置 owner（防空库抢注）
+            _seed_owner_if_configured()  # OWNER_EMAIL/OWNER_PASSWORD 预置 owner（防空库抢注）
             scheduler.start_scheduler(config, daily_runner)
 
         @app.on_event("shutdown")
@@ -1767,12 +1767,8 @@ def create_app(
     @app.get("/api/daily/latest")
     def daily_latest(user: User = Depends(require_owner)):
         """最近一次流水线运行报告（TaskLog）+ 当前待审核题数（前端轮询「立即更新」完成态）。"""
-        from ..models import TaskLog
-
         with db.get_session() as session:
-            log = session.scalars(
-                select(TaskLog).order_by(TaskLog.id.desc()).limit(1)
-            ).first()
+            log = db.latest_task_log(session, "daily")
             pending_count = session.scalar(
                 select(func.count())
                 .select_from(Question)

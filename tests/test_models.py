@@ -6,11 +6,9 @@ from sqlalchemy.exc import IntegrityError
 
 from app.db import (
     commit,
-    count_questions_created_since,
     get_session,
     init_db,
     latest_task_log,
-    list_today_questions,
     pick_questions,
 )
 from app.errors import DuplicateSource, StorageError
@@ -197,10 +195,8 @@ def test_enum_values_roundtrip(db):
 
 def test_empty_table_helpers(db):
     user = add_user(db)
-    assert list_today_questions(db, user.id) == []
     assert pick_questions(db, user.id, 5) == []
     assert latest_task_log(db, "daily") is None
-    assert count_questions_created_since(db, datetime.now() - timedelta(days=1)) == 0
 
 
 def test_bulk_insert(db):
@@ -208,7 +204,6 @@ def test_bulk_insert(db):
     for i in range(10):
         db.add(Question(source_id=source.id, type=QuestionType.knowledge, stem=f"q{i}"))
     commit(db)
-    assert count_questions_created_since(db, datetime.now() - timedelta(days=1)) == 10
 
 
 def test_long_text_roundtrip(db):
@@ -268,7 +263,17 @@ def test_pick_questions_per_user_pool(db):
     picked_a = pick_questions(db, user_a.id, 2)
     a_stems = {q.stem for q in picked_a}
     assert len(a_stems) == 2 and a_stems <= {"q0", "q1", "q2"}
-    assert {q.stem for q in list_today_questions(db, user_a.id)} == a_stems
+    # 与 /api/today 相同口径：picked_at 落于今天的题
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_stems = {
+        q.stem
+        for q in db.scalars(
+            select(Question)
+            .join(UserPick, UserPick.question_id == Question.id)
+            .where(UserPick.user_id == user_a.id, UserPick.picked_at >= today)
+        ).all()
+    }
+    assert today_stems == a_stems
 
     # B 今天从全库可选题（A 的选择不影响 B）
     picked_b = pick_questions(db, user_b.id, 2)
@@ -367,14 +372,6 @@ def test_latest_task_log_returns_newest(db):
     assert log.status == "failed"
     assert log.error == "boom"
     assert latest_task_log(db, "other") is None
-
-
-def test_count_questions_created_since(db):
-    add_question(db)
-    add_question(db)
-    now = datetime.now()
-    assert count_questions_created_since(db, now - timedelta(days=1)) == 2
-    assert count_questions_created_since(db, now + timedelta(days=1)) == 0
 
 
 # --- fail ---

@@ -184,14 +184,6 @@ def test_undecodable_file_skipped_others_imported(tmp_path, monkeypatch, db):
     assert sources[0].title == "good"
 
 
-def test_ensure_repos_returns_paths(tmp_path, monkeypatch):
-    root = make_remote(tmp_path, files={"a.md": "一面"})
-    monkeypatch.setattr(gh, "CLONE_BASE", str(root))
-    paths = gh.ensure_repos(["owner/repo1", "owner/nope"], tmp_path / "cache")
-    assert len(paths) == 1
-    assert paths[0].name == "owner__repo1"
-
-
 def test_relative_cache_dir_no_nesting(tmp_path, monkeypatch, db):
     """回归：生产用相对 cache_dir（如 data/repos），clone 目标必须是绝对路径，否则嵌套。"""
     root = make_remote(tmp_path, files={"a.md": "一面：\n问了 A。"})

@@ -26,7 +26,6 @@ VALID_YAML = {
         "chain_max_rounds": 20,
         "schedule": "08:00",
     },
-    "notification": {"enabled": True},
     "sources": {"github_repos": ["a/b"], "nowcoder_enabled": True},
 }
 
@@ -63,7 +62,6 @@ def test_full_config_maps_correctly(tmp_path, env):
     assert cfg.daily.project_limit == 1
     assert cfg.daily.chain_max_rounds == 20
     assert cfg.daily.schedule == "08:00"
-    assert cfg.notification.enabled is True
     assert [r.repo for r in cfg.sources.github_repos] == ["a/b"]
     assert cfg.sources.github_repos[0].manual_license is None
     assert cfg.sources.github_repos[0].expected_license is None
@@ -126,14 +124,12 @@ def test_optional_fields_use_defaults(tmp_path, env):
     data = {
         **VALID_YAML,
         "daily": {**VALID_YAML["daily"], "schedule": "10:30"},
-        "notification": {},
         "sources": {"github_repos": []},
     }
     del data["daily"]["schedule"]
     cfg = load_config(write_yaml(tmp_path, data))
 
     assert cfg.daily.schedule == "08:00"
-    assert cfg.notification.enabled is True
     assert cfg.sources.github_repos == []
     assert cfg.sources.nowcoder_enabled is False
 

@@ -66,19 +66,6 @@ def collect(
     return sources
 
 
-def ensure_repos(repos: list[str], cache_dir: Path) -> list[Path]:
-    """clone（不存在）或 pull（已存在），返回成功仓库的本地路径列表。"""
-    if shutil.which("git") is None:
-        return []
-    paths = []
-    for repo in repos:
-        try:
-            paths.append(_ensure_repo(repo, cache_dir))
-        except GitHubError as e:
-            logger.warning("github repo %s skipped: %s", repo, e)
-    return paths
-
-
 def _repo_name(repo) -> str:
     """repo 可为字符串或 GitHubRepo 配置对象。"""
     return repo.repo if not isinstance(repo, str) else repo
