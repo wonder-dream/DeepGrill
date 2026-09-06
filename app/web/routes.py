@@ -2659,16 +2659,6 @@ def _set_question_tags(session, question_id: int, names: list[str]) -> None:
     db.set_question_tags(session, question_id, names)
 
 
-def _tag_ids_by_name(session, names: list[str]) -> list[int]:
-    """词表标签名 → id 映射（question_tags 写入用）。"""
-    from ..models import Tag
-
-    if not names:
-        return []
-    rows = session.scalars(select(Tag).where(Tag.name.in_(names))).all()
-    return [t.id for t in rows]
-
-
 def _question_tag_map(session, qids: list[int]) -> dict[int, list[str]]:
     """批量取题-标签名映射（question_tags → tags），供列表接口组装 tags 字段。"""
     from ..models import QuestionTag, Tag

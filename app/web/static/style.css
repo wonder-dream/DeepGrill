@@ -1251,9 +1251,7 @@ details summary:hover { color: var(--red); }
 #auth-error,
 #qm-error,
 #upload-status.upload-err,
-#ui-toast.toast-error,
-.rv-danger,
-.rv-toast.rv-toast-error {
+#ui-toast.toast-error {
   color: var(--danger) !important;
   border-color: var(--danger) !important;
   background: rgba(239, 68, 68, .08) !important;
@@ -1281,7 +1279,6 @@ details summary:hover { color: var(--red); }
 
 /* 弹层与 UI：无阴影、1px 黑/白描边 */
 .modal-card,
-.rv-modal-card,
 #calendar-panel,
 .calendar-pick {
   box-shadow: none;
@@ -1290,97 +1287,22 @@ details summary:hover { color: var(--red); }
 
 
 
-/* ============================================================
-   参考稿通用组件（备用 / 与现有 SPA 共用设计语言）
-   ============================================================ */
-.topbar {
-  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
-  display: flex; align-items: center; gap: 10px;
-  padding: 14px 17px;
-  border-bottom: 1px solid var(--fg);
-  background: var(--bg);
-}
-.logo {
-  font-weight: 700; font-size: 17px; letter-spacing: .5px;
-  display: flex; align-items: center; gap: 8px;
-}
-.logo .dot { width: 9px; height: 9px; background: var(--accent); display: inline-block; }
-.topbar nav { display: flex; gap: 4px; margin-left: 24px; flex: 1; }
-.pill {
-  padding: 4px 12px 5px; border-radius: 20px;
-  font-size: 14px; line-height: 1.3;
-  transition: background .12s, color .12s;
-  border: 1px solid transparent;
-}
-.pill:hover, .pill.active { background: var(--fg); color: var(--bg); }
-.topbar .meta { font-size: 13px; color: var(--muted); }
-.lift {
-  position: relative; display: inline-block;
-  background: var(--fg); color: var(--bg);
-  border: 1px solid var(--fg);
-  padding: 14px 28px; font-size: 16px; font-weight: 700;
-  transition: transform .18s var(--ease);
-}
-.lift::after {
-  content: ''; position: absolute; inset: 0; z-index: -1;
-  background: var(--accent);
-  transform: translate(0, 0);
-  transition: transform .18s var(--ease);
-}
-.lift:hover { transform: translate(-3px, -3px); }
-.lift:hover::after { transform: translate(6px, 6px); }
-.lift.ghost { background: var(--bg); color: var(--fg); border: 1px solid var(--fg); }
-.lift.ghost::after { background: var(--accent); }
-.tag {
-  display: inline-block; border: 1px solid var(--fg);
-  padding: 1px 8px 2px; font-size: 12px; line-height: 1.4;
-  border-radius: 6px;
-}
-.tag.amber { color: var(--accent); border-color: var(--accent); }
-.tag.red { color: var(--danger); border-color: var(--danger); }
-.tag.green { color: var(--success); border-color: var(--success); }
+/* 打字机光标与等宽数字（考场/主界面共用） */
 .mono-num { font-variant-numeric: tabular-nums; }
-.reveal {
-  opacity: 0; transform: translateY(30px);
-  transition: opacity .9s var(--ease), transform .9s var(--ease);
-}
-.reveal.in { opacity: 1; transform: none; }
 .caret::after {
   content: '▍'; color: var(--accent);
   animation: blink 1.06s step-end infinite;
 }
 @keyframes blink { 50% { opacity: 0; } }
-#wipe {
-  position: fixed; inset: 0; background: #000;
-  transform: scaleX(0); transform-origin: left;
-  z-index: 9999; pointer-events: none;
-  transition: transform .42s cubic-bezier(.76, 0, .24, 1);
-}
-#wipe.on { transform: scaleX(1); }
-#wipe.leave { transform: scaleX(0); transform-origin: right; }
-.kicker {
-  font-size: 12px; letter-spacing: 2px; color: var(--muted);
-  text-transform: uppercase; margin-bottom: 14px;
-}
-.kicker::before { content: '[ '; color: var(--accent); }
-.kicker::after { content: ' ]'; color: var(--accent); }
-.wrap { max-width: 1200px; margin: 0 auto; padding: 0 17px; }
 
 /* 主题切换柔和过渡 */
 body {
   transition: background-color .4s var(--ease), color .4s var(--ease);
 }
 
-/* 制图纸背景：所有页面默认铺网格 */
-body {
-  background-image: var(--bg-image);
-  background-size: var(--bg-size);
-  background-attachment: fixed;
-}
-
 /* ============================================================
    参考稿动效：评分条入场 / 减少动效偏好
-   —— 页面转场 #wipe 与打字机光标 .caret 已在上方定义
+   —— 打字机光标 .caret 已在上方定义
    ============================================================ */
 
 /* 评分/维度条：0 → 目标宽度 入场（判分报告） */
@@ -1388,9 +1310,8 @@ body {
   transition: width 1.2s cubic-bezier(.215, .61, .355, 1);
 }
 
-/* 尊重系统「减少动态效果」偏好：关闭转场与条动画 */
+/* 尊重系统「减少动态效果」偏好：关闭条动画 */
 @media (prefers-reduced-motion: reduce) {
-  #wipe { display: none !important; }
   .score-fill { transition: none !important; }
 }
 

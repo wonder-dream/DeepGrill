@@ -72,11 +72,3 @@ class JudgeError(AppError):
 
 class ChainStateError(AppError):
     """追问链状态机非法调用（如 finished 后继续）。"""
-
-
-class PipelineStepError(AppError):
-    """流水线步骤错误。"""
-
-    def __init__(self, step: str, message: str = ""):
-        super().__init__(f"[{step}] {message}".strip())
-        self.step = step

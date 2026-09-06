@@ -704,60 +704,6 @@ function saveAnswerState() {
   );
 }
 
-async function restoreAnswerSession() {
-  let saved;
-  try {
-    saved = JSON.parse(sessionStorage.getItem("answer_state") || "");
-  } catch (e) {
-    sessionStorage.removeItem("answer_state");
-    return false;
-  }
-  if (!saved || !saved.session_id) return false;
-  let s;
-  try {
-    s = await api(`/api/sessions/${saved.session_id}`);
-  } catch (e) {
-    sessionStorage.removeItem("answer_state"); // 会话不存在/已删除：放弃恢复
-    return false;
-  }
-  if (s.status === "active" || s.status === "judging") {
-    let q;
-    try {
-      q = await api(`/api/questions/${saved.question_id}`);
-    } catch (e) {
-      sessionStorage.removeItem("answer_state");
-      return false;
-    }
-    state.sessionId = saved.session_id;
-    state.question = q;
-    state.returnTo = saved.returnTo || "today";
-    saveAnswerState();
-    renderAnswer();
-    history.pushState(null, "", `#answer?session=${state.sessionId}`); // 后退 → hash 回主视图
-    if (s.status === "judging") {
-      $("#answer-status").textContent = "判分进行中…";
-      pollResult();
-    } else if (s.rounds_done > 0) {
-      renderChat(s.transcript || [], s.followup);
-      if (window.__dshAnim) window.__dshAnim.examRound(s.rounds_done);
-      $("#answer-status").textContent = `已恢复上次对话（已答 ${s.rounds_done} 轮），请在下方继续回答`;
-    }
-    show("answer");
-    return true;
-  }
-  if (s.status === "done") {
-    renderResult(s.judgment);
-    show("result");
-    return true;
-  }
-  if (s.status === "failed") {
-    renderResult(null);
-    show("result");
-    return true;
-  }
-  return false;
-}
-
 function renderAnswer() {
   const q = state.question;
   $("#answer-meta").textContent = `题型：${q.type} · 难度 ${difficultyStars(q.difficulty)} · 标签：${(q.tags || []).join(", ") || "无"}`;
@@ -958,23 +904,6 @@ async function loadDetail(questionId) {
     renderAttempt(data.attempts[0]);
   }
   show("detail");
-}
-
-async function restoreDetailSession() {
-  const raw = sessionStorage.getItem("detail_state");
-  if (!raw) return false;
-  const qid = Number(raw);
-  if (!Number.isInteger(qid)) {
-    sessionStorage.removeItem("detail_state");
-    return false;
-  }
-  try {
-    await loadDetail(qid);
-    return true;
-  } catch (e) {
-    sessionStorage.removeItem("detail_state"); // 题目已删除等：放弃恢复
-    return false;
-  }
 }
 
 async function deleteCurrentAttempt() {
@@ -2579,9 +2508,6 @@ $("#fb-submit").addEventListener("click", async () => {
 });
 
 // 题库卡片增加「反馈」按钮
-const bankCardClickGuard = (e) => {
-  if (e.target.closest(".fb-open")) return;
-};
 document.addEventListener("click", async (e) => {
   const fbBtn = e.target.closest(".fb-open");
   if (fbBtn) {

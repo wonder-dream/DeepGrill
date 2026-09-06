@@ -32,13 +32,11 @@
   --inverse-text: #0A0D0B;
   --bg: #0A0D0B;
   --fg: #F5F5F4;
-  --muted: #A3A3A3;
   --bg-image:
     linear-gradient(to right, var(--grid) 1px, transparent 1px),
     linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
   --bg-size: calc((100vw - 34px) / 90) calc((100vw - 34px) / 90);
   --card-border: 1px solid var(--line);
-  --input-border: 1px solid var(--line-dark);
   --serif: 'Inconsolata', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', monospace;
   --sans: 'Inconsolata', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', monospace;
   --btn-pad: 6px 14px;

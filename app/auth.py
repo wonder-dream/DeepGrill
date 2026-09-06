@@ -21,15 +21,7 @@ TOKEN_TTL_DAYS = 30  # token 有效期（天），过期惰性删除
 
 MAX_USERS = int(os.environ.get("MAX_USERS", "20"))  # 注册名额（不含 owner）
 
-USERNAME_RE = re.compile(r"^[\w\u4e00-\u9fff]{3,20}$")
 PASSWORD_RE = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{8,}$")
-
-
-def validate_username(username: str) -> str | None:
-    """返回错误信息或 None（合法）。"""
-    if not USERNAME_RE.match(username):
-        return "用户名需 3-20 个字符（字母/数字/下划线/中文）"
-    return None
 
 
 def validate_password(password: str) -> str | None:

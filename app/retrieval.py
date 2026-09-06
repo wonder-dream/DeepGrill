@@ -296,11 +296,6 @@ class KnowledgeIndex:
         logger.info("knowledge index rebuilt: %d chunks (faiss=%s)", len(chunks), self._faiss is not None)
 
 
-def knowledge_search(query_vec, k: int = KNOWLEDGE_K) -> list[tuple[str, str]]:
-    """知识检索便捷入口（进程内单例）。"""
-    return _knowledge_index.search(query_vec, k)
-
-
 def knowledge_search_multi(
     query_vecs, query_texts: list[str], k: int = KNOWLEDGE_K
 ) -> list[tuple[str, str]]:

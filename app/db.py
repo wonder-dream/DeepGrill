@@ -3,7 +3,7 @@ import re
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from functools import wraps
 
 from sqlalchemy import create_engine, delete, event, func, or_, select, text
@@ -298,123 +298,8 @@ def list_today_questions(session: DBSession, user_id: int) -> list[Question]:
     return list(session.scalars(stmt))
 
 
-@_wrap_storage
-def list_questions_by_date(
-    session: DBSession, user_id: int, date_str: str
-) -> list[Question]:
-    """按选题日期（picked_at 落于当日零点~次日零点）查该用户选的题。
-
-    供今日页日历单选回看某一天的题目（含未完成的题，历史记录不因回收消失）。
-    """
-    day = datetime.strptime(date_str, "%Y-%m-%d")
-    start = day.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=1)
-    stmt = (
-        select(Question)
-        .join(UserPick, UserPick.question_id == Question.id)
-        .where(UserPick.user_id == user_id, UserPick.picked_at >= start, UserPick.picked_at < end)
-        .order_by(Question.created_at)
-    )
-    return list(session.scalars(stmt))
-
-
 def _today_start() -> datetime:
     return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-
-
-def _weak_tag_weights(
-    session: DBSession, user_id: int, top: int = 5
-) -> dict[str, int]:
-    """聚合该用户全部判分的薄弱点（weak_tags）→ 出现次数 topN。"""
-    from collections import Counter
-
-    from .models import Judgment
-
-    rows = session.scalars(
-        select(Judgment)
-        .join(Session, Judgment.session_id == Session.id)
-        .where(Session.user_id == user_id)
-    ).all()
-    counter: Counter = Counter()
-    for j in rows:
-        for t in (j.weak_tags or []):
-            counter[t] += 1
-    return dict(counter.most_common(top))
-
-
-def _rank_recommend(
-    session: DBSession, candidates: list[Question], user_id: int
-) -> list[Question]:
-    """个性化推荐 = 岗位/语言权重 + 薄弱标签加权 + 多样性摊开 + 按序兜底：
-
-    1. 题岗位分（focus × 分类 roles/lang，见 _role_score）
-    2. 叠加薄弱标签权重（出现次数 top5）
-    3. 每薄弱标签取命中它的第一题（摊开不同薄弱点），再按总分序补齐
-    4. 非本岗/非本语言题不阻断：得分 0 的候选按 created_at 兜底排在最后
-    """
-    from .models import QuestionTag, Tag, TagCategory, User
-
-    weights = _weak_tag_weights(session, user_id)
-    user = session.get(User, user_id)
-    focus = user.focus if user is not None else None
-    focus_lang = user.focus_lang if user is not None else None
-
-    rows = session.execute(
-        select(QuestionTag.question_id, Tag.name, TagCategory.lang, TagCategory.roles)
-        .join(Tag, QuestionTag.tag_id == Tag.id)
-        .join(TagCategory, Tag.category_id == TagCategory.id)
-        .where(QuestionTag.question_id.in_([q.id for q in candidates]))
-    ).all()
-    # 题 → (lang 命中, role 命中, 标签名列表)
-    q_info: dict[int, tuple[int, int, list[str]]] = {}
-    for qid, name, lang, roles in rows:
-        cat_roles = tuple(roles or ())
-        lang_hit = 1 if (focus_lang and lang == focus_lang) else 0
-        role_hit = 1 if (focus and focus in cat_roles) else 0
-        entry = q_info.setdefault(qid, [0, 0, []])
-        entry[0] = max(entry[0], lang_hit)
-        entry[1] = max(entry[1], role_hit)
-        entry[2].append(name)
-
-    def _score(q: Question) -> int:
-        lang_hit, role_hit, _names = q_info.get(q.id, (0, 0, []))
-        if focus == "backend":
-            if focus_lang and lang_hit:
-                return 4 + (2 if role_hit else 0)  # 我的语言 + 后端域最高
-            if not focus_lang and role_hit:
-                return 4  # 未指定语言：所有后端语言题均等
-            if role_hit:
-                return 2  # 其他语言的后端题
-            return 0
-        if focus and role_hit:
-            return 3  # 非 backend 岗位：岗位域题
-        return 0
-
-    def _weak(q: Question) -> int:
-        if not weights:
-            return 0
-        return max((weights.get(t, 0) for t in q_info.get(q.id, (0, 0, []))[2]), default=0)
-
-    def _names(q: Question) -> list[str]:
-        return q_info.get(q.id, (0, 0, []))[2]
-
-    scored = sorted(
-        candidates,
-        key=lambda q: (-_score(q), -_weak(q), q.created_at),
-    )
-    picked: list[Question] = []
-    taken: set[int] = set()
-    for tag in weights:  # 薄弱标签多样性：每标签取 1 题（按上述总分序）
-        for q in scored:
-            if q.id not in taken and tag in _names(q):
-                picked.append(q)
-                taken.add(q.id)
-                break
-    for q in scored:
-        if q.id not in taken:
-            picked.append(q)
-            taken.add(q.id)
-    return picked
 
 
 BAD_SCORE_THRESHOLD = 70  # 上次判分低于此阈值 = 表现不好，重新进入今日选题池（薄弱复习）
