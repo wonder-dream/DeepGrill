@@ -1,4 +1,4 @@
-﻿/* 主题变量定义见 theme.css（6 套主题，body[data-theme] 切换） */
+/* 主题变量定义见 theme.css（单一浅色场景） */
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -79,3 +79,88 @@ body {
 .rv-toast.rv-toast-error { background: var(--red); }
 
 
+/* ============================================================
+   参考稿风格覆盖：管理员审核页也统一为黑白琥珀 + 档案网格
+   ============================================================ */
+body {
+  background-image: var(--bg-image);
+  background-size: var(--bg-size);
+}
+.rv-card {
+  border-radius: 0;
+  box-shadow: none;
+}
+.rv-card.rv-reviewed { border-left: 4px solid var(--success); }
+.rv-danger {
+  color: var(--danger) !important;
+  border-color: var(--danger) !important;
+}
+.rv-modal-card { box-shadow: none; border-radius: 0; }
+.rv-toast.rv-toast-error { background: var(--danger); }
+.rv-head { border-bottom-color: var(--fg); }
+.rv-head h1::after { content: ' _'; color: var(--accent); }
+.rv-toolbar button:hover,
+.rv-edit button:hover,
+.rv-pager button:hover { border-color: var(--accent); color: var(--accent); }
+
+
+/* ============================================================
+   v2 精修层：审核页与主站同一套语言
+   ============================================================ */
+
+.rv-head h1 { font-size: 26px; letter-spacing: .5px; }
+.rv-progress { font-family: var(--sans); }
+.rv-progress::before { content: '[ '; color: var(--accent); }
+.rv-progress::after { content: ' ]'; color: var(--accent); }
+.rv-back { border: 1px solid var(--line-dark); border-radius: 20px; padding: 3px 12px 4px; transition: background .12s, color .12s; }
+.rv-back:hover { background: var(--ink); color: #fff; }
+
+.rv-toolbar {
+  border: none; padding: 0 0 12px; margin-bottom: 14px;
+  border-bottom: 1px solid var(--grid);
+}
+.rv-toolbar label { font-size: 12px; letter-spacing: 1.5px; }
+.rv-toolbar select, .rv-toolbar input { border-radius: 20px; padding: 5px 14px; }
+.rv-toolbar button { border-radius: 20px; transition: background .12s, color .12s; }
+.rv-toolbar button:hover { background: var(--ink); color: #fff; border-color: var(--ink); }
+#rv-batch-save {
+  background: var(--ink); color: #fff; border-color: var(--ink); font-weight: 700;
+}
+.rv-danger:hover { background: rgba(239, 68, 68, .08) !important; color: var(--danger) !important; }
+
+.rv-legend { letter-spacing: .5px; }
+
+.rv-card { padding: 16px 20px; margin-bottom: 12px; transition: background .12s, box-shadow .12s; }
+.rv-card:hover { background: var(--red-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.rv-card.rv-reviewed { border-left: 1px solid var(--line); box-shadow: inset 3px 0 0 var(--success); }
+.rv-card.rv-reviewed:hover { box-shadow: inset 3px 0 0 var(--success); }
+.rv-stem { font-size: 16px; }
+
+.badge { border: none; padding: 1px 2px; font-size: 12px; }
+.badge::before { content: '['; color: var(--ink); margin-right: 2px; }
+.badge::after { content: ']'; color: var(--ink); margin-left: 2px; }
+
+.rv-ref { border-radius: 0; border-left: 3px solid var(--success); }
+.rv-edit select, .rv-edit input { border-radius: 20px; }
+.rv-edit button { border-radius: 20px; }
+.rv-pager button { border-radius: 20px; }
+.rv-pager button:hover:not(:disabled) { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+.rv-modal-card { padding: 26px 28px; }
+.rv-tags-left input, .rv-tags-left select { border-radius: 20px; }
+.rv-tags-left button, .rv-modal-foot button { border-radius: 20px; }
+.rv-tag-chip { border-radius: 20px; }
+
+.rv-toast { border-radius: 22px; }
+
+/* ============ v3 暗色定稿修正 ============ */
+/* 按钮显式继承墨色：UA 默认黑色按钮文字在暗色下不可读 */
+.rv-edit button, .rv-pager button, .rv-tags-left button, .rv-modal-foot button {
+  color: var(--ink);
+}
+/* 浅版写死的白字 → 反色文字变量（暗色下为近黑） */
+.rv-toast { color: var(--inverse-text); }
+.rv-back:hover { color: var(--inverse-text); }
+.rv-toolbar button:hover { color: var(--inverse-text); }
+#rv-batch-save { color: var(--inverse-text); }
+.rv-pager button:hover:not(:disabled) { color: var(--inverse-text); }
