@@ -4,16 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DeepGrill</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inconsolata:wght@400;700&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
   <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-  <link rel="stylesheet" href="/static/theme.css?v=20260813v1">
-  <link rel="stylesheet" href="/static/style.css?v=20260813v1">
+  <link rel="stylesheet" href="/static/theme.css?v=20260905v1">
+  <link rel="stylesheet" href="/static/style.css?v=20260905v1">
 </head>
 <body>
   <button id="sidebar-hamburger" class="hamburger" title="菜单">☰</button>
   <button id="calendar-toggle" class="hamburger cal-toggle hidden" title="日历">日历</button>
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-head">
-      <h1>DeepGrill</h1>
+      <h1>DeepGrill<span style="color:var(--accent)">_</span></h1>
       <button id="sidebar-toggle" title="收起/展开侧边栏">◀</button>
     </div>
     <nav>
@@ -25,10 +27,6 @@
         <button data-view="ugc">提交内容</button>
         <button data-view="ugcadmin" id="nav-ugc-admin" class="hidden">提交/反馈管理</button>
     </nav>
-    <div class="theme-switcher" id="theme-switcher" title="切换主题">
-      <button class="theme-dot" data-theme="retro" style="background:#f6f4ef;border-color:#c0392b" title="纸质档案"></button>
-      <button class="theme-dot" data-theme="cyber" style="background:#0f1a0f;border-color:#8bac0f" title="像素终端"></button>
-    </div>
     <div class="sidebar-actions">
       <button id="daily-run" class="sidebar-daily">立即更新</button>
       <button id="upload-btn" class="sidebar-upload">上传题目</button>
@@ -230,21 +228,46 @@
     </section>
 
     <section id="view-answer" class="view hidden">
-      <div class="card">
-        <button id="answer-back">← 返回</button>
-        <p class="meta" id="answer-meta"></p>
-        <h2 id="answer-stem"></h2>
-        <div id="answer-chat"></div>
-        <details>
+      <div class="exam-room">
+        <div class="exam-bar">
+          <span class="exam-meta" id="answer-meta"></span>
+          <div class="exam-prog-wrap">
+            <span class="exam-round mono-num" id="exam-round">第 1 轮</span>
+            <div class="exam-prog"><i id="exam-prog"></i></div>
+          </div>
+          <span class="exam-timer mono-num" id="exam-timer">00:00</span>
+          <button id="answer-back" class="exam-exit">退出考场</button>
+        </div>
+
+        <div class="exam-question">
+          <h2 id="answer-stem"></h2>
+        </div>
+
+        <div class="exam-stage">
+          <div class="exam-chat" id="answer-chat"></div>
+          <aside class="exam-depth">
+            <div class="exam-depth-t">追问深度计</div>
+            <div class="exam-depth-cells" id="exam-cells">
+              <i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+            <div class="exam-depth-n mono-num"><b id="exam-depth-num">0</b> / 6 层</div>
+          </aside>
+        </div>
+
+        <div class="exam-inputbar">
+          <textarea id="answer-input" rows="3" placeholder="输入你的回答…（支持 Markdown 与代码块）"></textarea>
+          <button id="answer-submit" class="primary">发送</button>
+        </div>
+        <div class="exam-tools">
+          <span id="answer-status" class="exam-status"></span>
+        </div>
+        <details class="exam-criteria">
           <summary>判分标准提示</summary>
           <p><b>高分标准：</b></p>
           <ul id="answer-good"></ul>
           <p><b>扣分特征：</b></p>
           <ul id="answer-bad"></ul>
         </details>
-        <textarea id="answer-input" rows="6" placeholder="输入你的回答…"></textarea>
-        <button id="answer-submit" class="primary">提交回答</button>
-        <p id="answer-status"></p>
       </div>
     </section>
 
@@ -569,17 +592,9 @@
         <p class="meta" id="fb-msg"></p>
       </div>
     </div>
-    
+
   <div id="ui-toast" class="hidden"></div>
 
   <script src="/static/app.js?v=20260816v1"></script>
 </body>
 </html>
-
-
-
-
-
-
-
-

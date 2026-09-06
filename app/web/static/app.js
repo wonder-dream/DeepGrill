@@ -41,25 +41,8 @@ let bankSelected = new Set(); // 题库批量勾选（owner，跨页累积；离
 // 可刷新恢复的主视图（hash 路由，带状态参数）；answer/result/detail 为流程中间态（sessionStorage 恢复）
 const HASHABLE = new Set(["today", "bank", "history", "review", "favorites", "upload"]);
 
-// --- 主题：localStorage 持久化，body[data-theme] 切换（theme.css：retro 纸质 / cyber 像素） ---
-
-function applyTheme(theme) {
-  document.body.dataset.theme = theme;
-  localStorage.setItem("theme", theme);
-  document.querySelectorAll(".theme-dot").forEach((btn) => {
-    btn.classList.toggle("theme-active", btn.dataset.theme === theme);
-  });
-}
-
-(function initTheme() {
-  const THEMES = ["retro", "cyber"];
-  const theme = THEMES.includes(localStorage.getItem("theme")) ? localStorage.getItem("theme") : "retro";
-  document.body.dataset.theme = theme;
-  document.querySelectorAll(".theme-dot").forEach((btn) => {
-    btn.classList.toggle("theme-active", btn.dataset.theme === theme);
-    btn.addEventListener("click", () => applyTheme(btn.dataset.theme));
-  });
-})();
+// --- 主题：单一浅色场景（参考稿正文/题库/复盘为浅色正向，非双主题可切换） ---
+document.body.dataset.theme = "retro";
 
 if ("scrollRestoration" in history) history.scrollRestoration = "manual"; // 后退不恢复旧滚动位
 
@@ -113,6 +96,7 @@ function show(view) {
   if (view === "ugc") loadMySubmissions();
   if (view === "ugcadmin") { loadAdminSubmissions(); loadAdminFeedback(); }
   if (HASHABLE.has(view)) updateHash();
+  if (window.__dshAnim) window.__dshAnim.onShow($("#view-" + view));
 }
 
 // --- hash 路由状态：主视图 + 筛选/页码/范围/标签（刷新与后退可恢复） ---
@@ -698,6 +682,7 @@ async function startAnswer(q) {
     const s = await api(`/api/sessions/${state.sessionId}`);
     if (s.status === "active" && s.rounds_done > 0) {
       renderChat(s.transcript || [], s.followup);
+      if (window.__dshAnim) window.__dshAnim.examRound(s.rounds_done);
       $("#answer-status").textContent = `已恢复上次对话（已答 ${s.rounds_done} 轮），请在下方继续回答`;
     }
   }
@@ -754,6 +739,7 @@ async function restoreAnswerSession() {
       pollResult();
     } else if (s.rounds_done > 0) {
       renderChat(s.transcript || [], s.followup);
+      if (window.__dshAnim) window.__dshAnim.examRound(s.rounds_done);
       $("#answer-status").textContent = `已恢复上次对话（已答 ${s.rounds_done} 轮），请在下方继续回答`;
     }
     show("answer");
@@ -775,13 +761,19 @@ async function restoreAnswerSession() {
 function renderAnswer() {
   const q = state.question;
   $("#answer-meta").textContent = `题型：${q.type} · 难度 ${difficultyStars(q.difficulty)} · 标签：${(q.tags || []).join(", ") || "无"}`;
-  $("#answer-stem").textContent = q.stem;
+  const stemEl = $("#answer-stem");
+  if (window.__dshAnim && window.__dshAnim.type) {
+    window.__dshAnim.type(stemEl, q.stem);
+  } else {
+    stemEl.textContent = q.stem;
+  }
   $("#answer-chat").innerHTML = "";
   $("#answer-good").innerHTML = q.good_criteria.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
   $("#answer-bad").innerHTML = q.bad_criteria.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
   $("#answer-input").value = "";
   $("#answer-status").textContent = "";
   $("#answer-submit").disabled = false;
+  if (window.__dshAnim && window.__dshAnim.examRound) window.__dshAnim.examRound(0); // 重置追问深度计/进度
 }
 
 async function submitAnswer() {
@@ -833,6 +825,7 @@ async function pollResult() {
     }
     if (s.status === "active") {
       renderChat(s.transcript || [], s.followup);
+      if (window.__dshAnim) window.__dshAnim.examRound(s.rounds_done);
       $("#answer-input").value = ""; // 自动清空，直接回答新追问
       $("#answer-status").textContent = `请在下方回答面试官追问（已答 ${s.rounds_done} 轮）…`;
       $("#answer-submit").disabled = false;
@@ -2155,6 +2148,7 @@ function showAuth() {
   $("#calendar-panel").classList.add("hidden");
   $("#calendar-toggle").classList.add("hidden");
   $("#auth-error").textContent = "";
+  document.body.classList.remove("exam");
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
 }
 let authMode = "login";
@@ -2601,3 +2595,96 @@ document.addEventListener("click", async (e) => {
     return;
   }
 });
+
+/* ============================================================
+   参考稿动效：只在有意义的场景使用，其余视图保持克制。
+   - 打字机 + 光标：答题题干（AI 出题 / 追问）
+   - 评分条入场：判分 / 详情 的维度条
+   尊重 prefers-reduced-motion；失败不破坏功能。
+   ============================================================ */
+(function () {
+  if (window.__dshAnim) return;
+  const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const EASE = "cubic-bezier(.215, .61, .355, 1)";
+
+  /* 评分/维度条：0 → 目标宽度 入场（判分报告） */
+  function bars(scope) {
+    (scope || document).querySelectorAll(".score-fill").forEach((b) => {
+      if (b.dataset.animated) return;
+      const target = b.style.width;
+      if (!target) return;
+      b.dataset.animated = "1";
+      b.style.transition = "none";
+      b.style.width = "0%";
+      void b.offsetWidth;
+      b.style.transition = "width 1.2s " + EASE;
+      b.style.width = target;
+    });
+  }
+
+  /* 打字机 + 闪烁光标（AI 出题 / 追问） */
+  function type(el, text, done) {
+    if (!el) { if (done) done(); return; }
+    if (reduce || !text) { el.textContent = text || ""; if (done) done(); return; }
+    let i = 0;
+    const delay = text.length > 60 ? 12 : 26;
+    el.classList.add("caret");
+    const t = setInterval(() => {
+      i++;
+      el.textContent = text.slice(0, i);
+      if (i >= text.length) {
+        clearInterval(t);
+        el.classList.remove("caret");
+        el.textContent = text;
+        if (done) done();
+      }
+    }, delay);
+  }
+
+  /* 进入某个 view：评分条入场；答题进入「深色考场」并启动计时 */
+  function onShow(el) {
+    if (!el) return;
+    bars(el);
+    document.body.classList.toggle("exam", el.id === "view-answer");
+    if (el.id === "view-answer") examEnter();
+    else examLeave();
+  }
+
+  /* ============ 考场（答题页）计时 / 追问深度计 / 进度 ============ */
+  const DEPTH_COLORS = ["#F59E0B", "#F5900B", "#EE7E0E", "#E56A13", "#DA4E1B", "#CF2B25"];
+  let examClock = null, examStart = 0, examCells = [];
+
+  function examRound(n) {
+    const cnt = Math.max(0, Math.min(Number(n) || 0, 6));
+    const elNum = document.getElementById("exam-depth-num");
+    if (elNum) elNum.textContent = cnt;
+    (document.querySelectorAll("#exam-cells i")).forEach((c, i) => {
+      const lit = i < cnt;
+      c.classList.toggle("lit", lit);
+      c.style.background = lit ? DEPTH_COLORS[Math.min(i, DEPTH_COLORS.length - 1)] : "transparent";
+    });
+    const p = document.getElementById("exam-prog");
+    if (p) p.style.width = Math.min(100, (cnt / 6) * 100) + "%";
+    const r = document.getElementById("exam-round");
+    if (r) r.textContent = "第 " + (cnt + 1) + " 轮";
+  }
+
+  function examEnter() {
+    examStart = Date.now();
+    clearInterval(examClock);
+    const t0 = document.getElementById("exam-timer");
+    if (t0) t0.textContent = "00:00";
+    examClock = setInterval(() => {
+      const s = Math.floor((Date.now() - examStart) / 1000);
+      const t = document.getElementById("exam-timer");
+      if (t) t.textContent = String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+    }, 1000);
+  }
+
+  function examLeave() {
+    clearInterval(examClock);
+    examClock = null;
+  }
+
+  window.__dshAnim = { onShow, type, bars, examRound, examEnter, examLeave };
+})();
