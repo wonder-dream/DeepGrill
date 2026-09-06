@@ -1,102 +1,50 @@
-/* 主题变量（2 套）：retro 纸质档案（默认）/ cyber 像素终端
-   通过 <body data-theme="..."> 切换；style.css 与 reviewer.css 共用本文件变量。 */
+/* ============================================================
+   「二进制正反色系统」暗色定稿 —— 夜航蓝图模式。
+   底色近黑掺一点磷光绿、线框翻白、琥珀不变；
+   考场再暗一层，判分卡反转为白纸（正反色在关键时刻的翻转）。
+   ============================================================ */
 
-:root,
-body[data-theme="retro"] {
-  /* 纸质档案：米黄羊皮纸 + 红点缀 + 点阵纹理 */
-  --paper: #f6f4ef;
-  --card: #fffdf9;
-  --ink: #26231e;
-  --ink-soft: #6f6a5e;
-  --red: #c0392b;
-  --red-soft: rgba(192, 57, 43, 0.08);
-  --green: #5d7a4f;
-  --green-soft: rgba(93, 122, 79, 0.1);
-  --line: #e5e0d5;
-  --line-dark: #d8d2c3;
+:root {
+  /* 声明暗色配色方案：原生表单控件（搜索框/下拉/日期选择器/滚动条）自动转暗 */
+  color-scheme: dark;
+  /* 暗色场景 */
+  --paper: #0A0D0B;
+  --card: #121611;
+  --ink: #F5F5F4;
+  --ink-soft: #A3A3A3;
+  --accent: #F59E0B;
+  --accent-hover: #FBBF24;
+  --danger: #F87171;
+  --success: #4ADE80;
+  --red: var(--accent);
+  --red-soft: rgba(245, 158, 11, 0.14);
+  --green: var(--success);
+  --green-soft: rgba(74, 222, 128, 0.12);
+  --line: rgba(255, 255, 255, 0.55);
+  --line-dark: rgba(255, 255, 255, 0.75);
+  --grid: rgba(150, 235, 175, 0.05);
   --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
   --shadow-card: none;
-  --shadow-modal: 0 6px 24px rgba(38, 35, 30, 0.2);
-  --soft-bg: rgba(38, 35, 30, 0.06);
-  --inverse-text: #fff;
-  --bg-image: radial-gradient(rgba(60, 50, 30, 0.05) 1px, transparent 1px);
-  --bg-size: 24px 24px;
+  --shadow-modal: none;
+  --soft-bg: rgba(255, 255, 255, 0.06);
+  --inverse-text: #0A0D0B;
+  --bg: #0A0D0B;
+  --fg: #F5F5F4;
+  --muted: #A3A3A3;
+  --bg-image:
+    linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+  --bg-size: calc((100vw - 34px) / 90) calc((100vw - 34px) / 90);
   --card-border: 1px solid var(--line);
   --input-border: 1px solid var(--line-dark);
-  --glass: none;
-  --serif: "Segoe UI", "Helvetica Neue", "PingFang SC", "Songti SC", SimSun, serif;
-  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --serif: 'Inconsolata', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', monospace;
+  --sans: 'Inconsolata', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', monospace;
   --btn-pad: 6px 14px;
   --btn-sm-pad: 4px 12px;
   --input-pad: 6px 10px;
   --font-btn: 13px;
   --font-sm: 12px;
-}
-
-body[data-theme="cyber"] {
-  /* 赛博终端（像素版）：Game Boy 绿调色板 + 直角 + 块状硬阴影 + 像素颗粒背景 */
-  --paper: #0f1a0f;
-  --card: #17251a;
-  --ink: #e2f0d8;
-  --ink-soft: #86a07a;
-  --red: #8bac0f;
-  --red-soft: rgba(139, 172, 15, 0.14);
-  --green: #6fbf73;
-  --green-soft: rgba(111, 191, 115, 0.14);
-  --line: rgba(139, 172, 15, 0.18);
-  --line-dark: rgba(139, 172, 15, 0.32);
-  --radius-sm: 0;
-  --radius-md: 0;
-  --radius-lg: 0;
-  --shadow-card: 0 4px 0 rgba(0, 0, 0, 0.35);
-  --shadow-modal: 0 6px 0 rgba(0, 0, 0, 0.45);
-  --soft-bg: rgba(139, 172, 15, 0.06);
-  --inverse-text: #0f1a0f;
-  --bg-image: radial-gradient(rgba(139, 172, 15, 0.05) 1px, transparent 1px);
-  --bg-size: 6px 6px;
-  --card-border: 2px solid #2a3d24;
-  --input-border: 2px solid #2a3d24;
-  --glass: none;
-  --serif: "Cascadia Mono", Consolas, "Courier New", monospace; /* 标题/数字终端等宽 */
-  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; /* 正文常规字体护眼 */
-  --btn-pad: 6px 14px;
-  --btn-sm-pad: 4px 12px;
-  --input-pad: 6px 10px;
-  --font-btn: 13px;
-  --font-sm: 12px;
-}
-
-/* cyber 像素风细节：提示符品牌 + 块状按钮阴影 + 按下位移 + 进度条分段 */
-body[data-theme="cyber"] .sidebar h1::before {
-  content: "> ";
-  background: none;
-  width: auto;
-  height: auto;
-  margin-right: 2px;
-  color: var(--red);
-}
-body[data-theme="cyber"] button,
-body[data-theme="cyber"] .weak-tag-entry {
-  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35);
-}
-body[data-theme="cyber"] button:active {
-  transform: translateY(2px);
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
-}
-body[data-theme="cyber"] .primary {
-  box-shadow: 0 3px 0 #4a5d08;
-  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.3);
-}
-body[data-theme="cyber"] .progress-fill,
-body[data-theme="cyber"] .score-fill {
-  border-right: 4px solid var(--paper); /* 像素分段感 */
-}
-body[data-theme="cyber"] .badge {
-  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.25);
-  border-width: 2px;
-}
-body[data-theme="cyber"] .progress-track {
-  border-width: 2px;
+  --ease: cubic-bezier(.215, .61, .355, 1);
 }
