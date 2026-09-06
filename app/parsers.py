@@ -28,13 +28,22 @@ def find_soffice() -> str | None:
     return None
 
 
-def _decode_md_txt(data: bytes) -> str:
+def decode_md_txt(data: bytes) -> str:
+    """md/txt 源统一解码：utf-8-sig 优先、gbk 兜底；失败抛 ValueError。"""
     for enc in ("utf-8-sig", "gbk"):
         try:
             return data.decode(enc)
         except UnicodeDecodeError:
             continue
     raise ValueError("无法解码文件内容（非 utf-8/gbk）")
+
+
+def extract_title(content: str, path: Path) -> str:
+    """首行 "# " 标题优先，无则用文件名（去扩展名）。"""
+    first_line = content.splitlines()[0].strip() if content.strip() else ""
+    if first_line.startswith("# "):
+        return first_line[2:].strip()
+    return path.stem
 
 
 def _extract_with_mineru(path: Path) -> str:
@@ -87,7 +96,7 @@ def extract_text(filename: str, data: bytes) -> str:
             f"不支持的文件类型：{suffix}（支持 {'/'.join(sorted(SUPPORTED_SUFFIXES))}）"
         )
     if suffix in TEXT_SUFFIXES:
-        text = _decode_md_txt(data)
+        text = decode_md_txt(data)
     elif suffix == ".doc":
         soffice = find_soffice()
         if soffice is None:

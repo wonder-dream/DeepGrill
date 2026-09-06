@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from functools import wraps
 
-from sqlalchemy import create_engine, delete, event, func, or_, select, text
+from sqlalchemy import create_engine, delete, event, func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker

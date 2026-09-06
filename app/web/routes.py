@@ -20,7 +20,7 @@ from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, Header, HTTPExcep
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import cast, delete, exists, func, or_, select, String, text
+from sqlalchemy import exists, func, or_, select, text
 
 from .. import db
 from ..auth import (

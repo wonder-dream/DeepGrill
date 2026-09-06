@@ -11,6 +11,7 @@ from pathlib import Path
 from ..db import commit, find_source_by_hash, get_session
 from ..errors import DuplicateSource, GitHubError
 from ..models import Source, SourceType
+from ..parsers import decode_md_txt, extract_title
 from ..pipeline.clean import clean_text
 from . import license as license_mod
 
@@ -177,7 +178,7 @@ def _import_file(
         source = Source(
             type=SourceType.github,
             url=f"{CLONE_BASE}/{repo}/raw/HEAD/{rel.as_posix()}",
-            title=_extract_title(content, rel),
+            title=extract_title(content, rel),
             cleaned_text=clean_text(content),
             source_hash=hash_,
             license=license_id,
@@ -194,16 +195,7 @@ def _import_file(
 
 
 def _decode_text(raw: bytes, rel: Path) -> str:
-    for encoding in ("utf-8-sig", "gbk"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    raise GitHubError(f"cannot decode {rel}: not utf-8 or gbk")
-
-
-def _extract_title(content: str, rel: Path) -> str:
-    first_line = content.splitlines()[0].strip() if content.strip() else ""
-    if first_line.startswith("# "):
-        return first_line[2:].strip()
-    return rel.stem
+    try:
+        return decode_md_txt(raw)
+    except ValueError as e:
+        raise GitHubError(f"cannot decode {rel}: not utf-8 or gbk") from e

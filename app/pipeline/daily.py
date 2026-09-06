@@ -16,7 +16,7 @@ from .. import db
 from ..config import AppConfig
 from ..crawler import github, importer, nowcoder
 from ..db import commit, get_session
-from ..models import Question, QuestionType, Source, SourceType, TaskLog
+from ..models import Question, Source, SourceType, TaskLog
 from .dedup import dedup
 from .generate import generate_from_source, generate_project_questions
 from .quality import filter_quality

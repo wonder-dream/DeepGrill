@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import BLOB, CheckConstraint, Column, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, Column, Text, UniqueConstraint
 from sqlalchemy.types import TypeDecorator
 from sqlmodel import Field, Relationship, SQLModel
 

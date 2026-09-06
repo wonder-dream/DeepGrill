@@ -5,6 +5,7 @@ from pathlib import Path
 from ..db import commit, find_source_by_hash, get_session
 from ..errors import DuplicateSource, ImportError as AppImportError
 from ..models import Source, SourceType
+from ..parsers import decode_md_txt, extract_title
 from ..pipeline.clean import clean_text
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ def import_file(
             return existing
         source = Source(
             type=SourceType(source_type),
-            title=_extract_title(content, path),
+            title=extract_title(content, path),
             cleaned_text=clean_text(content),
             source_hash=source_hash,
         )
@@ -70,19 +71,10 @@ def collect(import_dir: Path | None = None) -> list[Source]:
 
 
 def _decode(raw: bytes, path: Path) -> str:
-    for encoding in ("utf-8-sig", "gbk"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    raise AppImportError(f"cannot decode {path}: not utf-8 or gbk")
-
-
-def _extract_title(content: str, path: Path) -> str:
-    first_line = content.splitlines()[0].strip() if content.strip() else ""
-    if first_line.startswith("# "):
-        return first_line[2:].strip()
-    return path.stem
+    try:
+        return decode_md_txt(raw)
+    except ValueError as e:
+        raise AppImportError(f"cannot decode {path}: not utf-8 or gbk") from e
 
 
 def _type_from_filename(stem: str) -> str:
