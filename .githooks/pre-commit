@@ -1,0 +1,42 @@
+#!/bin/sh
+# 提交前自动校验文档一致性。
+#
+# 为什么必须有这个 hook：AGENTS.md 第 5 条写着"提交前跑校验"，但
+# **一条必须靠自己记得跑的检查等于没有** —— 这正是本项目反复吃过的亏
+# （v1 的 471 个测试写完却从未在根目录跑起来）。所以把它挂到 git 上。
+#
+# 安装：git config core.hooksPath .githooks
+# 跳过（不推荐）：git commit --no-verify
+
+set -e
+
+# 找一个能用的 python
+PY=""
+for cand in python3 python py; do
+    if command -v "$cand" >/dev/null 2>&1; then PY="$cand"; break; fi
+done
+if [ -z "$PY" ]; then
+    echo "pre-commit: 找不到 python，跳过文档校验（请装 Python 或手工跑 scripts/check_docs.py）" >&2
+    exit 0
+fi
+
+echo "pre-commit: 文档一致性校验…"
+if ! "$PY" scripts/check_docs.py; then
+    echo "" >&2
+    echo "提交被拦下：文档不一致。修好后重跑：python scripts/check_docs.py" >&2
+    echo "（确实要跳过：git commit --no-verify，但请先想清楚为什么）" >&2
+    exit 1
+fi
+
+# 只在校验器或文档本身有改动时，才跑变异自检（它比较慢）
+if git diff --cached --name-only | grep -qE '^(scripts/check_docs\.py|docs/|CONTEXT\.md|AGENTS\.md|README\.md)'; then
+    echo "pre-commit: 校验器自检（变异测试）…"
+    if ! "$PY" scripts/selftest_check_docs.py; then
+        echo "" >&2
+        echo "提交被拦下：校验器自检未通过 —— 某条规则已失效，或测试本身无效。" >&2
+        echo "这意味着文档的自动保障出现了缺口，请先修校验器。" >&2
+        exit 1
+    fi
+fi
+
+exit 0
