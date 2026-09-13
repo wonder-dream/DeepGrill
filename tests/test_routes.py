@@ -1642,7 +1642,7 @@ def test_upload_binary_resume(monkeypatch, db):
 # --- 数据备份：导出/导入 ---
 
 
-def test_export_backup_zip(db):
+def test_export_backup_zip(db, tmp_path):
     """导出：zip 含 interview.db + meta.json，可解压且库可读。"""
     import io
     import sqlite3
@@ -1657,18 +1657,11 @@ def test_export_backup_zip(db):
     assert "interview.db" in zf.namelist()
     assert "meta.json" in zf.namelist()
     db_bytes = zf.read("interview.db")
-    with sqlite3.connect(":memory:") as conn:
-        conn.execute("ATTACH DATABASE ':memory:' AS x")
-        tmp = conn.execute
-        # 直接用内存库读字节：写临时文件验证
-        import tempfile
-        from pathlib import Path
-
-        p = Path(tempfile.mkdtemp()) / "check.db"
-        p.write_bytes(db_bytes)
-        with sqlite3.connect(str(p)) as c:
-            n = c.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
-        assert n == 1
+    p = tmp_path / "check.db"
+    p.write_bytes(db_bytes)
+    with sqlite3.connect(str(p)) as c:
+        n = c.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
+    assert n == 1
 
 
 def test_import_backup_restores(tmp_path):
@@ -1770,7 +1763,7 @@ def test_import_backup_rejects_old_single_user_format(db):
 
 
 def test_import_backup_keeps_login_for_same_user(tmp_path):
-    """导入备份含当前用户 → 返回新 token，刷新后登录态保持（体验修复）。"""
+    """导入备份含当前用户 → 轮换 token 写 HttpOnly Cookie，刷新后登录态保持（体验修复）。"""
     import base64
     import io
     import sqlite3
@@ -1809,10 +1802,12 @@ def test_import_backup_keeps_login_for_same_user(tmp_path):
             "content_base64": base64.b64encode(buf.getvalue()).decode(),
         })
         assert resp.status_code == 200
-        new_token = resp.json().get("new_token")
-        assert new_token
+        # 轮换后的 token 只写 HttpOnly Cookie，不回响应体（避免 JS/日志留痕）
+        assert "new_token" not in resp.json()
+        rotated = client.cookies.get("session_token")
+        assert rotated
         assert client.get("/api/auth/me", headers={
-            "Authorization": f"Bearer {new_token}",
+            "Authorization": f"Bearer {rotated}",
         }).status_code == 200
     finally:
         _close()
