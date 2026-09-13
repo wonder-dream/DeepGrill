@@ -311,7 +311,7 @@ async function renderTagsTree() {
   newCatSel.innerHTML = "";
   let html = "";
   for (const c of data) {
-    newCatSel.innerHTML += `<option value="${c.id}">${c.name}</option>`;
+    newCatSel.innerHTML += `<option value="${c.id}">${escapeHtml(c.name)}</option>`;
     const m = meta.get(c.name) || {};
     const badge = (m.roles && m.roles.length ? ` [${m.roles.map((r) => ROLE_LABELS[r] || r).join("/")}]` : " [全岗位]")
       + (m.lang ? ` · ${m.lang}` : "");
