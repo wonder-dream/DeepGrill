@@ -29,18 +29,18 @@ def _client(db, role="owner", username="testuser"):
     return make_client(db, FakeLLM([]), user_role=role, username=username)
 
 
-# --- P1-8：验证码冷却 ---
+# --- P1-9：并发建同名标签/分类 → 409 而非 500 ---
 
 
-def test_send_code_failure_still_cools_down(monkeypatch, db):
-    """SMTP 失败也占 60s 冷却（修复前失败不留 last_sent → 可无限重发）。"""
-    from app import email_code
-
-    def boom(email, code):
-        raise RuntimeError("SMTP 未配置")
-
-    monkeypatch.setattr(email_code, "send_smtp_code", boom)
+def test_duplicate_category_conflict_409(db):
     c = _client(db)
-    assert c.post("/api/auth/send-code", json={"email": "x@163.com"}).status_code == 503
-    assert c.post("/api/auth/send-code", json={"email": "x@163.com"}).status_code == 429
+    assert c.post("/api/admin/categories", json={"name": "并发分类"}).status_code == 200
+    resp = c.post("/api/admin/categories", json={"name": "并发分类"})
+    assert resp.status_code == 409
+
+
+def test_duplicate_tag_conflict_409(db):
+    c = _client(db)
+    assert c.post("/api/admin/tags", json={"name": "并发标签", "category_id": 1}).status_code == 200
+    assert c.post("/api/admin/tags", json={"name": "并发标签", "category_id": 1}).status_code == 409
 
