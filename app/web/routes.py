@@ -37,14 +37,15 @@ from ..auth import (
 from ..config import AppConfig, secret_value
 from ..difficulty import max_rounds_for, target_level_for
 from ..embed import Embedder
-from ..errors import AppError, DuplicateSource
+from ..errors import AppError, DuplicateSource, StorageError
 from ..judge.chain import resume
 from ..parsers import extract_text
 from ..judge.judge import STATUS_FAILED, judge
 from ..pipeline.generate import _clamp_difficulty
-from ..ratelimit import allow as _rl_allow
 from ..ratelimit import check as _rl_check
 from ..ratelimit import fail as _rl_fail
+from ..ratelimit import reserve as _rl_reserve
+from ..ratelimit import settle as _rl_settle
 from ..ratelimit import success as _rl_success
 from ..models import (
     Attempt,
@@ -67,7 +68,17 @@ from ..models import (
     FeedbackStatus,
 )
 from ..tags import TAG_CATEGORIES, TAG_VOCABULARY
-from .schemas import (AdminQuestionUpdate, AnswerBody, CreateSessionBody, FeedbackBody, SubmitBody, UploadBody)
+from .schemas import (
+    ID_MAX,
+    PAGE_MAX,
+    AdminQuestionUpdate,
+    AnswerBody,
+    CreateSessionBody,
+    FeedbackBody,
+    IdPath,
+    SubmitBody,
+    UploadBody,
+)
 from . import static_dir
 
 logger = logging.getLogger(__name__)
@@ -188,6 +199,8 @@ def _ensure_today_picks(session, user_id: int) -> list[UserPick]:
 _inflight: dict[int, float] = {}  # session_id → 入队时间戳（判分中；超时自动清理防永久 409）
 _inflight_lock = threading.Lock()
 _INFLIGHT_TTL = 600  # 判分中标记有效期（秒）：LLM 判分一般 <60s，超时视为进程已死，允许删除/重试
+
+SUGGESTIONS_MAX_IDS = 300  # 审核建议单次查询题目上限（防一次拉全库快照）
 
 
 def _inflight_snapshot() -> set[int]:
@@ -322,6 +335,9 @@ def create_app(
 
         answer/upload/daily 会触发 LLM 调用，单独更严的额度；登录/注册已由
         auth_rate_limit_middleware 覆盖（失败计数制），此处跳过。
+
+        额度预占后按响应状态结算：4xx（校验/权限/未找到等业务层拒绝，未产生实际工作）
+        释放额度，只有真正执行的请求计数——否则批量非法请求会把额度吃光，合法请求反被 429。
         """
         if request.method not in ("POST", "PUT", "DELETE"):
             return await call_next(request)
@@ -342,11 +358,18 @@ def create_app(
             or (path.startswith("/api/sessions/") and path.endswith("/answer"))
             or path.startswith("/api/upload")
         )
-        if not _rl_allow(key, WRITE_LIMIT) or (
-            is_llm_cost and not _rl_allow(key, LLM_COST_LIMIT)
-        ):
+        write_ok, write_slots = _rl_reserve(key, WRITE_LIMIT)
+        llm_slots = None
+        if write_ok and is_llm_cost:
+            write_ok, llm_slots = _rl_reserve(key, LLM_COST_LIMIT)
+        if not write_ok:
+            _rl_settle(key, write_slots, keep=False)  # LLM 额度不足被拒：通用额度也退回
             return JSONResponse(status_code=429, content={"detail": "操作过于频繁，请稍后再试"})
-        return await call_next(request)
+        response = await call_next(request)
+        keep = response.status_code < 400
+        _rl_settle(key, write_slots, keep=keep)
+        _rl_settle(key, llm_slots, keep=keep)
+        return response
 
     @app.middleware("http")
     async def csrf_protect_middleware(request: Request, call_next):
@@ -516,6 +539,17 @@ def create_app(
             msg = msg[len("Value error, ") :]
         return JSONResponse(status_code=400, content={"detail": msg})
 
+    @app.exception_handler(AttributeError)
+    async def attribute_error_handler(request, exc: AttributeError):
+        """请求体类型畸形（如字段值类型与注解不符）→ 400，而不是 500 + 内部堆栈。
+
+        起因：`AdminQuestionUpdate.stem` 这类 `str | None` 字段的 validator 直接 `.strip()`，
+        传 null 时抛 AttributeError；该异常在依赖求解阶段抛出，既不进 RequestValidationError
+        也不进 Exception 处理器，客户端只拿到纯文本 500。
+        """
+        logger.warning("request body type error on %s: %s", request.url.path, exc)
+        return JSONResponse(status_code=400, content={"detail": "请求参数类型无效"})
+
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request, exc: Exception):
         logger.exception("unhandled error on %s", request.url)
@@ -525,14 +559,22 @@ def create_app(
 
     @app.get("/api/today")
     def today_questions(date: str | None = None, user: User = Depends(require_user)):
-        """今日题目（按用户懒加载选题）；date=YYYY-MM-DD 回看该用户当日 picks。"""
+        """今日题目（按用户懒加载选题）；date=YYYY-MM-DD 回看该用户当日 picks。
+
+        date 严格按 `YYYY-MM-DD` 解析并限「不晚于今天」：原先 strptime 容忍 `2026-9-3` 这类
+        非补零写法，且 `9999-12-31` 会在 +1 天时 OverflowError → 500。
+        """
         with db.get_session() as session:
             if date is not None:
+                now = datetime.now()
                 try:
-                    day = datetime.strptime(date, "%Y-%m-%d")
+                    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+                        raise ValueError(date)
+                    start = datetime.strptime(date, "%Y-%m-%d")
                 except ValueError:
                     raise HTTPException(status_code=400, detail=f"invalid date: {date}")
-                start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+                if start > now:
+                    raise HTTPException(status_code=400, detail=f"invalid date: {date}")
                 end = start + timedelta(days=1)
                 picks = list(
                     session.scalars(
@@ -569,7 +611,7 @@ def create_app(
             return payload
 
     @app.get("/api/questions/{question_id}")
-    def question_detail(question_id: int, user: User = Depends(require_user)):
+    def question_detail(question_id: IdPath, user: User = Depends(require_user)):
         with db.get_session() as session:
             q = session.get(Question, question_id)
             if q is None:
@@ -596,7 +638,7 @@ def create_app(
             }
 
     @app.get("/api/questions/{question_id}/history")
-    def question_history(question_id: int, user: User = Depends(require_user)):
+    def question_history(question_id: IdPath, user: User = Depends(require_user)):
         """历史详情：该题全部会话（倒序）+ 各自问答记录与判分（D18 复盘）。"""
         with db.get_session() as session:
             q = session.get(Question, question_id)
@@ -696,7 +738,7 @@ def create_app(
 
     @app.post("/api/sessions/{session_id}/answer")
     def submit_answer(
-        session_id: int,
+        session_id: IdPath,
         body: AnswerBody,
         background: BackgroundTasks,
         user: User = Depends(require_user),
@@ -721,7 +763,7 @@ def create_app(
         return {"status": "judging"}
 
     @app.delete("/api/sessions/{session_id}")
-    def delete_session(session_id: int, user: User = Depends(require_user)):
+    def delete_session(session_id: IdPath, user: User = Depends(require_user)):
         """删除单次作答（含回答轮次与判分）；题目保留。"""
         with _inflight_lock:
             if session_id in _inflight:
@@ -735,7 +777,7 @@ def create_app(
         return {"deleted": True}
 
     @app.delete("/api/questions/{question_id}/history")
-    def delete_question_history(question_id: int, user: User = Depends(require_user)):
+    def delete_question_history(question_id: IdPath, user: User = Depends(require_user)):
         """删除该题全部作答记录（会话/回答/判分）；题目本身保留。"""
         with db.get_session() as session:
             if session.get(Question, question_id) is None:
@@ -754,7 +796,7 @@ def create_app(
         return {"deleted": True}
 
     @app.get("/api/sessions/{session_id}")
-    def session_status(session_id: int, user: User = Depends(require_user)):
+    def session_status(session_id: IdPath, user: User = Depends(require_user)):
         with db.get_session() as session:
             row = session.get(Session, session_id)
             if row is None or row.user_id != user.id:
@@ -788,7 +830,7 @@ def create_app(
             return payload
 
     @app.get("/api/sessions/{session_id}/resume")
-    def resume_session(session_id: int, user: User = Depends(require_user)):
+    def resume_session(session_id: IdPath, user: User = Depends(require_user)):
         with db.get_session() as session:
             row = session.get(Session, session_id)
             if row is None or row.user_id != user.id:
@@ -892,7 +934,7 @@ def create_app(
                 )
                 .group_by(func.date(Session.ended_at))
             ).all()
-            done_questions = len(_latest_judgment_by_question(session, user.id))
+            done_questions = len(_latest_ok_judgment_by_question(session, user.id))
         by_day = {date_str: (n, avg) for date_str, n, avg in rows}
         trend = []
         answered_total = 0
@@ -941,7 +983,7 @@ def create_app(
         """
         from ..models import QuestionType as _QT
 
-        if page < 1 or not 1 <= page_size <= 50:
+        if not 1 <= page <= PAGE_MAX or not 1 <= page_size <= 50:
             raise HTTPException(status_code=400, detail="invalid page or page_size")
         is_owner = user.role == "owner"
         if reviewed is not None and not is_owner:
@@ -981,7 +1023,7 @@ def create_app(
             if keyword:
                 filters.append(
                     or_(
-                        Question.stem.ilike(f"%{keyword}%"),
+                        Question.stem.ilike(f"%{_like_escape(keyword)}%", escape="\\"),
                         _tags_contains(keyword),
                     )
                 )
@@ -1051,7 +1093,7 @@ def create_app(
     # --- 收藏 ---
 
     @app.post("/api/favorites/{question_id}")
-    def favorite_question(question_id: int, user: User = Depends(require_user)):
+    def favorite_question(question_id: IdPath, user: User = Depends(require_user)):
         """收藏题目（幂等：已收藏返回成功）。"""
         with db.get_session() as session:
             if session.get(Question, question_id) is None:
@@ -1070,7 +1112,7 @@ def create_app(
         return {"favorited": True}
 
     @app.delete("/api/favorites/{question_id}")
-    def unfavorite_question(question_id: int, user: User = Depends(require_user)):
+    def unfavorite_question(question_id: IdPath, user: User = Depends(require_user)):
         """取消收藏（幂等：未收藏返回成功）。"""
         with db.get_session() as session:
             fav = session.scalars(
@@ -1092,12 +1134,14 @@ def create_app(
         user: User = Depends(require_user),
     ):
         """我的收藏列表（分页，id 倒序）；q 关键词搜题干。"""
-        if page < 1 or not 1 <= page_size <= 50:
+        if not 1 <= page <= PAGE_MAX or not 1 <= page_size <= 50:
             raise HTTPException(status_code=400, detail="invalid page or page_size")
         with db.get_session() as session:
             filters = [UserFavorite.user_id == user.id]
             if q and q.strip():
-                filters.append(Question.stem.ilike(f"%{q.strip().lower()}%"))
+                filters.append(
+                    Question.stem.ilike(f"%{_like_escape(q.strip().lower())}%", escape="\\")
+                )
             total = session.scalar(
                 select(func.count())
                 .select_from(UserFavorite)
@@ -1293,39 +1337,44 @@ def create_app(
 
     @app.put("/api/admin/questions/{question_id}")
     def admin_update_question(
-        question_id: int, body: AdminQuestionUpdate, user: User = Depends(require_owner)
+        question_id: IdPath, body: AdminQuestionUpdate, user: User = Depends(require_owner)
     ):
-        """管理员修改题目：stem/tags/difficulty/good_criteria/bad_criteria 可改（type 不可改）。"""
+        """管理员修改题目：stem/tags/difficulty/good_criteria/bad_criteria 可改（type 不可改）。
+
+        局部更新语义：字段省略=不改；显式传 null 由 schema 拦成 400（避免 NOT NULL 500
+        与 `reviewed: null` 被判 falsy 静默下架）。
+        """
         data = body.model_dump(exclude_unset=True)
         with db.get_session() as session:
             row = session.get(Question, question_id)
             if row is None:
                 raise HTTPException(status_code=404, detail="question not found")
-            if "stem" in data:
+            if data.get("stem") is not None:
                 row.stem = data["stem"]
-            if "tags" in data:
+            if data.get("tags") is not None:
                 valid = [t for t in data["tags"] if t in TAG_VOCABULARY][:5]
                 _set_question_tags(session, question_id, valid)
-            if "reviewed" in data:
+            if data.get("reviewed") is not None:
                 row.reviewed_at = datetime.now() if data["reviewed"] else None
-            if "difficulty" in data:
+            if data.get("difficulty") is not None:
                 row.difficulty = data["difficulty"]
             for field in ("good_criteria", "bad_criteria"):
-                if field in data:
+                if data.get(field) is not None:
                     setattr(row, field, data[field])
             db.commit(session)
             session.refresh(row)
+            payload = {
+                "id": row.id,
+                "stem": row.stem,
+                "difficulty": row.difficulty,
+                "tags": _question_tag_map(session, [question_id]).get(question_id, []),
+            }
         _review_paper_clear_cache()  # 讲义素材含题干，改题后失效
-        return {
-            "id": row.id,
-            "stem": row.stem,
-            "difficulty": row.difficulty,
-            "tags": _question_tag_map(session, [question_id]).get(question_id, []),
-        }
+        return payload
 
     @app.delete("/api/admin/questions/{question_id}")
     def admin_delete_question(
-        question_id: int, user: User = Depends(require_owner)
+        question_id: IdPath, user: User = Depends(require_owner)
     ):
         """管理员删除题目：一条 DELETE，会话链/收藏/标签关联 DB 级联清理。"""
         with db.get_session() as session:
@@ -1388,8 +1437,14 @@ def create_app(
 
     @app.get("/api/review/suggestions")
     def review_suggestions(ids: str = "", user: User = Depends(require_user)):
-        """AI 审核参考（并入 questions 的建议快照）：?ids=1,2,3 → {suggestions: {qid: {...}}}。"""
-        qids = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+        """AI 审核参考（并入 questions 的建议快照）：?ids=1,2,3 → {suggestions: {qid: {...}}}。
+
+        ids 截断到前 SUGGESTIONS_MAX_IDS 个：原先无上限，单请求可一次拉全库建议快照。
+        """
+        qids = [
+            i for i in (int(x) for x in ids.split(",") if x.strip().isdigit())
+            if 1 <= i <= ID_MAX
+        ][:SUGGESTIONS_MAX_IDS]
         if not qids:
             return {"suggestions": {}}
         with db.get_session() as session:
@@ -1435,7 +1490,11 @@ def create_app(
                 raise HTTPException(status_code=409, detail="分类已存在")
             cat = TagCategory(name=name, is_custom=1, roles=roles, lang=lang)
             session.add(cat)
-            db.commit(session)
+            try:
+                db.commit(session)
+            except StorageError:
+                # 并发同名：预检与 INSERT 之间的竞态由唯一约束兜底 → 409（原先 500）
+                raise HTTPException(status_code=409, detail="分类已存在")
             session.refresh(cat)
         from ..tags import reload_tags
 
@@ -1444,7 +1503,7 @@ def create_app(
         return {"id": cat.id, "name": cat.name, "roles": cat.roles, "lang": cat.lang}
 
     @app.delete("/api/admin/categories/{category_id}")
-    def admin_delete_category(category_id: int, user: User = Depends(require_owner)):
+    def admin_delete_category(category_id: IdPath, user: User = Depends(require_owner)):
         """删除空分类（非空拒绝）；DB 级联删除其下标签（业务层 409 先拦非空）。"""
         from ..models import Tag, TagCategory
 
@@ -1478,7 +1537,11 @@ def create_app(
                 raise HTTPException(status_code=409, detail="标签已存在")
             item = Tag(category_id=category_id, name=name, is_custom=1)
             session.add(item)
-            db.commit(session)
+            try:
+                db.commit(session)
+            except StorageError:
+                # 并发同名：预检与 INSERT 之间的竞态由唯一约束兜底 → 409（原先 500）
+                raise HTTPException(status_code=409, detail="标签已存在")
             session.refresh(item)
         from ..tags import reload_tags
 
@@ -1487,7 +1550,7 @@ def create_app(
         return {"id": item.id, "name": item.name}
 
     @app.delete("/api/admin/tags/{tag_id}")
-    def admin_delete_tag(tag_id: int, user: User = Depends(require_owner)):
+    def admin_delete_tag(tag_id: IdPath, user: User = Depends(require_owner)):
         """删除标签：一条 DELETE，题上关联（question_tags）DB 级联清除。"""
         from ..models import Tag
 
@@ -1651,7 +1714,6 @@ def create_app(
             _db.init_db(_db_url_fn())
         with db.get_session() as session:
             total = session.scalars(select(func.count(Question.id))).one()
-        new_token = None
         with db.get_session() as session:
             imported_user = session.scalars(
                 select(User).where(User.username == user.username)
@@ -1659,9 +1721,10 @@ def create_app(
             if imported_user is not None:
                 from ..auth import create_token
 
-                new_token = create_token(imported_user.id)  # 备份库中同用户 → 补新 token 保持登录态
-                _set_auth_cookie(response, new_token)
-        return {"restored": True, "questions": total, "new_token": new_token}
+                # 备份库中同用户 → 补新 token 写 HttpOnly Cookie 保持登录态；
+                # 明文不回响应体（与登录/注册一致，避免 JS/日志/历史记录留痕）
+                _set_auth_cookie(response, create_token(imported_user.id))
+        return {"restored": True, "questions": total}
 
     # --- 用户上传题目（格式：题目列表 / 面经文本 / 简历；支持 pdf/docx/doc 二进制） ---
 
@@ -1669,7 +1732,7 @@ def create_app(
     def upload_questions(
         body: UploadBody, background: BackgroundTasks, user: User = Depends(require_owner)
     ):
-        filename = body.filename
+        filename = _safe_filename(body.filename)
         content = body.content
         content_base64 = body.content_base64
         up_type = body.type
@@ -1704,7 +1767,7 @@ def create_app(
                 _generate_uploaded_source, source.id, llm_factory, embedder_factory
             )
             return {"mode": "facejing", "source_id": source.id}
-        source, count = _insert_direct_questions(content)
+        source, count = _insert_direct_questions(content, filename)
         background.add_task(_tag_direct_questions, source.id, llm_factory)
         return {"mode": "direct", "count": count, "source_id": source.id}
 
@@ -1835,7 +1898,7 @@ def create_app(
         return [_submission_payload(s) for s in rows]
 
     @app.get("/api/ugc/submissions/{submission_id}")
-    def ugc_get_submission(submission_id: int, user: User = Depends(require_user)):
+    def ugc_get_submission(submission_id: IdPath, user: User = Depends(require_user)):
         with db.get_session() as session:
             sub = session.get(Submission, submission_id)
             if sub is None:
@@ -1854,7 +1917,7 @@ def create_app(
         return [_submission_payload(s) for s in rows]
 
     @app.post("/api/admin/ugc/submissions/{submission_id}/retry")
-    def admin_ugc_retry(submission_id: int, background: BackgroundTasks, user: User = Depends(require_owner)):
+    def admin_ugc_retry(submission_id: IdPath, background: BackgroundTasks, user: User = Depends(require_owner)):
         with db.get_session() as session:
             sub = session.get(Submission, submission_id)
             if sub is None or sub.status not in (SubmissionStatus.failed,):
@@ -1867,7 +1930,7 @@ def create_app(
         return {"id": submission_id, "status": SubmissionStatus.pending.value}
 
     @app.post("/api/admin/ugc/submissions/{submission_id}/remove")
-    def admin_ugc_remove(submission_id: int, user: User = Depends(require_owner)):
+    def admin_ugc_remove(submission_id: IdPath, user: User = Depends(require_owner)):
         """下架标记：保留 submission 溯源；派生题目由 owner 用现有删题入口处理。"""
         with db.get_session() as session:
             sub = session.get(Submission, submission_id)
@@ -1938,7 +2001,7 @@ def create_app(
         return [_feedback_payload(f) for f in rows]
 
     @app.post("/api/admin/feedback/{feedback_id}/resolve")
-    def admin_feedback_resolve(feedback_id: int, user: User = Depends(require_owner)):
+    def admin_feedback_resolve(feedback_id: IdPath, user: User = Depends(require_owner)):
         with db.get_session() as session:
             fb = session.get(QuestionFeedback, feedback_id)
             if fb is None:
@@ -1949,7 +2012,7 @@ def create_app(
             return _feedback_payload(fb)
 
     @app.post("/api/admin/feedback/{feedback_id}/dismiss")
-    def admin_feedback_dismiss(feedback_id: int, user: User = Depends(require_owner)):
+    def admin_feedback_dismiss(feedback_id: IdPath, user: User = Depends(require_owner)):
         with db.get_session() as session:
             fb = session.get(QuestionFeedback, feedback_id)
             if fb is None:
@@ -1960,7 +2023,7 @@ def create_app(
             return _feedback_payload(fb)
 
     @app.get("/api/questions/{question_id}/similar")
-    def question_similar(question_id: int, user: User = Depends(require_user)):
+    def question_similar(question_id: IdPath, user: User = Depends(require_user)):
         """duplicate 反馈候选：余弦相似度 >= feedback.duplicate_candidate_min_sim 的公开题。"""
         min_sim = config.feedback.duplicate_candidate_min_sim
         return _similar_questions_for_feedback(question_id, min_sim=min_sim)
@@ -2181,6 +2244,17 @@ def _default_llm_factory(config: AppConfig):
     return factory
 
 
+def _safe_filename(filename: str) -> str:
+    """上传文件名的显示/解析用安全形式：只取 basename，去掉路径分隔符与控制字符。
+
+    仅按后缀放行（.md/.txt/.pdf/.doc/.docx）时 `../../evil.md` 也能过：文件名会进
+    sources.title、前端展示和解析器分派，故先归一化再校验。
+    """
+    name = os.path.basename(str(filename).replace("\\", "/")).strip()
+    name = "".join(ch for ch in name if ch.isprintable())
+    return name[:120]
+
+
 def _is_direct_format(content: str) -> bool:
     """格式识别：全部非空行匹配 Q:/列表行且每行 <120 字符 → 直接入库模式。"""
     lines = [l.strip() for l in content.splitlines() if l.strip()]
@@ -2210,7 +2284,7 @@ def _parse_direct_questions(content: str) -> list[str]:
     return stems
 
 
-def _insert_direct_questions(content: str) -> tuple[Source, int]:
+def _insert_direct_questions(content: str, filename: str = "") -> tuple[Source, int]:
     """直接模式入库：建 manual source + knowledge 题（难度 1、默认 criteria）；与库内归一化哈希去重。
 
     source_hash 唯一约束：内容相同的重复上传复用已有 source（题已全去重）。
@@ -2227,7 +2301,7 @@ def _insert_direct_questions(content: str) -> tuple[Source, int]:
         if source is None:
             source = Source(
                 type=SourceType.manual,
-                title="用户上传",
+                title=filename or "用户上传",
                 cleaned_text=content,
                 source_hash=source_hash,
             )
@@ -2348,6 +2422,10 @@ def _tag_direct_questions(source_id: int, llm_factory) -> None:
                 if info["verdict"] == "delete":
                     if _question_inflight(session, q.id):
                         logger.info("质检跳过删除：题目 %s 正在判分", q.id)
+                        continue
+                    # 已审核（可能已被用户作答）的题不自动删：题库质检只应清理未公开的待审题
+                    if row.reviewed_at is not None:
+                        logger.info("质检跳过删除：题目 %s 已审核，留给管理员处理", q.id)
                         continue
                     sessions = session.scalars(
                         select(Session).where(Session.question_id == q.id)
@@ -2482,7 +2560,7 @@ def _start_binary_upload(
             elif up_type == "direct" or (
                 up_type == "auto" and _is_direct_format(text)
             ):
-                source, n = _insert_direct_questions(text)
+                source, n = _insert_direct_questions(text, filename)
                 _tag_direct_questions(source.id, llm_factory)
                 with _upload_lock:
                     _upload_tasks[token] = {
@@ -2628,6 +2706,14 @@ def _db_url() -> str:
     return f"sqlite:///{DEFAULT_DB_URL}"
 
 
+def _like_escape(text: str) -> str:
+    """转义 LIKE 元字符（`%`/`_`/转义符本身）→ 配合 .ilike(pattern, escape="\\") 按字面量匹配。
+
+    原先直接拼 `%{keyword}%`：搜索 `%` 或 `_` 会变成"匹配任意串"而返回全库。
+    """
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _tags_exists(tag: str):
     """题含指定标签的 EXISTS 子查询（question_tags 关联表 JOIN tags）。"""
     from ..models import QuestionTag, Tag
@@ -2640,13 +2726,13 @@ def _tags_exists(tag: str):
 
 
 def _tags_contains(keyword: str):
-    """题含模糊匹配标签的 EXISTS 子查询（标签名 ilike，大小写不敏感）。"""
+    """题含模糊匹配标签的 EXISTS 子查询（标签名 ilike，大小写不敏感，元字符按字面量）。"""
     from ..models import QuestionTag, Tag
 
     return Question.id.in_(
         select(QuestionTag.question_id)
         .join(Tag, QuestionTag.tag_id == Tag.id)
-        .where(Tag.name.ilike(f"%{keyword}%"))
+        .where(Tag.name.ilike(f"%{_like_escape(keyword)}%", escape="\\"))
     )
 
 
@@ -2747,12 +2833,30 @@ def _latest_judgment_by_question(
     session, user_id: int
 ) -> dict[int, tuple[Session, Judgment]]:
     """每题最新 finished session 及其最新 judgment（按 Session.id 倒序首条即最新），按用户隔离。"""
+    return _latest_judgment_by_question_filtered(session, user_id, ok_only=False)
+
+
+def _latest_ok_judgment_by_question(
+    session, user_id: int
+) -> dict[int, tuple[Session, Judgment]]:
+    """同 _latest_judgment_by_question，但跳过判分失败（status=failed）的会话。
+
+    stats 的「已完成题数」用它：answered_total/trend 只统计 total_score 非空（即判分成功），
+    原先 completed 口径把 failed 也计入，导致两者不一致。
+    """
+    return _latest_judgment_by_question_filtered(session, user_id, ok_only=True)
+
+
+def _latest_judgment_by_question_filtered(
+    session, user_id: int, *, ok_only: bool
+) -> dict[int, tuple[Session, Judgment]]:
     rows = session.execute(
         select(Session, Judgment)
         .join(Judgment, Judgment.session_id == Session.id)
         .where(
             Session.status == SessionStatus.finished,
             Session.user_id == user_id,
+            Judgment.total_score.is_not(None) if ok_only else True,
         )
         .order_by(Session.id.desc())
     ).all()
