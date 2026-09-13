@@ -3,16 +3,24 @@
 校验失败由 routes.py 的 RequestValidationError 处理器统一转 400 + 中文 detail，
 保持前端 `body.detail` 字符串契约。字段省略（局部更新/默认值）不被校验。
 """
-from pydantic import BaseModel, Field, field_validator
+from typing import Annotated
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..models import FeedbackCategory, SessionKind, SubmissionKind
 
 ANSWER_MAX_LEN = 8000  # 回答长度上限：防超大输入刷 LLM 成本
 UPLOAD_TYPES = ("auto", "direct", "facejing", "resume")
 
+# 资源 id 上界：SQLite INTEGER 为有符号 64 位，超界绑定会在驱动层抛 OverflowError → 500。
+# 1e15 远大于实际行数，同时确保 (id) 绑定与分页 offset 计算都不溢出。
+ID_MAX = 10**15
+IdPath = Annotated[int, Field(ge=1, le=ID_MAX)]  # 路径/查询参数里的资源 id
+PAGE_MAX = 10**8  # 页码上界：× page_size(≤50) 仍远小于 2^63-1，防 offset 溢出
+
 
 class CreateSessionBody(BaseModel):
-    question_id: int = Field(gt=0)
+    question_id: int = Field(gt=0, le=ID_MAX)
     kind: str = "chain"
 
     @field_validator("kind")
@@ -36,7 +44,11 @@ class AnswerBody(BaseModel):
 
 
 class AdminQuestionUpdate(BaseModel):
-    """管理员改题：全部可选（局部更新）；显式传 None 视为非法。"""
+    """管理员改题：全部可选（局部更新）；字段省略=不改，显式传 null=非法（400）。
+
+    null 一律拒绝：先前 `difficulty: None` 会走到 UPDATE NOT NULL 约束 → 500，
+    `reviewed: None` 会被 truthiness 判成 False → 静默下架题目。
+    """
 
     stem: str | None = Field(default=None, min_length=6)
     tags: list[str] | None = None
@@ -44,6 +56,17 @@ class AdminQuestionUpdate(BaseModel):
     reviewed: bool | None = None
     good_criteria: list[str] | None = None
     bad_criteria: list[str] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_null(cls, data):
+        """出现在请求体里的字段不得为 null（保持 `exclude_unset` 的"省略=不改"语义）。"""
+        if isinstance(data, dict):
+            for name in ("stem", "tags", "difficulty", "reviewed",
+                         "good_criteria", "bad_criteria"):
+                if name in data and data[name] is None:
+                    raise ValueError(f"{name} 不能为 null（不修改请省略该字段）")
+        return data
 
     @field_validator("stem")
     @classmethod
@@ -62,7 +85,7 @@ class AdminQuestionUpdate(BaseModel):
 
 
 class UploadBody(BaseModel):
-    filename: str = ""
+    filename: str = Field(default="", max_length=200)
     content: str = ""
     content_base64: str = ""
     type: str = "auto"
