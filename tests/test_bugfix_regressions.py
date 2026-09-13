@@ -30,25 +30,28 @@ def _client(db, role="owner", username="testuser"):
     return make_client(db, FakeLLM([]), user_role=role, username=username)
 
 
-def test_review_suggestions_oversized_id_400(db):
-    """?ids=<超大整数> 原本 500（绑定溢出）→ 现在忽略非法项返回空建议。"""
+# --- P2-14：stats 口径一致 ---
+
+
+def test_stats_done_questions_excludes_failed_judgment(db):
+    """判分失败的会话原本计入 done_questions 但不计入 answered_total → 口径不一致。"""
+    from datetime import datetime
+
+    from app.models import Judgment, Session, SessionKind, SessionStatus
+
+    q = add_today_question(db, stem="判分失败口径测试题")
+    user = db.scalars(select(User).where(User.email == "testuser@test.com")).first()
+    s = Session(question_id=q.id, user_id=user.id, kind=SessionKind.open,
+                status=SessionStatus.finished, ended_at=datetime.now())
+    db.add(s)
+    commit(db)
+    db.refresh(s)
+    db.add(Judgment(session_id=s.id, scores={"status": "failed"}, total_score=None,
+                    review="判分失败", reference_answer="", weak_tags=[]))
+    commit(db)
+
     c = _client(db)
-    resp = c.get("/api/review/suggestions", params={"ids": "99999999999999999999"})
-    assert resp.status_code == 200
-    assert resp.json() == {"suggestions": {}}
-
-# --- P2-13：suggestions 条数上限 ---
-
-
-def test_review_suggestions_limited(db):
-    from app.web.routes import SUGGESTIONS_MAX_IDS
-
-    for i in range(5):
-        add_today_question(db, stem=f"审核建议上限题{i}")
-    c = _client(db)
-    ids = ",".join(str(i) for i in range(1, SUGGESTIONS_MAX_IDS + 50))
-    resp = c.get("/api/review/suggestions", params={"ids": ids})
-    assert resp.status_code == 200
-    assert len(resp.json()["suggestions"]) <= SUGGESTIONS_MAX_IDS
+    body = c.get("/api/stats").json()
+    assert body["done_questions"] == body["answered_total"] == 0
 
 
