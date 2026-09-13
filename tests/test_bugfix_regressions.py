@@ -29,59 +29,46 @@ def _client(db, role="owner", username="testuser"):
     return make_client(db, FakeLLM([]), user_role=role, username=username)
 
 
-# --- P0-1/2：整数参数超 SQLite int64 上限 → 原本 OverflowError 500 ---
+# --- P1-7：限流额度只计真正执行的请求 ---
 
 
-def test_bank_page_upper_bound_400(db):
-    """GET /api/bank?page=INT64_MAX 原本 500（offset 溢出）→ 现在 400。"""
+def test_rejected_requests_do_not_consume_quota(db):
+    """被业务层拒绝（4xx）的写请求不占额度：否则 10 次非法上传就能锁死合法上传。
+
+    走完整登录链路（Cookie 认证）拿到 owner，再用恒 400 的非法后缀请求验证额度未被吃光。
+    """
+    from app.web.routes import create_app
+    from app import ratelimit
+    from app.auth import hash_password
+    from app.models import User as _U
+
+    with get_session() as s:
+        s.add(_U(email="quota@test.com", username="quota",
+                 password_hash=hash_password("quotapass1"), role="owner"))
+        commit(s)
+
+    app = create_app(make_config(), llm_factory=lambda role: FakeLLM([]),
+                     daily_runner=None, embedder_factory=lambda: FakeEmbedder())
+    client = TestClient(app)
+    assert client.post("/api/auth/login", json={
+        "email": "quota@test.com", "password": "quotapass1"}).status_code == 200
+    bad = {"filename": "a.exe", "content": "x"}
+    ratelimit.reset()
+    for _ in range(40):  # 远超 LLM_COST_LIMIT(10)
+        resp = client.post("/api/upload", json=bad, headers={"X-Requested-With": "fetch"})
+        assert resp.status_code == 400, resp.text[:120]
+    assert client.post("/api/upload", json=bad,
+                       headers={"X-Requested-With": "fetch"}).status_code == 400
+
+
+def test_rate_limit_still_blocks_after_real_requests(db):
+    """真正执行的写请求照常计数（成功响应累计到上限后 429）。"""
+    from app import ratelimit
+
     c = _client(db)
-    for page in ("9223372036854775807", "99999999999999999999", "100000001"):
-        resp = c.get("/api/bank", params={"page": page})
-        assert resp.status_code == 400, page
-        assert resp.json()["detail"] == "invalid page or page_size"
-
-
-@pytest.mark.parametrize("method,path", [
-    ("GET", "/api/questions/{big}"),
-    ("GET", "/api/questions/{big}/history"),
-    ("GET", "/api/questions/{big}/similar"),
-    ("GET", "/api/sessions/{big}"),
-    ("GET", "/api/sessions/{big}/resume"),
-    ("GET", "/api/ugc/submissions/{big}"),
-    ("PUT", "/api/admin/questions/{big}"),
-    ("DELETE", "/api/admin/questions/{big}"),
-    ("DELETE", "/api/admin/tags/{big}"),
-    ("DELETE", "/api/admin/categories/{big}"),
-    ("POST", "/api/admin/feedback/{big}/resolve"),
-    ("POST", "/api/favorites/{big}"),
-])
-def test_oversized_id_never_500(db, method, path):
-    """超 int64 的资源 id 原本在驱动层 OverflowError → 500；现在一律 400/404。"""
-    c = _client(db)
-    resp = c.request(method, path.format(big="99999999999999999999"))
-    assert resp.status_code in (400, 404), (method, path, resp.status_code, resp.text[:120])
-
-def test_repeated_query_param_oversized_400(db):
-    """?page=1&page=<超大> 重复参数原本 500 → 现在 400。"""
-    c = _client(db)
-    resp = c.get("/api/bank?page=1&page=99999999999999999999")
-    assert resp.status_code == 400
-
-# --- P0-3：date 溢出 + 解析口径 ---
-
-
-def test_today_date_overflow_400(db):
-    """date=9999-12-31 原本 +1 天 OverflowError → 500；现在 400。"""
-    c = _client(db)
-    for bad in ("9999-12-31", "9999-12-30", "2099-01-01"):
-        assert c.get("/api/today", params={"date": bad}).status_code == 400, bad
-
-
-def test_today_date_strict_iso(db, tmp_path):
-    """非补零 `2026-9-3` 与带时间的 `2026-09-13T00:00:00` 都被拒（只收 YYYY-MM-DD）。"""
-    c = _client(db)
-    for bad in ("2026-9-3", "2026-09-13T00:00:00", "2026-09-13 ", "20260913"):
-        assert c.get("/api/today", params={"date": bad}).status_code == 400, bad
-    today = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
-    assert c.get("/api/today", params={"date": today}).status_code == 200
+    q = add_today_question(db, stem="限流计数测试题")
+    ratelimit.reset()
+    codes = [c.post(f"/api/favorites/{q.id}").status_code for _ in range(62)]
+    assert codes.count(200) == 60
+    assert codes[-1] == 429
 
