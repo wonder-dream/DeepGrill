@@ -1,0 +1,30 @@
+# 统一行尾策略：仓库内一律 LF，不受 core.autocrlf 影响
+# 优先级：.gitattributes > core.autocrlf / core.eol
+* text=auto eol=lf
+
+# 显式声明文本文件
+*.md    text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.toml  text eol=lf
+*.ts    text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+
+# Windows 批处理必须 CRLF，否则 cmd.exe 可能解析失败
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# 二进制文件禁止行尾转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
+*.zip   binary
