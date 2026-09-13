@@ -53,20 +53,26 @@ def can_send(email: str) -> bool:
 def issue_code(email: str, send_fn=None) -> None:
     """生成验证码并发送（send_fn(email, code) 可注入；默认 SMTP）。
 
-    send_fn 抛异常时不留码（调用方提示发送失败）。
+    发送失败也占 60s 冷却（last_sent 先落库再发送）：否则 SMTP 报错时同一邮箱可被
+    无限次触发发送尝试，限频形同虚设。抛异常时不留验证码（调用方提示发送失败）。
     """
     send_fn = send_fn or send_smtp_code
     now = time.time()
     code = _new_code()
-    send_fn(email, code)
     with _codes_lock:
         _cleanup_locked(now)
-        _codes[email] = {
-            "code": code,
-            "ts": now,
-            "last_sent": now,
-            "attempts": 0,
-        }
+        # 先写 last_sent 占冷却窗口；code 留空，发送成功后再补
+        _codes[email] = {"code": "", "ts": now, "last_sent": now, "attempts": 0}
+    try:
+        send_fn(email, code)
+    except Exception:
+        raise  # 冷却已占（last_sent 已写），验证码不保留
+    with _codes_lock:
+        entry = _codes.get(email)
+        if entry is not None:
+            entry["code"] = code
+        else:  # 冷却窗口内被清理：补写一条完整记录
+            _codes[email] = {"code": code, "ts": now, "last_sent": now, "attempts": 0}
 
 
 def verify_code(email: str, code: str) -> bool:

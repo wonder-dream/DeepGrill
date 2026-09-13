@@ -1,4 +1,4 @@
-﻿"""多用户认证与数据隔离测试（阶段 A）。"""
+"""多用户认证与数据隔离测试（阶段 A）。"""
 import hashlib
 import time
 import pytest
@@ -107,7 +107,7 @@ def test_send_code_rate_limit_429(monkeypatch, db):
 
 
 def test_send_code_smtp_unconfigured_503(monkeypatch, db):
-    """SMTP 未配置（发送抛 RuntimeError）→ 503 且不留码。"""
+    """SMTP 未配置（发送抛 RuntimeError）→ 503 且不留码，但仍占 60s 冷却。"""
     from app import email_code
 
     def boom(email, code):
@@ -117,7 +117,11 @@ def test_send_code_smtp_unconfigured_503(monkeypatch, db):
     c = bare_client()
     assert c.post("/api/auth/send-code", json={"email": "b@163.com"}).status_code == 503
     with email_code._codes_lock:
-        assert "b@163.com" not in email_code._codes
+        entry = email_code._codes["b@163.com"]
+    assert entry["code"] == ""  # 发送失败：不留验证码
+    assert entry["last_sent"] > 0  # 但已占冷却窗口
+    # 失败后 60s 内重发被限频（原先失败路径不写 last_sent，限频形同虚设）
+    assert c.post("/api/auth/send-code", json={"email": "b@163.com"}).status_code == 429
 
 
 def test_register_first_user_is_owner(db):
