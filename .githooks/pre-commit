@@ -20,6 +20,15 @@ if [ -z "$PY" ]; then
     exit 0
 fi
 
+echo "pre-commit: 提交动作检查（台账编号 / 影响文档 / 被删的数字）…"
+if ! "$PY" scripts/check_staged.py; then
+    echo "" >&2
+    echo "提交被拦下：台账里已有编号的决策被就地改写了。" >&2
+    echo "反转一条已落地的决策要**新增一个编号写新结论 + 旧行标「废止」**；" >&2
+    echo "只是措辞修订就在行内写「文字修订」。详见 scripts/check_staged.py 的文件头。" >&2
+    exit 1
+fi
+
 echo "pre-commit: 文档一致性校验…"
 if ! "$PY" scripts/check_docs.py; then
     echo "" >&2
@@ -28,10 +37,13 @@ if ! "$PY" scripts/check_docs.py; then
     exit 1
 fi
 
-# 只在校验器或文档本身有改动时，才跑变异自检（它比较慢）
-if git diff --cached --name-only | grep -qE '^(scripts/check_docs\.py|docs/|CONTEXT\.md|AGENTS\.md|README\.md)'; then
-    echo "pre-commit: 校验器自检（变异测试）…"
-    if ! "$PY" scripts/selftest_check_docs.py; then
+# 只在校验器或文档本身有改动时，才跑自检（它们比较慢）
+if git diff --cached --name-only | grep -qE '^(scripts/|docs/|CONTEXT\.md|AGENTS\.md|README\.md)'; then
+    echo "pre-commit: 校验器自检（变异测试 + 规则用例）…"
+    ok=1
+    "$PY" scripts/selftest_check_docs.py || ok=0
+    "$PY" scripts/selftest_check_staged.py || ok=0
+    if [ "$ok" -ne 1 ]; then
         echo "" >&2
         echo "提交被拦下：校验器自检未通过 —— 某条规则已失效，或测试本身无效。" >&2
         echo "这意味着文档的自动保障出现了缺口，请先修校验器。" >&2

@@ -1,0 +1,3 @@
+# Python 编译产物：`scripts/` 下的脚本一跑（或调试时 import）就会生成，不该进库
+__pycache__/
+*.pyc
