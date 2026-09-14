@@ -140,3 +140,34 @@ def stem_exists(session: Session, stem: str) -> bool:
         session.execute(select(Question.id).where(Question.stem == stem).limit(1)).first()
         is not None
     )
+
+
+def owned_ids(session: Session, user_id: int) -> list[int]:
+    """这位用户**自己**的题 id 清单（**不带可见性条件**）。
+
+    给两类**写入方**用，都不面向浏览：
+    · 注销：删人之前要先清掉指向这些题的外键（`question_point_stats` / 收藏）
+    · 晋升：把 `owner_user_id` 置空时按 id 操作
+
+    公开面（列表 / 详情 / 抽题）仍必须走 `visible_to()`。
+    """
+    return list(
+        session.execute(
+            select(Question.id).where(Question.owner_user_id == user_id)
+        ).scalars()
+    )
+
+
+def owned_questions(session: Session, user_id: int) -> list[Question]:
+    """这位用户的私有题（含全部字段）—— 给"导出我的数据"用（决策 23）。
+
+    它返回 ORM 行而不是自己拼 dict：导出要**全部字段**，而字段清单的唯一来源是
+    映射本身（`_Row.to_dict()`），手抄一份必然随加列而漏。
+    """
+    return list(
+        session.execute(
+            select(Question).where(Question.owner_user_id == user_id).order_by(Question.id)
+        )
+        .scalars()
+        .all()
+    )

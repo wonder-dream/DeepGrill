@@ -375,6 +375,18 @@ class _Row:
     def __repr__(self) -> str:
         return f"<{type(self).__name__} {getattr(self, 'id', None)}>"
 
+    def to_dict(self) -> dict[str, Any]:
+        """这一行的全部列 → 普通 dict（JSON 列已经是 dict/list，可直接序列化）。
+
+        给"导出我的数据"（决策 23）这类**要给人看/带走**的路径用：它必须导出
+        全部字段，所以列清单**只有一个来源**（`CLASS_BY_TABLE` 里的 Table），
+        不许在导出代码里手抄一遍 —— 手抄的那份必然会随加列而过期。
+        """
+        for table, cls in CLASS_BY_TABLE.items():
+            if cls is type(self):
+                return {c.name: getattr(self, c.name, None) for c in table.columns}
+        return {}
+
 
 class User(_Row):
     pass
