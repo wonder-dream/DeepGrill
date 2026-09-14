@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -25,7 +26,7 @@ from app.db.models import Attempt, Evaluation, Interview, Question, Session_ as 
 from app.errors import InvalidInput, NotFound
 from app.interview import rules
 from app.interview.rules import HitSnapshot
-from app.llm import LLMError, prompts
+from app.llm import LLMError, ProseFilter, prompts, split_prose_and_json
 
 logger = logging.getLogger(__name__)
 
@@ -139,17 +140,48 @@ def submit_answer(
     input_mode: str = "text",
     stt_text: str | None = None,
 ) -> RoundResult:
-    """候选人答了一轮。返回判定结果与下一问。
+    """答一轮（**非流式**那条路：表单提交）。把事件流跑完，只取结果。
 
-    ⚠️ **先取上一轮快照，再写本轮**（§3.6 的具体 bug，重写极易再犯）。
+    真正干活的是 `run_round()`；这里只是"不要那些增量"。两条入口共用同一份实现，
+    是这一笔里最重要的一件事 —— 抄一遍"判定 → 落库 → 收尾"的代码，就是又一处
+    会漂的地方（收尾判据改一次要改两处，而漏改的那处不会报错）。
+    """
+    result: RoundResult | None = None
+    for event in run_round(
+        session,
+        ts=ts,
+        answer_text=answer_text,
+        llm=llm,
+        input_mode=input_mode,
+        stt_text=stt_text,
+    ):
+        if isinstance(event, RoundResult):
+            result = event
+    assert result is not None, "run_round 必须以 RoundResult 收尾（这是它的契约）"
+    return result
+
+
+def run_round(
+    session: Session,
+    *,
+    ts: InterviewSession,
+    answer_text: str,
+    llm,
+    input_mode: str = "text",
+    stt_text: str | None = None,
+    stream: bool = False,
+) -> Iterator[str | RoundResult]:
+    """一轮的完整过程，**边产出面试官的话、边把这一轮落库**。
+
+    产出的东西按顺序：先是面试官那句话的**增量**（`str`，可能多段），最后是一个
+    `RoundResult`。流式的端点把增量发成 SSE，非流式的端点把它们丢掉。
 
     `input_mode` / `stt_text` 是决策 32/33 的两列：语音轮次里 `stt_text` 是**转写
     原文**、`answer_text` 是**实际送进判分的文本**。两列分开存的理由写在
-    `migrations/0001_initial.sql` 的 `attempts` 注释里（清晰度要有原始素材），
-    而"不设确认环节"意味着它们**通常相同** —— 用户顺手改过才会不同。
+    `migrations/0001_initial.sql` 的 `attempts` 注释里（清晰度要有原始素材），而
+    "不设确认环节"意味着它们**通常相同**。录音本身不经过这里（决策 33）。
 
-    录音本身**不经过这里**：`transcribe` 在路由层就做完了，这一层只见文字
-    （决策 33：不保存原始录音）。
+    ⚠️ **先取上一轮快照，再写本轮**（§3.6 的具体 bug，重写极易再犯）。
     """
     previous = current_snapshot(session, ts.id)  # ← 必须在写库之前
     round_no = next_round_no(session, ts.id)
@@ -160,23 +192,34 @@ def submit_answer(
 
     criteria = bank_repository.criteria_of_question(session, question)
     history = transcript(session, ts.id)
+    prompt = prompts.load("interviewer/score_round.md").render(
+        stem=question.stem,
+        criteria=_criteria_block(criteria),
+        history=history or "（这是第一轮）",
+        answer=answer_text or "（候选人没有作答）",
+    )
 
     decision_failed = False
+    prose = ""
     try:
-        data, reply = llm.chat_json(
-            [
-                {
-                    "role": "user",
-                    "content": prompts.load("interviewer/score_round.md").render(
-                        stem=question.stem,
-                        criteria=_criteria_block(criteria),
-                        history=history or "（这是第一轮）",
-                        answer=answer_text or "（候选人没有作答）",
-                    ),
-                }
-            ]
-        )
-        updates, followup, model_finish = _parse_round(data, criteria)
+        if stream:
+            # 逐段放行"分隔行之前"的内容 —— 结构（JSON）一个字节都不给用户看
+            prose_filter = ProseFilter()
+            raw_parts: list[str] = []
+            for chunk in llm.stream([{"role": "user", "content": prompt}]):
+                raw_parts.append(chunk)
+                visible = prose_filter.feed(chunk)
+                if visible:
+                    yield visible
+            tail = prose_filter.finish()
+            if tail:
+                yield tail
+            raw = "".join(raw_parts)
+        else:
+            raw = llm.chat([{"role": "user", "content": prompt}]).text
+
+        prose, data = split_prose_and_json(raw)
+        updates, model_finish = _parse_round(data, criteria)
     except LLMError as e:
         # 降级可以，静默不行（AGENTS.md §3.1）：这一轮记为"全部未涉及"、
         # 给出固定提示、并把 llm_failed 交给调用方展示。会话**不中断**。
@@ -187,8 +230,12 @@ def submit_answer(
         logger.warning("第 %d 轮判定失败：%s", round_no, e)
         decision_failed = True
         updates = {c.id: rules.NOT_COVERED for c in criteria}
-        followup = "（面试官这轮没接上，继续说你的思路就好）"
+        prose = "（面试官这轮没接上，继续说你的思路就好）"
         model_finish = False
+        if stream:
+            # 流式路径下用户已经盯着屏幕等了：这句话必须**发出去**，否则那一轮
+            # 看起来什么都没发生。非流式路径不需要（页面上会重新渲染整页）。
+            yield prose
 
     snapshot = previous.merge(updates)
     new_hits = rules.count_new_hits(previous, snapshot)
@@ -200,7 +247,7 @@ def submit_answer(
         input_mode=input_mode,
         stt_text=stt_text,
         answer_text=answer_text,
-        feedback_text=followup,
+        feedback_text=prose,
         hits=snapshot.to_json(),
     )
     session.add(attempt)
@@ -216,11 +263,13 @@ def submit_answer(
     if finished:
         ts.status = "finished"
 
-    return RoundResult(
+    # ⚠️ 必须是 `yield` 而不是 `return`：这个函数现在是**生成器**，`return X` 会变成
+    # `StopIteration(X)` —— 调用方拿不到结果（第一版就是这么写的，13 个测试当场变红）。
+    yield RoundResult(
         attempt_id=attempt.id,
         snapshot=snapshot,
         new_hits=new_hits,
-        followup=followup,
+        followup=prose,
         finished=finished,
         llm_failed=decision_failed,
     )
@@ -232,8 +281,12 @@ def _criteria_block(criteria) -> str:
     return "\n".join(f"{c.id}. {c.text}" for c in criteria)
 
 
-def _parse_round(data: object, criteria) -> tuple[dict[int, str], str, bool]:
-    """把模型的 JSON 解析成 `(判定, 下一问, 是否建议收尾)`。
+def _parse_round(data: object, criteria) -> tuple[dict[int, str], bool]:
+    """把模型的 JSON 解析成 `(判定, 是否建议收尾)`。
+
+    ⚠️ **不再从 JSON 里取面试官那句话**：两段式回复里那句话在分隔行**前面**
+    （`split_prose_and_json` 拆出来的 `prose`）。放两份会不一致 —— 而流式显示的
+    是前面那一份，写进 `attempts.feedback_text` 的却是后面那一份。
 
     容忍度是刻意的：模型可能少给一条考察点、给未知的 `criterion_id`、给出非法
     `status`。这些都不该让整轮失败 —— **但也不该静默**：漏掉的考察点按
@@ -264,8 +317,7 @@ def _parse_round(data: object, criteria) -> tuple[dict[int, str], str, bool]:
     if missing:
         logger.warning("模型漏了 %d 条考察点，按未涉及记：%s", len(missing), sorted(missing))
 
-    followup = str(payload.get("followup") or "").strip()
-    return updates, followup, bool(payload.get("should_finish"))
+    return updates, bool(payload.get("should_finish"))
 
 
 # ---------------------------------------------------------------------------

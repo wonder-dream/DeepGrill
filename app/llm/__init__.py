@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -165,6 +166,91 @@ def loads_tolerant(text: str) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# 「先说人话，再给 JSON」的两段式回复（面试官那一轮用它做流式）
+# ---------------------------------------------------------------------------
+#: 两段之间的分隔行。要求模型**原样**输出它 —— 它同时是两件事的判据：
+#: 「哪些字节可以立刻流给用户」与「JSON 从哪儿开始」。
+#:
+#: 为什么不用"把 `followup` 放进 JSON 再流式解析半截 JSON"：那要求前端懂一半 JSON，
+#: 而模型少打一个引号就会把结构漏给用户。一句话在前、结构在后，边界是一个固定的
+#: 字符串 —— 错了就整轮降级，不会"漏一半"。
+PROSE_JSON_MARKER = "===JSON==="
+
+#: 分隔行必须**独占一行**（允许前后空白）。正文里恰好写出这几个字是可能的
+#: （比如候选人的答案里），而"独占一行"这个约束让误判几乎不可能。
+#: 这一个正则同时被同步路径（`split_prose_and_json`）与流式路径（`ProseFilter`）
+#: 用 —— 两个地方各写一套"什么算分隔行"，就是两套会漂的规则。
+_MARKER_RE = re.compile(
+    r"(?:^|\n)[ \t]*" + re.escape(PROSE_JSON_MARKER) + r"[ \t]*(?:\n|$)"
+)
+#: 流式放行时要按住的尾巴长度：分隔行本身 + 可能的前导换行与空格。
+_MARKER_KEEP = len(PROSE_JSON_MARKER) + 4
+
+
+def split_prose_and_json(text: str) -> tuple[str, Any]:
+    """把两段式回复拆成 `(要说的话, 判定结果)`。
+
+    `text` 是模型的完整输出。分隔行缺失时抛 `LLMParseError` —— **不猜**：
+    把整段当成人话、判定全记"未涉及"是一种静默降级（用户看到的下一问是真的，
+    而命中判定是假的）。交给调用方既有的失败路径（页面明说"这一轮判定没成功"）。
+    """
+    m = _MARKER_RE.search(text)
+    if m is None:
+        raise LLMParseError(
+            f"模型没有输出分隔行 {PROSE_JSON_MARKER}（两段式回复的契约）—— 无法把"
+            f"「要说的话」与「判定结果」分开"
+        )
+    return text[: m.start()].strip(), loads_tolerant(text[m.end():])
+
+
+class ProseFilter:
+    """从流式输出里**只放行分隔行之前的内容**，并把它切成可显示的增量。
+
+    它是"边收边显示"与"结构不能泄给用户"之间那一步。三个细节：
+
+    ① **按住尾巴**：分隔行可能被切成几块（`===` / `JSON` / `===`），所以每次都把
+       末尾 `_MARKER_KEEP` 个字符留在缓冲里 —— 那一段里不可能藏着一个**完整**的
+       分隔行，放行是安全的。
+    ② **一旦见到分隔行就永久闭嘴**：后面是 JSON，一个字节都不再放行。
+    ③ `finish()` 在流结束时把按住的那一小段吐出来（否则最后几个字会丢）。
+    """
+
+    def __init__(self, marker: str = PROSE_JSON_MARKER) -> None:
+        self.marker = marker
+        self._buffer = ""
+        self._done = False
+
+    @property
+    def done(self) -> bool:
+        """已经见过分隔行（后面的内容都属于 JSON）。"""
+        return self._done
+
+    def feed(self, chunk: str) -> str:
+        """喂一段增量，返回**这一段里可以显示的部分**（可能为空）。"""
+        if self._done:
+            return ""
+        self._buffer += chunk
+        m = _MARKER_RE.search(self._buffer)
+        if m is not None:
+            out = self._buffer[: m.start()]
+            self._done = True
+            self._buffer = ""
+            return out
+        if len(self._buffer) <= _MARKER_KEEP:
+            return ""
+        out, self._buffer = self._buffer[:-_MARKER_KEEP], self._buffer[-_MARKER_KEEP:]
+        return out
+
+    def finish(self) -> str:
+        """流结束：把按住的那一小段放出来（除非已经见过分隔行）。"""
+        if self._done:
+            self._buffer = ""
+            return ""
+        out, self._buffer = self._buffer, ""
+        return out
+
+
+# ---------------------------------------------------------------------------
 # HTTP 客户端
 # ---------------------------------------------------------------------------
 @dataclass
@@ -217,7 +303,13 @@ class LLMClient:
             "completion_tokens": 0,
             "reasoning_tokens": 0,
             "calls": 0,
+            #: 没拿到 `usage` 的流式调用次数（服务端没给 include_usage 时）。
+            #: **不静默**：账本少记了多少次是能看出来的（决策 14 的第二道安全网）。
+            "missing_usage_calls": 0,
         }
+        #: 流式调用里累计的推理文本。**不展示给用户**（基线：思考过程不展示），
+        #: 但服务端留着用于排查 —— 与 `LLMReply.reasoning_text` 同一个用途。
+        self._reasoning_buffer: list[str] = []
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             timeout=timeout,
@@ -334,6 +426,118 @@ class LLMClient:
         """`chat(json_mode=True)` 的便利形式，返回 `(data, reply)`。"""
         reply = self.chat(messages, json_mode=True, **kwargs)
         return reply.data, reply
+
+    # -- 流式 --------------------------------------------------------------
+    def stream(
+        self,
+        messages: Sequence[dict[str, str]],
+        *,
+        max_tokens: int = 8192,
+        temperature: float = 0.2,
+        model: str | None = None,
+    ) -> Iterator[str]:
+        """流式调用，**逐段 yield 正文增量**（不含推理）。
+
+        三条与 `chat()` 不同、必须说清楚的地方：
+
+        ① **不能用 `response_format=json_object`**（那是"整段必须是 JSON"的要求）。
+           面试官那一轮改成两段式（先说人话、分隔行、再给 json），所以走这条路的
+           prompt 必须自己保证 json 部分可解析 —— `split_prose_and_json` 负责拆。
+
+        ② **重试只在"一个字节都没放行"之前**。一旦 yield 过，消费者已经拿到了
+           内容，重试会让同一句话出现两遍。所以 `_emitted` 之后遇到错误直接抛。
+
+        ③ **用量靠 `stream_options.include_usage`**（服务端会在最后一个 chunk 里
+           带上 `usage`）。拿不到就没有用量 —— 决策 14 的账本会少记这一次，而这
+           **不静默**：`usage_total["calls"]` 照加，`missing_usage_calls` 记一笔。
+        """
+        payload: dict[str, Any] = {
+            "model": model or self.model,
+            "messages": list(messages),
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            # 没有它，流式调用的 token 用量就不进账本（决策 14 的第二道安全网）
+            "stream_options": {"include_usage": True},
+        }
+        last: Exception | None = None
+        for attempt in range(self._max_retries):
+            if attempt:
+                time.sleep(_BACKOFF_BASE * (2 ** (attempt - 1)))
+            emitted = False
+            try:
+                with self._client.stream("POST", "/chat/completions", json=payload) as r:
+                    if r.status_code >= 500:
+                        last = LLMCallError(f"服务端错误 {r.status_code}")
+                        logger.warning("流式调用返回 %d（第 %d 次）", r.status_code, attempt + 1)
+                        continue
+                    if not (200 <= r.status_code < 300):
+                        raise LLMCallError(f"请求被拒绝（{r.status_code}）：{r.text[:200]}")
+                    for chunk in self._iter_stream(r):
+                        emitted = True
+                        yield chunk
+                return
+            except (httpx.ConnectError, httpx.TimeoutException) as e:
+                if emitted:
+                    # 已经放行过内容：重试会让同一句话出现两遍
+                    raise LLMCallError(f"流式连接在输出中途断开：{e}") from e
+                last = e
+                logger.warning("流式连接失败（第 %d 次）：%s", attempt + 1, e)
+                continue
+            except httpx.HTTPError as e:
+                if emitted:
+                    raise LLMCallError(f"流式输出中断：{e}") from e
+                last = e
+                continue
+        raise LLMCallError(f"重试 {self._max_retries} 次仍失败：{last}")
+
+    def _iter_stream(self, response: httpx.Response) -> Iterator[str]:
+        """把 SSE 的 `data:` 行拆成正文增量，并把用量记进 `usage_total`。
+
+        OpenAI 兼容的形态：每行 `data: {...}`，结束是 `data: [DONE]`；增量在
+        `choices[0].delta.content`，而**推理内容在 `delta.reasoning_content`** ——
+        它不进正文（基线：思考过程不展示），但服务端要留着用于排查，所以照样累计。
+        """
+        usage_seen = False
+        for line in response.iter_lines():
+            if not line:
+                continue
+            if isinstance(line, bytes):  # httpx 可能给 bytes
+                line = line.decode("utf-8", errors="replace")
+            if not line.startswith("data:"):
+                continue
+            data = line[len("data:"):].strip()
+            if data == "[DONE]":
+                break
+            try:
+                body = json.loads(data)
+            except json.JSONDecodeError:
+                logger.warning("流式返回里有解析不了的一行：%r", data[:200])
+                continue
+
+            usage = body.get("usage") or {}
+            if usage:
+                usage_seen = True
+                details = usage.get("completion_tokens_details") or {}
+                self.usage_total["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
+                self.usage_total["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+                self.usage_total["reasoning_tokens"] += int(details.get("reasoning_tokens") or 0)
+
+            choices = body.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            reasoning = delta.get("reasoning_content")
+            if reasoning:
+                self._reasoning_buffer.append(reasoning)
+            content = delta.get("content")
+            if content:
+                yield content
+
+        self.usage_total["calls"] += 1
+        if not usage_seen:
+            # 不静默：账本少记一次是**能被发现**的一件事（观测页看得到这个计数）
+            self.usage_total["missing_usage_calls"] += 1
 
     # -- 重试 --------------------------------------------------------------
     def _post_with_retry(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:

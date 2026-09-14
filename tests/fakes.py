@@ -68,6 +68,34 @@ class FakeReply:
         )
 
 
+def round_reply(hits=None, prose="继续说说看。", finish: bool = False) -> FakeReply:
+    """面试官那一轮的回复 —— **两段式**（散文 + 分隔行 + json）。
+
+    它是这个格式在测试里的**唯一住处**：prompt 那边改了格式，这里改一处，所有
+    用它的测试一起跟着走。散着写 `{"hits": ...}` 的测试会在某天静默地测一个
+    产品里已经不存在的格式（而失败信息看起来像"判定没成功"，完全指不出真因）。
+    """
+    import json
+
+    from app.llm import PROSE_JSON_MARKER
+
+    payload = {
+        "hits": [{"criterion_id": c, "status": s} for c, s in (hits or [])],
+        "should_finish": finish,
+    }
+    body = json.dumps(payload, ensure_ascii=False)
+    return FakeReply(text=f"{prose}\n\n{PROSE_JSON_MARKER}\n{body}")
+
+
+def stream_chunks(text: str, *, size: int = 7) -> list[str]:
+    """把一段文本切成小块 —— 用来测流式路径（**故意切在分隔行中间**）。
+
+    默认 7 个字符一切，而分隔行是 `===JSON===`（10 个字符），所以它必然被切开 ——
+    这正是 `ProseFilter` 要处理的真实情况（模型的一个 chunk 不会照顾我们的边界）。
+    """
+    return [text[i : i + size] for i in range(0, len(text), size)]
+
+
 @dataclass
 class FakeLLM:
     """预录响应队列。
@@ -78,6 +106,8 @@ class FakeLLM:
 
     replies: list[FakeReply] = field(default_factory=list)
     calls: list[dict[str, Any]] = field(default_factory=list)
+    #: 流式调用吐出去的**完整文本**（每次一条）—— 断言"流式路径真的走了"用它。
+    streamed: list[str] = field(default_factory=list)
     model: str = "fake-model"
     #: 按"调用种类"分派：`{"round": [reply, ...]}`。见 `on()`。
     by_kind: dict[str, list[FakeReply]] = field(default_factory=dict)
@@ -133,6 +163,29 @@ class FakeLLM:
                 f"测试没准备这一步"
             )
         return self.replies.pop(0).resolve(json_mode=json_mode)
+
+    def stream(
+        self,
+        messages: list[dict[str, str]] | tuple[dict[str, str], ...],
+        *,
+        max_tokens: int = 8192,
+        temperature: float = 0.2,
+        model: str | None = None,
+    ):
+        """流式那条路：把同一条预录回复**切成小块**吐出来。
+
+        切法是 `stream_chunks`（默认 7 个字符一段）—— 故意让分隔行被切开，因为
+        `ProseFilter` 的全部难度都在"分隔行可能横跨两个 chunk"上。一个"整段一次
+        吐出"的替身会让那条逻辑永远不被执行。
+        """
+        reply = self.chat(
+            messages, json_mode=False, max_tokens=max_tokens,
+            temperature=temperature, model=model,
+        )
+        text = reply.text or ""
+        self.streamed.append(text)
+        for piece in stream_chunks(text):
+            yield piece
 
     def chat_json(
         self, messages: list[dict[str, str]], **kwargs: Any

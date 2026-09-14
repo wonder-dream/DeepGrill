@@ -23,7 +23,7 @@ from app.deps import get_llm
 from app.main import create_app
 from app.security import hash_password
 from migrations._runner import migrate
-from tests.fakes import FakeLLM, FakeReply
+from tests.fakes import FakeLLM, FakeReply, round_reply
 
 INVITE = "PAGE-INVITE"
 
@@ -33,13 +33,7 @@ _PASSWORD_HASH = hash_password(PASSWORD)
 
 
 def _round(hits, followup="继续", finish=False):
-    return FakeReply(
-        data={
-            "hits": [{"criterion_id": c, "status": s} for c, s in hits],
-            "followup": followup,
-            "should_finish": finish,
-        }
-    )
+    return round_reply(hits=hits, prose=followup, finish=finish)
 
 
 def _eval(accuracy=80, completeness=80, clarity=80, depth=80, review="评语"):

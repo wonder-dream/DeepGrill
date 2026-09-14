@@ -34,7 +34,7 @@ from app.errors import InvalidInput, NotFound, QuotaExhausted
 from app.interview import rules, service
 from app.llm import LLMCallError
 from migrations._runner import migrate
-from tests.fakes import FakeLLM, FakeReply
+from tests.fakes import FakeLLM, FakeReply, round_reply
 
 ME = 2
 OTHER = 77
@@ -74,13 +74,9 @@ def session(tmp_dir: Path) -> Session:
 
 
 def _round_reply(hits: list[tuple[int, str]], followup: str = "继续", finish: bool = False):
-    return FakeReply(
-        data={
-            "hits": [{"criterion_id": cid, "status": st} for cid, st in hits],
-            "followup": followup,
-            "should_finish": finish,
-        }
-    )
+    """面试官那一轮的回复。**格式的唯一住处是 `tests.fakes.round_reply`** ——
+    两段式（散文 + 分隔行 + json）的细节不该在测试里各写一遍。"""
+    return round_reply(hits=hits, prose=followup, finish=finish)
 
 
 def _eval_reply(accuracy=80, completeness=70, clarity=90, depth=60, review="还行"):
@@ -319,16 +315,9 @@ def test_model_missing_criteria_or_bad_ids_is_tolerated_but_logged(
     """
     ts = service.start_drill(session, user_id=ME, question_id=1)
     llm = FakeLLM().queue(
-        FakeReply(
-            data={
-                "hits": [
-                    {"criterion_id": 1, "status": "命中"},
-                    {"criterion_id": 99, "status": "命中"},  # 未知 id
-                    {"criterion_id": 2, "status": "半对"},   # 非法状态
-                ],
-                "followup": "继续",
-                "should_finish": False,
-            }
+        round_reply(
+            hits=[(1, "命中"), (99, "命中"), (2, "半对")],  # 未知 id / 非法状态
+            prose="继续",
         )
     )
     with caplog.at_level("WARNING"):

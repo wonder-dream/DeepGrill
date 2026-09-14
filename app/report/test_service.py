@@ -30,7 +30,7 @@ from app.interview import rules, service as interview_service
 from app.report import service
 from app.llm import LLMCallError
 from migrations._runner import migrate
-from tests.fakes import FakeLLM, FakeReply
+from tests.fakes import FakeLLM, FakeReply, round_reply
 
 ME = 2
 
@@ -73,13 +73,8 @@ def session(tmp_dir: Path) -> Session:
 
 
 def _round_reply(hits, followup="继续", finish=True):
-    return FakeReply(
-        data={
-            "hits": [{"criterion_id": c, "status": s} for c, s in hits],
-            "followup": followup,
-            "should_finish": finish,
-        }
-    )
+    """面试官那一轮的回复（两段式）。格式的唯一住处是 `tests.fakes.round_reply`。"""
+    return round_reply(hits=hits, prose=followup, finish=finish)
 
 
 def _eval_reply(accuracy=80, completeness=70, clarity=90, depth=60, review="评语"):

@@ -26,7 +26,7 @@ from app.llm.stt import MAX_AUDIO_BYTES, PLACEHOLDER_TRANSCRIPT, STTError, Trans
 from app.main import create_app
 from app.security import hash_password
 from migrations._runner import migrate
-from tests.fakes import FakeLLM, FakeReply
+from tests.fakes import FakeLLM, FakeReply, round_reply
 
 PASSWORD = "secret123"
 _HASH = hash_password(PASSWORD)
@@ -60,13 +60,7 @@ class BoomSTT:
 
 
 def _round(hits=None, followup="继续", finish=False) -> FakeReply:
-    return FakeReply(
-        data={
-            "hits": [{"criterion_id": c, "status": s} for c, s in (hits or [(1, "命中")])],
-            "followup": followup,
-            "should_finish": finish,
-        }
-    )
+    return round_reply(hits=hits or [(1, "命中")], prose=followup, finish=finish)
 
 
 def _eval_reply() -> FakeReply:

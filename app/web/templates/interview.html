@@ -54,6 +54,14 @@
 <p class="warn">这一轮的判定没成功（模型没接上），本轮记为「未涉及」，可以继续作答。</p>
 {% endif %}
 
+{# 流式区：JS 起来之后面试官的话逐段出现在这里，随后页面跳到服务端渲染的真实状态。
+   没有 JS 时它始终是空的、也不碍事（那两条表单走整页渲染）。 #}
+<section class="card" id="live-card" hidden>
+  <h2>面试官</h2>
+  <p id="live-text"></p>
+  <p class="muted" id="live-status"></p>
+</section>
+
 <section class="card">
   <h2>{{ "继续回答" if data.rounds else "你的回答" }}</h2>
 
@@ -69,7 +77,8 @@
       <span class="muted" id="record-status">点一下开始，说完再点一下结束。</span>
     </p>
     <form id="voice-form" method="post" enctype="multipart/form-data"
-          action="/interview/{{ data.session.id }}/voice">
+          action="/interview/{{ data.session.id }}/voice"
+          data-stream-action="/interview/{{ data.session.id }}/voice/stream">
       <input type="file" name="audio" id="audio-input" accept="audio/*" hidden>
     </form>
     <p class="muted">录音只用来转写成文字：<strong>服务端不保存原始录音</strong>。
@@ -79,7 +88,8 @@
   {# 默认**不隐藏**：没有 JS 时语音按钮是死的，而打字框必须还能用。
      JS 起来之后才按当前模式收起其中一个 —— 这是渐进增强，不是"靠 JS 才可用"。 #}
   <div id="text-pane">
-    <form method="post" action="/interview/{{ data.session.id }}/answer">
+    <form method="post" action="/interview/{{ data.session.id }}/answer"
+          data-stream-action="/interview/{{ data.session.id }}/answer/stream">
       <p><textarea name="answer_text" rows="6" cols="60" required
           placeholder="说清楚你的思路：为什么、怎么权衡、边界在哪。"></textarea></p>
       <p><button class="button" type="submit">提交这一轮</button></p>
