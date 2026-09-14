@@ -1,6 +1,6 @@
 # 面试报告由数据拼装，只有一段总结由 LLM 生成
 
-> 状态：accepted ｜ 影响文档：`docs/v2数据模型.md`（interviews.report_body / report_summary · report_items）· `CONTEXT.md`（面试报告）· `docs/v2范围基线.md` 决策 27 · `AGENTS.md` §四 ｜ 实现后补记：**总结的 grounding 检查从"闸门"改成"信号"**（四次误报，见文末补记）· 兜底文案改为"组装式"（三路线对比后的选择）
+> 状态：accepted ｜ 影响文档：`docs/v2数据模型.md`（interviews.report_body / report_summary · report_items）· `CONTEXT.md`（面试报告）· `docs/v2范围基线.md` 决策 27 · `AGENTS.md` §四 ｜ 实现后补记：**总结的 grounding 检查从"闸门"改成"信号"**（四次误报，见文末补记①）· 兜底文案改为"组装式"（三路线对比后的选择）· **"结论与数据矛盾"的检查已落地**（补记②，只覆盖闭集断言：数字与"哪维最弱"）
 
 一场**模拟面试**结束后的报告，其主体（总分、四维分、掌握度矩阵的变化、逐题回顾、该补的前置知识点、主要问题清单）全部由**已经产生并落库的数据**查表或运算得到；只有最后一段「这场面试说明了什么」的自然语言总结由 LLM 生成。
 
