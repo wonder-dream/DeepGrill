@@ -60,5 +60,10 @@ def observability_page(
             "user": owner,
             "o": observability.collect(session, db_path=settings.resolved_database_path()),
             "human_bytes": observability.human_bytes,
+            # 限流器的状态**不在库里**（它是进程内的），所以单独折一份传进来 ——
+            # 决策 66 + AGENTS.md §3.2：进内存的东西，回收者要看得见。
+            "rate_limit": observability.rate_limit_summary(
+                getattr(request.app.state, "ratelimiters", None)
+            ),
         },
     )

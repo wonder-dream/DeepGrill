@@ -111,5 +111,32 @@
   {% endif %}
 </section>
 
+<section class="card">
+  <h2>进程内限流（决策 66）</h2>
+  {% if not rate_limit.enabled %}
+  <p class="muted">已关闭（<code>DEEPGRILL_RATELIMIT_ENABLED=false</code>）。</p>
+  {% else %}
+  <p>当前驻留 <strong>{{ rate_limit.total_keys }}</strong> 个 key。</p>
+  <table>
+    <thead>
+      <tr><th>限流器</th><th>驻留 key</th><th>放行</th><th>拒绝</th><th>释放</th>
+          <th>回收</th><th>扫描</th><th>容量</th></tr>
+    </thead>
+    <tbody>
+      {% for name, s in rate_limit.limiters.items() %}
+      <tr>
+        <td>{{ name }}</td><td>{{ s["keys"] }}</td><td>{{ s["reserved"] }}</td>
+        <td>{{ s["denied"] }}</td><td>{{ s["released"] }}</td>
+        <td>{{ s["evicted"] }}</td><td>{{ s["sweeps"] }}</td>
+        <td class="muted">{{ s["max_keys"] }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">「驻留 key」贴着「容量」而「回收」不涨 = 回收者没在跑（§3.2：
+  进内存的东西必须有回收者，而"有"与"真的在跑"是两件事）。</p>
+  {% endif %}
+</section>
+
 <section class="card"><p><a class="button" href="/admin">回后台</a></p></section>
 {% endblock %}

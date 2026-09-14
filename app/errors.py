@@ -61,3 +61,18 @@ class QuotaExhausted(AppError):
     """额度点耗尽。按决策 13：**降级为纯题库模式**，不做硬拒绝。"""
 
     user_message = "今日额度已用完，题库仍可浏览"
+
+
+class TooManyRequests(AppError):
+    """发得太快（决策 66 的限流）。
+
+    它与 `QuotaExhausted` **不是一回事**，所以是两个异常：额度说"今天没了，明天
+    再来"，限流说"等两秒再试"。合成一个，页面就只能给出一句含糊的话，而用户也
+    不知道该等一会儿还是该明天再来。
+    """
+
+    user_message = "请求太频繁，请稍后再试"
+
+    def __init__(self, detail: str | None = None, *, retry_after: int = 1) -> None:
+        super().__init__(detail, status_code=429)
+        self.retry_after = max(1, retry_after)

@@ -45,7 +45,14 @@ from sqlalchemy.orm import Session
 from app.account import service as account
 from app.db import create_session_factory
 from app.db.models import User
-from app.deps import get_current_user, get_engine, get_llm, get_session, get_stt
+from app.deps import (
+    get_current_user,
+    get_engine,
+    get_llm,
+    get_session,
+    get_stt,
+    rate_limit_interviewer,
+)
 from app.errors import AppError, QuotaExhausted
 from app.interview import service as interview
 from app.llm.stt import MAX_AUDIO_BYTES, STTError, STTUnavailable, Transcript
@@ -79,6 +86,7 @@ def start(
     user: UserDep,
     mode: Annotated[str, Form()] = "drill",
     question_id: Annotated[int | None, Form()] = None,
+    _rate_limit: None = Depends(rate_limit_interviewer),
 ) -> object:
     """从题库页（或首页）开始一次面试。**扣额度点在这里发生**（service 里）。
 
@@ -133,6 +141,7 @@ def answer(
     user: UserDep,
     llm=Depends(get_llm),
     answer_text: Annotated[str, Form()] = "",
+    _rate_limit: None = Depends(rate_limit_interviewer),
 ) -> object:
     me = _require(user, session)
     ts = interview.get_session_row(session, session_id, me.id)
@@ -149,6 +158,7 @@ def answer_stream(
     engine: Engine = Depends(get_engine),
     llm=Depends(get_llm),
     answer_text: Annotated[str, Form()] = "",
+    _rate_limit: None = Depends(rate_limit_interviewer),
 ) -> object:
     """打字作答的流式那条路。**越权校验在请求里做**（流开始之后就改不了状态码了）。"""
     me = _require(user, session)
@@ -170,6 +180,7 @@ def answer_voice(
     llm=Depends(get_llm),
     stt=Depends(get_stt),
     audio: Annotated[UploadFile | None, File()] = None,
+    _rate_limit: None = Depends(rate_limit_interviewer),
 ) -> object:
     """语音作答（决策 32、33），无 JS 的那条路：转写 + 判分 + 整页重渲染。
 
@@ -206,6 +217,7 @@ def answer_voice_stream(
     llm=Depends(get_llm),
     stt=Depends(get_stt),
     audio: Annotated[UploadFile | None, File()] = None,
+    _rate_limit: None = Depends(rate_limit_interviewer),
 ) -> object:
     """语音作答的流式那条路。
 

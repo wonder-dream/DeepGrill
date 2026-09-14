@@ -232,3 +232,60 @@ def test_task_report_marks_failures(owner_client: TestClient, db: Path) -> None:
     assert "没有失败的任务" in body, "队列里已经没有任务了，类名只可能来自报告"
     assert "模型超时" in body
     assert 'class="error"' in body
+
+
+# ---------------------------------------------------------------------------
+# 进程内限流（决策 66 + §3.2：回收者要看得见）
+# ---------------------------------------------------------------------------
+def test_rate_limit_section_lists_every_limiter(owner_client: TestClient) -> None:
+    """三个限流器都要出现 —— 少一个就说明"进内存的东西"有一处没人看着。"""
+    body = owner_client.get("/admin/observability").text
+    assert "进程内限流" in body
+    for name in ("requests", "auth", "llm"):
+        assert name in body, name
+    assert "回收" in body and "容量" in body
+
+
+def test_rate_limit_section_shows_the_reaper_working(owner_client: TestClient, app) -> None:
+    """回收者的计数必须是**真的从 limiter 读出来的**，不是模板里写死的 0。
+
+    断言按**表格里那一行**取数：这一页自己的请求也会占一格（IP 那一档），所以
+    "总数是 1"这种断言不成立 —— 而"那一行的驻留/放行/扫描都不是 0"是稳的。
+    """
+    import re
+
+    limiters = app.state.ratelimiters
+    limiters.requests.reserve("ip:probe")
+    limiters.requests.sweep()
+
+    body = owner_client.get("/admin/observability").text
+    # 取**整行**（模板把一行铺在几行源码里，所以不能按行找）。
+    # ⚠️ 切片必须从 `<td>requests</td>` **这个开标签**开始：从 `>requests<` 开始会
+    # 把第一格的开标签切掉，于是所有列都左移一位 —— 而"左移一位"的断言看起来仍然
+    # 合理（数字非零），只是它断言的其实是别的列（实测就这么错过一次）。
+    start = body.index("<td>requests</td>")
+    cells = re.findall(r"<td[^>]*>(.*?)</td>", body[start : body.index("</tr>", start)])
+    assert cells[0] == "requests"
+    assert int(cells[1]) >= 1, "驻留 key"
+    assert int(cells[2]) >= 1, "放行次数"
+    assert int(cells[6]) >= 1, "扫描次数（回收者真的跑过）"
+
+
+def test_rate_limit_section_says_when_disabled(tmp_dir: Path) -> None:
+    """关掉限流时页面要说清楚，而不是照旧摆一张全 0 的表（那看起来像"在工作"）。"""
+    from app.config import Settings
+    from app.main import create_app as _create_app
+    from app.security import hash_password as _hash
+
+    db = tmp_dir / "rl-obs.db"
+    migrate(db)
+    with create_session_factory(create_db_engine(db))() as s:
+        owner = s.execute(select(User).where(User.email == "owner@local")).scalars().one()
+        owner.password_hash = _hash("secret123")
+        s.commit()
+    app = _create_app(Settings(database_path=db, ratelimit_enabled=False))
+    with TestClient(app) as c:
+        c.post("/login", data={"email": "owner@local", "password": "secret123"})
+        body = c.get("/admin/observability").text
+        assert "已关闭" in body
+        assert "当前驻留" not in body

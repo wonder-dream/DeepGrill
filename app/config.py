@@ -78,6 +78,24 @@ class Settings(BaseSettings):
     #: **线上必须设成 `true`**：那时"上线前记得替换"不再是一句提醒，而是启动就拦。
     require_secure_db: bool = False
 
+    #: 进程内限流（决策 66：继承 v1 的滑动窗口 + reserve/settle）。
+    #:
+    #: `ratelimit_requests` / `ratelimit_llm_requests` 分别按 **IP** 与 **用户** 限，
+    #: 因为它们的用途不同：前者防扫描与单机灌流量，后者管面试官动作的成本
+    #: （那是 v1 那条"4xx 释放额度"语义的落点）。细节见 `app/ratelimit.py`。
+    ratelimit_enabled: bool = True
+    ratelimit_requests: int = 120
+    ratelimit_window_seconds: float = 60.0
+    ratelimit_auth_requests: int = 10
+    ratelimit_auth_window_seconds: float = 300.0
+    ratelimit_llm_requests: int = 20
+
+    #: 是否信任反向代理的转发头（`CF-Connecting-IP` / `X-Forwarded-For`）。
+    #:
+    #: **默认 false**：转发头是客户端能自己写的，信了它等于把"按 IP 限流"变成
+    #: "按客户端随便填的字符串限流"。线上跑在 Cloudflare 后面时必须开。
+    trust_proxy_headers: bool = False
+
     def resolved_database_path(self) -> Path:
         """把相对路径解析到仓库根下。"""
         p = self.database_path

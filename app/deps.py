@@ -22,7 +22,7 @@ from app.account import service as account_service
 from app.config import Settings
 from app.db import create_db_engine, create_session_factory, make_session_dependency
 from app.db.models import User
-from app.errors import Forbidden
+from app.errors import Forbidden, TooManyRequests
 from app.llm import LLMCallError, LLMClient
 from app.llm.stt import FakeSTT, NoProviderSTT, SpeechToText
 
@@ -130,6 +130,32 @@ def get_stt(settings: Settings = Depends(get_settings)) -> SpeechToText:
     if settings.stt_provider == "fake":
         return FakeSTT()
     return NoProviderSTT()
+
+
+def rate_limit_interviewer(
+    request: Request, user: User | None = Depends(get_current_user)
+) -> None:
+    """按**用户**限面试官动作（决策 66 的成本型那一档）。
+
+    它是依赖而不是中间件，因为用户身份只有到这里才知道（中间件里查库会踩 §3.3）。
+    占位记录追加到 `request.scope["ratelimit"]`，由中间件在响应之后统一 settle ——
+    这样"4xx 释放"只有一处实现。
+
+    超限时抛 `TooManyRequests`（429），交给异常处理器渲染 —— 于是**匿名**
+    （`user is None`）不受这一档限制：他们没有额度点，也就没有成本可言，而按 IP
+    的那一层照旧管着他们。
+    """
+    limiters = getattr(request.app.state, "ratelimiters", None)
+    if limiters is None or not limiters.enabled or user is None:
+        return
+    key = f"user:{user.id}"
+    decision = limiters.llm.reserve(key)
+    if not decision.allowed:
+        raise TooManyRequests(
+            f"面试官动作发得太频繁了，请等 {max(1, decision.retry_after)} 秒再试",
+            retry_after=decision.retry_after,
+        )
+    request.scope.setdefault("ratelimit", []).append((limiters.llm, key))
 
 
 class _MissingKeyLLM:

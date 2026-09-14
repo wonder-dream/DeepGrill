@@ -98,6 +98,24 @@ class TaskReport:
 
 
 @dataclass
+class RateLimitSummary:
+    """进程内限流的现状（决策 66）。
+
+    **为什么它必须出现在观测页上**：AGENTS.md §3.2 要求"任何进内存的东西都要有
+    回收者"，而"有回收者"与"回收者真的在跑"是两件事 —— 只写代码、看不见状态，
+    就回到了"记了但没人看"。这一栏里 `keys` 是当前驻留量，`evicted`/`sweeps` 是
+    回收者干过的活：`keys` 一直贴着上限而 `evicted` 不涨，就说明回收没在跑。
+    """
+
+    enabled: bool = True
+    limiters: dict[str, dict[str, float | int]] = field(default_factory=dict)
+
+    @property
+    def total_keys(self) -> int:
+        return sum(int(v.get("keys", 0)) for v in self.limiters.values())
+
+
+@dataclass
 class Observability:
     jobs: JobSummary
     library: LibrarySummary
@@ -105,10 +123,28 @@ class Observability:
     task_logs: list[TaskReport]
     db_bytes: int
     db_wal_bytes: int
+    rate_limit: RateLimitSummary = field(default_factory=RateLimitSummary)
 
     @property
     def db_total_bytes(self) -> int:
         return self.db_bytes + self.db_wal_bytes
+
+
+def rate_limit_summary(limiters: object | None) -> RateLimitSummary:
+    """把 `app.state.ratelimiters` 折成可显示的形状。
+
+    `None`（没有限流器，比如某些测试里直接渲染页面）时返回"关闭"的默认值 ——
+    观测页不该因为一个可选组件缺席就 500。
+    """
+    if limiters is None:
+        return RateLimitSummary(enabled=False)
+    return RateLimitSummary(
+        enabled=bool(getattr(limiters, "enabled", False)),
+        limiters={
+            limiter.limit.name or f"#{i}": limiter.stats()
+            for i, limiter in enumerate(getattr(limiters, "all", lambda: [])())
+        },
+    )
 
 
 def _job_summary(session: Session) -> JobSummary:

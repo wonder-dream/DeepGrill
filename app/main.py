@@ -18,6 +18,12 @@ from app.config import Settings
 from app.db.startup import assert_database_is_ready
 from app.deps import get_settings
 from app.errors import AppError, NotFound
+from app.ratelimit import (
+    RateLimiters,
+    client_ip,
+    settle_on_response,
+    too_many,
+)
 from app.web import (
     admin_page,
     admin_users_page,
@@ -32,6 +38,13 @@ from app.web import (
     report_page,
 )
 from app.web.templating import WEB_DIR, render
+
+#: 限流**不覆盖**的路径。探针不该被限流（它要能一直回答"进程还活着吗"），
+#: 静态资源也不该（一个页面会拉好几个，限流会把页面本身弄坏）。
+RATELIMIT_EXEMPT_PREFIXES = ("/static/",)
+RATELIMIT_EXEMPT_PATHS = ("/healthz",)
+#: 登录 / 注册用更严的那一档（按 IP）—— 撞密码是这里唯一的现实攻击面。
+AUTH_PATHS = ("/login", "/register")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -74,9 +87,81 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(favorites_page.router)
     app.include_router(observability_page.router)
 
+    _install_rate_limit(app, settings)
     _install_error_handlers(app)
 
     return app
+
+
+def _install_rate_limit(app: FastAPI, settings: Settings) -> None:
+    """按 IP 的那一层限流（决策 66）。**按用户**的那一层在 `deps.rate_limit_interviewer`。
+
+    ## 为什么是两个地方
+
+    中间件跑在路由之前，那时**还不知道请求是谁**（要知道就得在这里查库 —— 而
+    AGENTS.md §3.3 禁止在 async 上下文里做同步 DB 查询，中间件正是 async 上下文）。
+    所以：
+
+    · 中间件按 **IP** 限：它不需要知道身份，而且它要覆盖**每一个**请求
+    · 依赖按 **用户** 限：它跑在依赖解析里（那里已经有会话与用户），只挂在
+      **面试官动作**那几个端点上 —— 那才是花钱的地方
+
+    两层都把"占位记录"追加到同一个 `request.scope["ratelimit"]`，由中间件在响应
+    之后统一 settle（它能看到状态码）。
+    """
+    limiters = RateLimiters.from_settings(settings)
+    # 挂在 app.state 上而不是模块全局：同一进程里有多个 app 时（测试就是这么用的），
+    # 模块全局会让它们互相限流。
+    app.state.ratelimiters = limiters
+
+    @app.middleware("http")
+    async def _ratelimit(request: Request, call_next):
+        if not limiters.enabled or _ratelimit_exempt(request.url.path):
+            return await call_next(request)
+
+        reservations: list[tuple[object, str]] = []
+        request.scope["ratelimit"] = reservations
+
+        ip_key = f"ip:{client_ip(request, trust_proxy=settings.trust_proxy_headers)}"
+        decision = limiters.requests.reserve(ip_key)
+        if not decision.allowed:
+            # 这一层不释放（防滥用型）—— 被拦的请求本身就该计数
+            return _too_many_response(request, decision)
+        reservations.append((limiters.requests, ip_key))
+
+        if request.url.path in AUTH_PATHS:
+            auth_key = f"ip-auth:{client_ip(request, trust_proxy=settings.trust_proxy_headers)}"
+            auth_decision = limiters.auth.reserve(auth_key)
+            if not auth_decision.allowed:
+                return _too_many_response(request, auth_decision)
+            reservations.append((limiters.auth, auth_key))
+
+        response = await call_next(request)
+        # settle：只有**成本型**限流器会因为 4xx 把格子还回去（v1 的 reserve/settle）。
+        # 429 本身不释放，否则限流器会把自己擦掉（见 `settle_on_response`）。
+        settle_on_response(reservations, response.status_code)
+        return response
+
+
+def _ratelimit_exempt(path: str) -> bool:
+    return path in RATELIMIT_EXEMPT_PATHS or path.startswith(RATELIMIT_EXEMPT_PREFIXES)
+
+
+def _too_many_response(request: Request, decision) -> object:
+    """429。HTML 路由给一页能读的东西，其余给 JSON —— 两者都带上 `Retry-After`。"""
+    wait = max(1, decision.retry_after)
+    accepts_html = "text/html" in (request.headers.get("accept") or "")
+    if accepts_html:
+        response = render(
+            request,
+            "error.html",
+            {"message": f"请求太频繁了，请等 {wait} 秒再试。"},
+            status_code=429,
+        )
+    else:
+        response = JSONResponse(too_many(decision), status_code=429)
+    response.headers["Retry-After"] = str(wait)
+    return response
 
 
 def _install_error_handlers(app: FastAPI) -> None:
