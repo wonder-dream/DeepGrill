@@ -147,6 +147,57 @@ def purge_embeddings(session: Session, payload: dict[str, Any]) -> dict[str, Any
     }
 
 
+def generate_public_questions(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    """给缺题的知识点补公共题（决策 4 的"生成题"那条来源）。
+
+    `payload` 可选：`{"point_id": N, "count": M}` 只补某个点；不给就扫一遍缺题的
+    （`per_point` / `limit` 可调）。它是**幂等**的：题干已存在就跳过，所以队列重跑安全。
+
+    成本：这是一次**离线**调用，没有哪个用户该为它付额度点，所以账本里没有它的位置 ——
+    用量记在这条任务报告里（`tokens`），观测页的「离线任务报告」看得到。
+    """
+    from app.config import Settings
+    from app.deps import get_llm
+    from app.offline import generation
+
+    # ⚠️ 必须**显式传 Settings**：`get_llm(settings=Depends(get_settings))` 是给
+    # FastAPI 依赖注入用的 —— 直接 `get_llm()` 拿到的是那个 `Depends` 对象本身
+    # （实测报 `'Depends' object has no attribute 'llm_api_key'`）。
+    llm = get_llm(Settings())
+    point_id = payload.get("point_id")
+    if point_id is not None:
+        from app.db.models import KnowledgePoint
+
+        point = session.get(KnowledgePoint, int(point_id))
+        if point is None:
+            return {"message": f"知识点 {point_id} 不存在", "created": 0}
+        reports = [
+            generation.generate_for_point(
+                session,
+                point=point,
+                count=int(payload.get("count") or generation.DEFAULT_COUNT),
+                llm=llm,
+            )
+        ]
+    else:
+        reports = generation.generate_for_missing(
+            session,
+            llm=llm,
+            per_point=int(payload.get("per_point") or generation.DEFAULT_COUNT),
+            limit=int(payload["limit"]) if payload.get("limit") else None,
+        )
+
+    created = sum(r.created for r in reports)
+    tokens = sum(r.tokens for r in reports)
+    return {
+        "message": f"补题：{len(reports)} 个知识点、新增 {created} 道"
+        + (f"、{tokens} token" if tokens else ""),
+        "created": created,
+        "tokens": tokens,
+        "points": [r.to_dict() for r in reports],
+    }
+
+
 register(
     JobSpec(
         name="self_repair_stats",
@@ -185,5 +236,13 @@ register(
         run=purge_embeddings,
         idempotent=True,
         description="回收嵌入缓存（TTL 与容量上限见 offline.embedding_store）",
+    )
+)
+register(
+    JobSpec(
+        name="generate_public_questions",
+        run=generate_public_questions,
+        idempotent=True,
+        description="给缺题的已确认知识点补公共题（过自动门禁；题干重复则跳过）",
     )
 )

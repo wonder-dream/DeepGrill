@@ -112,11 +112,18 @@ def criteria_of_question(session: Session, question: Question) -> list[Criterion
     """
     if question.primary_point_id is None:
         return []
+    return criteria_of_point(session, question.primary_point_id)
+
+
+def criteria_of_point(session: Session, point_id: int) -> list[Criterion]:
+    """某个知识点下的考察点（按 `seq` 排）。
+
+    **给"还没建出题的"调用方**用（如补题管道：它要按知识点的判据出题）——
+    与 `criteria_of_question` 是同一个查询，只是入口不同（那边先看题有没有主知识点）。
+    """
     return list(
         session.execute(
-            select(Criterion)
-            .where(Criterion.point_id == question.primary_point_id)
-            .order_by(Criterion.seq)
+            select(Criterion).where(Criterion.point_id == point_id).order_by(Criterion.seq)
         )
         .scalars()
         .all()
@@ -255,6 +262,25 @@ def find_same_stem(
         if normalize(other_stem) == stem:
             return int(question_id)
     return None
+
+
+def point_question_counts(session: Session, point_ids: list[int]) -> dict[int, int]:
+    """每个知识点下有多少道**公共**题（一次查询，不在循环里查）。
+
+    给"这个知识点还缺题吗"用（离线生成管道的入口）。它只数不取行 —— 但要说清它数的
+    是**公共题**：私有题再多也不该让一个知识点看起来"已经有题了"。
+    """
+    if not point_ids:
+        return {}
+    rows = session.execute(
+        select(Question.primary_point_id, func.count())
+        .where(
+            Question.owner_user_id.is_(None),
+            Question.primary_point_id.in_(point_ids),
+        )
+        .group_by(Question.primary_point_id)
+    ).all()
+    return {int(pid): int(n) for pid, n in rows}
 
 
 def owned_ids(session: Session, user_id: int) -> list[int]:

@@ -144,6 +144,44 @@ def latest(session: Session, viewer_id: int | None, *, limit: int = RECOMMEND_CO
     return browse(session, viewer_id, page=1)[0][:limit]
 
 
+# ---------------------------------------------------------------------------
+# 新增公共题（**写题目表只有 bank 自己** —— ADR-0005）
+# ---------------------------------------------------------------------------
+def author_public_question(
+    session: Session,
+    *,
+    point_id: int,
+    stem: str,
+    kind: str,
+    difficulty: int,
+    reference_answer: str = "",
+    answer_tier: str | None = None,
+) -> Question:
+    """由**系统**（离线生成管道）新建一道公共题。
+
+    为什么这个函数住在 `bank` 而不是离线管道里：ADR-0005 的原话是"写题目表的只有
+    `bank` 自己"。离线管道（跨领域编排）可以调它，但不该自己 `session.add(Question)`。
+
+    ⚠️ `primary_point_id` **必填**：公共题必须有主知识点（基线：每道题必须有一个主
+    知识点）—— 而"给某个知识点补题"这条路的入口本来就是那个知识点。
+    考察点不在这里建：判分读的是 `criteria` 表里**该知识点**的判据，生成题不产生新判据。
+    """
+    question = Question(
+        kind=kind,
+        stem=stem,
+        difficulty=difficulty,
+        primary_point_id=point_id,
+        origin="generated",
+        visibility="public",
+        owner_user_id=None,
+        answer_tier=answer_tier or ("common" if reference_answer else "long_tail"),
+        reference_answer=reference_answer or None,
+    )
+    session.add(question)
+    session.flush()
+    return question
+
+
 def detail(session: Session, question_id: int, viewer_id: int | None) -> QuestionDetail:
     """看一道题。不可见或不存在都抛 `NotFound`（**不区分**，那会泄露存在性）。"""
     question = repository.find_question(session, question_id, viewer_id)

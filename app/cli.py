@@ -208,6 +208,60 @@ def cmd_verify_backup(path: str) -> int:
     return 0 if report.ok else 1
 
 
+def cmd_generate(settings: Settings, point: int | None, count: int, enqueue: bool) -> int:
+    """给知识点补公共题（决策 4 的"生成题"那条来源）。
+
+    `--enqueue` 只投一条离线任务（由 worker 跑，适合 cron）；默认**当场跑**（排查用）。
+    两条路都过同一份实现（`offline.generation`）。
+    """
+    from app.deps import get_llm
+    from app.offline import generation
+
+    db_path = settings.resolved_database_path()
+    engine = create_db_engine(db_path)
+    with create_session_factory(engine)() as session:
+        _ensure_migrated(session)
+
+        if enqueue:
+            from app.offline import jobs as jobs_module
+            from app.offline import tasks as _tasks  # noqa: F401  （注册副作用）
+
+            payload: dict[str, object] = {"count": count}
+            if point is not None:
+                payload["point_id"] = point
+            jobs_module.enqueue(session, kind="generate_public_questions", payload=payload)
+            session.commit()
+            print("已投递任务 generate_public_questions —— 由 worker 执行")
+            return 0
+
+        if not settings.llm_api_key:
+            print("补题要调模型 —— 先配 DEEPGRILL_LLM_API_KEY", file=sys.stderr)
+            return 2
+
+        llm = get_llm()
+        if point is not None:
+            from app.db.models import KnowledgePoint
+
+            target = session.get(KnowledgePoint, point)
+            if target is None:
+                print(f"知识点 {point} 不存在", file=sys.stderr)
+                return 2
+            reports = [
+                generation.generate_for_point(session, point=target, count=count, llm=llm)
+            ]
+        else:
+            reports = generation.generate_for_missing(session, llm=llm, per_point=count)
+        session.commit()
+
+    for report in reports:
+        print(f"  {report.summary()}")
+    total = sum(r.created for r in reports)
+    print(f"共新增 {total} 道公共题")
+    if not reports:
+        print("没有缺题的知识点（或它们都还没有考察点定义）")
+    return 0
+
+
 def cmd_worker(settings: Settings, once: bool) -> int:
     """跑离线 worker。`--once` 跑空队列就退出（排查用；不常驻）。
 
@@ -277,6 +331,14 @@ def main(argv: list[str] | None = None) -> int:
     backup.add_argument("--keep", type=int, default=14, help="保留最近几份（默认 14）")
     verify = sub.add_parser("verify-backup", help="只做恢复验证（演练用）")
     verify.add_argument("path", help="备份文件（.db.gz）")
+    generate = sub.add_parser(
+        "generate", help="给缺题的已确认知识点补公共题（决策 4 的「生成题」）"
+    )
+    generate.add_argument("--point", type=int, default=None, help="只补这个知识点（默认扫全部）")
+    generate.add_argument("--count", type=int, default=3, help="每个知识点最多生成几道")
+    generate.add_argument(
+        "--enqueue", action="store_true", help="只投一条离线任务（由 worker 跑，适合 cron）"
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -295,6 +357,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_backup(settings, args.dest, args.keep)
     if args.command == "verify-backup":
         return cmd_verify_backup(args.path)
+    if args.command == "generate":
+        return cmd_generate(settings, args.point, args.count, args.enqueue)
     # `parser.error` 自己会 `SystemExit(2)` —— 后面那句 `return 2` 永远走不到
     # （mypy 的 `warn_unreachable` 会（正确地）指出来）
     parser.error(f"未知命令：{args.command}")

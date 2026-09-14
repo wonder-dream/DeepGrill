@@ -111,18 +111,24 @@ def _point(session: Session, question: Question) -> KnowledgePoint | None:
     return session.get(KnowledgePoint, question.primary_point_id)
 
 
-def run_gate(session: Session, *, question: Question, user_id: int) -> GateResult:
-    """跑一遍内容门禁。**只读**，不改任何东西（页面可以随时预演）。"""
+def run_gate(session: Session, *, question: Question, user_id: int | None = None) -> GateResult:
+    """跑一遍内容门禁。**只读**，不改任何东西（页面可以随时预演）。
+
+    `user_id=None` = **系统**（离线生成管道出的题没有作者），此时跳过"只能晋升你自己
+    的题"那一条 —— 其余的**内容检查一条不少**：门禁管的是"这道题够不够格进公共池"，
+    与它是谁写的无关。
+    """
     result = GateResult()
     stem = question.stem or ""
 
-    result.checks.append(
-        GateCheck(
-            "owned",
-            question.owner_user_id == user_id,
-            "只能晋升你自己的题",
+    if user_id is not None:
+        result.checks.append(
+            GateCheck(
+                "owned",
+                question.owner_user_id == user_id,
+                "只能晋升你自己的题",
+            )
         )
-    )
     length = len(stem.strip())
     result.checks.append(
         GateCheck(
