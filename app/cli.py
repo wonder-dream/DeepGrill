@@ -238,7 +238,11 @@ def cmd_generate(settings: Settings, point: int | None, count: int, enqueue: boo
             print("补题要调模型 —— 先配 DEEPGRILL_LLM_API_KEY", file=sys.stderr)
             return 2
 
-        llm = get_llm()
+        # ⚠️ 必须**显式传 settings**：`get_llm(settings=Depends(get_settings))` 是给
+        # FastAPI 依赖注入用的 —— 直接 `get_llm()` 拿到的是那个 `Depends` 对象本身
+        # （实测报 `'Depends' object has no attribute 'llm_api_key'`）。
+        # 这一处与离线任务里那一处是同一个坑，两处都有测试守着。
+        llm = get_llm(settings)
         if point is not None:
             from app.db.models import KnowledgePoint
 

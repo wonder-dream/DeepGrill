@@ -270,6 +270,66 @@ def test_generate_for_missing_walks_every_point(session: Session) -> None:
     assert sum(r.created for r in reports) >= 1
 
 
+def test_the_cli_passes_settings_to_get_llm(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI 那条路也一样：`get_llm` 必须收到一个 **Settings 实例**。
+
+    `get_llm(settings: Settings = Depends(get_settings))` 是给 FastAPI 依赖注入写的 ——
+    直接 `get_llm()` 拿到的是那个 `Depends` 对象，而它的报错发生在**属性访问**那一刻
+    （`'Depends' object has no attribute 'llm_api_key'`），离真正的错处很远。
+    实测这条路与任务那条路都踩过同一个坑（CLI 那处是**真跑命令时**才暴露的），
+    所以两处各有一条测试。
+
+    ⚠️ 替身**要求**收到 Settings：不检查参数的话，"忘了传"这件事就测不出来。
+    """
+    from app.cli import cmd_generate
+    from app.config import Settings
+
+    db_path = Path(str(session.get_bind().url.database))
+    seen: dict[str, object] = {}
+
+    def fake_get_llm(settings=None, **kwargs):
+        seen["settings"] = settings
+        return FakeLLM().queue(_reply("volatile 的可见性靠什么保证呢，说说看"))
+
+    monkeypatch.setattr("app.deps.get_llm", fake_get_llm)
+    code = cmd_generate(Settings(database_path=db_path), point=1, count=1, enqueue=False)
+
+    assert code == 0
+    assert isinstance(seen["settings"], Settings), (
+        "必须显式传 Settings —— 否则拿到的是 `Depends` 对象，而报错发生在很远的地方"
+    )
+
+
+def test_the_cli_enqueue_path_only_enqueues(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--enqueue` 只投任务：它**不该**顺手调模型（那是 worker 的活）。"""
+    from sqlalchemy import select as _select
+
+    from app.cli import cmd_generate
+    from app.config import Settings
+    from app.db import create_db_engine, create_session_factory
+    from app.offline import jobs, tasks  # noqa: F401  （注册副作用）
+
+    db_path = Path(str(session.get_bind().url.database))
+    calls = {"n": 0}
+
+    def fake_get_llm(settings=None, **kwargs):
+        calls["n"] += 1
+        return FakeLLM()
+
+    monkeypatch.setattr("app.deps.get_llm", fake_get_llm)
+    code = cmd_generate(Settings(database_path=db_path), point=1, count=1, enqueue=True)
+    assert code == 0
+    assert calls["n"] == 0, "投递不该调模型"
+
+    with create_session_factory(create_db_engine(db_path))() as s:
+        kinds = [j.kind for j in s.execute(_select(jobs.Job)).scalars()]
+    assert kinds == ["generate_public_questions"]
+
+
 def test_it_is_registered_as_an_offline_task(session: Session) -> None:
     from app.offline import jobs, tasks  # noqa: F401
 
