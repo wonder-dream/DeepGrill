@@ -89,20 +89,40 @@ def main() -> int:
         ok2 = "domain_id" in d2["knowledge_points"]
         print(f"变异 2（确认能读到真实字段 domain_id）: {'[抓到]' if ok2 else '[漏掉]'}")
 
-        # --- 还原后：干净文档不应报出假字段 ---
-        tool3 = _load_tool(doc2)
-        d3, _ = tool3.doc_tables()
-        s3 = tool3.sql_tables()
+        # --- 变异 3：文档说「沿用 / 建了」、SQL 里根本没有这张表 ---
+        # 这条对应一次真实事故：文档写着 `user_favorites` **沿用**，而 0001 里
+        # 没有这张表 —— **字段级差集看不见整张表缺失**，那是它的盲区。
+        fake_table = "ghost_table_xyz"
+        doc3 = tmp / "missing_table.md"
+        doc3.write_text(
+            text + f"\n| {fake_table} | **建了** | 自检故意插入 |\n", encoding="utf-8"
+        )
+        tool3 = _load_tool(doc3)
+        absent = tool3.carry_over_tables_missing_from_sql(doc3, ROOT / "migrations" / "0001_initial.sql")
+        ok3 = fake_table in absent
+        print(f"变异 3（整张表缺失）: {'[抓到]' if ok3 else '[漏掉]'}")
+        if ok3:
+            print(f"  报告为：{absent}")
+
+        # --- 还原后：干净文档不应报出假字段，也不应报出缺失的表 ---
+        clean = tmp / "clean2.md"
+        clean.write_text(text, encoding="utf-8")
+        tool4 = _load_tool(clean)
+        d3, _ = tool4.doc_tables()
+        s3 = tool4.sql_tables()
         residue = [
             f for t in sorted(s3) for f in d3.get(t, []) if f not in s3[t]
         ]
-        ok3 = not any(FAKE_TABLE_FIELD in c for c in residue)
-        print(f"干净文档: {'[通过]' if ok3 else '[FAIL] 残留了假字段'}")
+        ok4 = not any(FAKE_TABLE_FIELD in c for c in residue)
+        ok5 = not tool4.carry_over_tables_missing_from_sql(
+            clean, ROOT / "migrations" / "0001_initial.sql"
+        )
+        print(f"干净文档: {'[通过]' if ok4 and ok5 else '[FAIL] 仍有残留'}")
 
-        if ok1 and ok2 and ok3:
-            print("\n对照工具自检：2/2 条变异被抓到，干净文档不误报")
+        if ok1 and ok2 and ok3 and ok4 and ok5:
+            print("\n对照工具自检：3/3 条变异被抓到，干净文档不误报")
             return 0
-        print("\n对照工具自检未通过 —— 提取逻辑已失效，第一节的「无」不可信")
+        print("\n对照工具自检未通过 —— 提取逻辑已失效，输出的「无」不可信")
         return 1
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

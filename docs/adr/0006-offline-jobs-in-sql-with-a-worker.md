@@ -4,7 +4,7 @@
 
 离线任务（聚类 / 挂载 / 生成 / 质检 / 自修复统计）落库成 `jobs` 表；**独立 worker 进程**轮询拉取执行。**同一份领域函数支持三种调用方式**：web 请求触发（提交后自动跑）、worker 轮询（定时 / 自动恢复）、命令行手动跑（一次性大任务，可 `--dry-run`）。
 
-worker 与 web **共用同一个 Docker 镜像**，只是启动命令不同（`uvicorn …` vs `python -m app.offline.worker`）—— 因此不存在"两边代码不一致"这类问题，worker 直接调领域层的函数，与路由调的是同一批。
+worker 与 web **共用同一个 Docker 镜像**，只是启动命令不同（`uvicorn app.main:app …` vs `python -m app.offline.worker` —— 目录形状见 `docs/adr/0010-repository-layout-and-import-boundaries.md`）—— 因此不存在"两边代码不一致"这类问题，worker 直接调领域层的函数，与路由调的是同一批。
 
 依据：v1 把离线塞进 web 进程（`BackgroundTasks` + 两处裸 `threading.Thread().start()`），结果是 8 处后台任务无并发上限、失败静默丢弃、`_process_ugc_submission` 崩溃后永久卡在 `processing`（没有 reaper）。
 
@@ -42,7 +42,10 @@ Redis 队列：
 不能"先查再改"，要靠一条 `UPDATE` 原子抢占：
 
 ```sql
-UPDATE jobs SET status='running', worker_id=?, started_at=now()
+-- 形状示意，**不是可直接执行的 SQL**：真实实现要按 SQLite 方言写
+-- （`datetime('now')` 而不是 `now()`；SQLite 3.35+ 才支持 RETURNING 子句，
+--   见 migrations/0001_initial.sql 里所有时间默认值都是 datetime('now')）
+UPDATE jobs SET status='running', worker_id=?, started_at=datetime('now')
  WHERE id = (SELECT id FROM jobs WHERE status='pending' ORDER BY id LIMIT 1)
    AND status='pending'          -- 关键：条件里再确认一次
 RETURNING id

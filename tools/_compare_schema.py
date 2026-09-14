@@ -171,6 +171,36 @@ def sql_tables() -> dict[str, list[str]]:
     return tables
 
 
+def carry_over_tables_missing_from_sql(doc: Path, sql: Path) -> list[str]:
+    """文档说「沿用 / 建了」、而 SQL 里根本没有那张表 → 表名清单。
+
+    **这是这个工具唯一做过的"断言"**，而它来自一次真实事故：
+    `docs/v2数据模型.md` 的对照表里写着 `| user_favorites | **沿用** |`，
+    而 `0001_initial.sql` 里没有这张表。字段级差集**看不见这种漏** ——
+    它只在"表存在"的前提下比字段，所以整张表缺失是它的盲区。
+
+    判据窄且可判定：只认那两列表格里带「沿用」或「建了」的行，
+    且要求该表名从未出现在任何 `CREATE TABLE` 里。
+    （工具本身仍是审阅辅助，不接进钩子；但这一条是真断言，写在输出里显眼处。）
+    """
+    text = doc.read_text(encoding="utf-8")
+    created = set(sql_tables())
+    missing: list[str] = []
+    for line in text.split("\n"):
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        name = cells[0].strip("`* ").strip()
+        verdict = cells[1]
+        if not IDENT.match(name) or name in created:
+            continue
+        if "沿用" in verdict or "建了" in verdict:
+            missing.append(name)
+    return missing
+
+
 def main() -> int:
     d, skipped = doc_tables()
     s = sql_tables()
@@ -178,6 +208,16 @@ def main() -> int:
     print("# 文档 vs SQL 字段对照\n")
     print("左＝文档（`docs/v2数据模型.md`）　右＝SQL（`migrations/0001_initial.sql`）\n")
     print(f"SQL 建了 **{len(s)}** 张表；文档里有 **{len(d)}** 个表小节。\n")
+
+    print("## 〇、文档说「沿用 / 建了」、SQL 里没有的表（**整张表缺失，差集看不见**）\n")
+    absent = carry_over_tables_missing_from_sql(DOC, SQL)
+    if absent:
+        print("| 表 | 问题 |")
+        print("|---|---|")
+        for t in absent:
+            print(f"| `{t}` | 文档说它沿用/已建，SQL 里没有这张表 |")
+    else:
+        print("无\n")
 
     print("## 一、只在文档里有（**要重点看的：疑似漏建**）\n")
     print("| 表 | 文档提到、SQL 里没有 |")

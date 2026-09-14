@@ -71,12 +71,14 @@
 
 ## 代码的现状（哪些已经存在、哪些还没有）
 
-新会话容易误判的一件事：**`app/` 目录存在，但里面只有包的 docstring。服务起不来。**
+新会话容易误判的一件事：**`app/` 目录存在，但里面只有包的 docstring —— 应用起不来。**
+已经落地的是**迁移这一层**：schema 是权威的、runner 能跑且有测试守着。别把"库能建出来"当成"应用能跑"。
 
 | 已经有 | 位置 |
 |---|---|
 | v2 的**表结构权威**（执行 `python -m migrations.run` 得到全库） | `migrations/0001_initial.sql` |
-| 迁移执行器 + 4 条测试 | `migrations/_runner.py`、`migrations/test_runner.py` |
+| 迁移执行器 + 12 条测试（回滚 / 外键 / 记账 / splitter 都各有守门测试） | `migrations/_runner.py`、`migrations/test_runner.py` |
+| 对照工具（文档 vs SQL 的字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
 | 依赖与 pytest 配置（收集范围已配死） | `pyproject.toml` |
 | 共享 fixture（`tmp_dir`） | `conftest.py`（仓库根，见 `docs/adr/0010-repository-layout-and-import-boundaries.md`） |
 
@@ -89,6 +91,8 @@
 | v1 题目导入（`tools/import_v1.py`） | §未决 2 |
 | ruff / mypy 与它们的提交前检查 | 决策 38（未实施） |
 | 迁移通道、测试策略、验收标准、阈值标定 | §未决 2 / 3 / 5 / 6 |
+
+> **收藏夹不在这张表里** —— 它已经建好了（决策 63，`user_favorites`，见 `migrations/0001_initial.sql`）。
 
 > **这张表会过期**，它的用途只是"接手时别以为代码已经在那儿了"。`docs/v2范围基线.md` §未决是待办清单的权威。
 

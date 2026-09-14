@@ -1,6 +1,6 @@
 # 迁移是纯 SQL：没有分支可写，也就写不出 v1 那次删库
 
-> 状态：accepted ｜ 影响文档：`docs/v2数据模型.md`（`schema_migrations` 字段）· `docs/adr/0010-repository-layout-and-import-boundaries.md`（`0001` 自建记账表）· `docs/v2范围基线.md` 决策 55–56 · `AGENTS.md` §3.7 · `docs/v1现状-20260913.md`（被否决建议的记录对象）
+> 状态：accepted ｜ 影响文档：`docs/v2数据模型.md`（`schema_migrations` 字段）· `docs/adr/0010-repository-layout-and-import-boundaries.md`（`0001` 自建记账表）· `docs/v2范围基线.md` 决策 55–56 · `AGENTS.md` §3.7 · `docs/v1现状-20260913.md`（被否决建议的记录对象）｜ 同日补记：新增「`0001` 的改写窗口」—— 把"跑过的迁移不许改"这条纪律的**唯一例外**写清楚（此前只能在隐性违规与"不修失效注释"之间二选一）
 
 `migrations/` 里每个文件是一段 **`executescript()` 直接执行的 SQL**。runner 本体只做三件事:比对已记账的文件、跑没跑过的、记账。**它不 import `app/` 的任何模块。**
 
@@ -59,6 +59,29 @@ python -m migrations.run [--check] [--db <路径>]
 ## 不可逆的代价
 
 **没有 `downgrade`** —— 这是 ADR-0010 已经记录的取舍，本文补上它的纪律：**任何破坏性迁移（删列 / 删表 / 改语义）必须先备份再执行**（决策 55）。
+
+## 唯一的例外：`0001` 的「改写窗口」（本文补记）
+
+上面那条纪律（**跑过的迁移文件不许改**，由 `checksum` 拦住）在**预上线窗口内**与它自己的目的冲突一次，所以把例外写清楚，而不是让每次修改都变成一次隐性违规。
+
+**窗口的定义（三条同时成立才算）**：
+
+1. **只动 `0001_initial.sql`** —— 它是全部 schema 的第一次也是唯一一次建表，没有后继迁移依赖它的历史形态；
+2. **没有已部署的库**：只有开发机上的 `data/interview.db`（gitignored、可由 `python -m migrations.run` 原地重建），**没有任何线上库**。`README.md` 记的"尚无实现代码"就是这条的判据；
+3. **改动是补全而不是改写语义**：修注释里的失效引用、补一列/一张表/一个索引。**删列、改类型、改列语义一律不许**，那属于新开一个迁移。
+
+**为什么值得开这个口子**：`0001` 就是当前的 schema 权威（`docs/INDEX.md` 明写"表结构权威 = 执行 `python -m migrations.run`"）。窗口期内它是一份**正在成形的设计**，此时它的注释与 DDL 不一致（例如注释还指向被决策 28 删掉的 `evaluations.hits`）会让下一个写代码的人照错的写。而加一个"只改注释"的迁移，是把噪音搬进迁移历史换取零收益。
+
+**代价与它的对冲**：窗口期一结束，`checksum` 就会以"库与文件对不上"的形式拦住任何再修改 —— 这正是它该做的事，**不需要新机制**。唯一的操作要求是：改完 `0001` 必须重建本地库（`Remove-Item data/interview.db` 后重跑 `python -m migrations.run`），否则 `--check` 会报漂移（那是**正确**的报错，不是 bug）。
+
+**它已经发生过两次**，两次都是同一类问题：
+
+| 次 | 内容 | 谁发现的 |
+|---|---|---|
+| 1 | 补 `knowledge_points.domain_id` —— 三层结构在库里只剩两层 | `tools/_compare_schema.py` 的字段差集 |
+| 2 | 删掉指向 `evaluations.hits` 的失效注释；补 `criteria.shared`（ADR-0002 判据② 的前提）、`quota_ledger.kind`（区隔日月粒度）、`question_point_stats` 改键为 `criterion_id`；补三条反查索引 | 文档-代码冲突审计；每条各配一条复现测试 |
+
+> ⚠️ **窗口关闭的判据是「有线上库」，不是「哪天心情好」**：一旦部署了第一台机器，`0001` 立刻变成不可改的历史，此后一切 schema 变更只能追加迁移。这条例外到期自动失效。
 
 ## Considered Options
 

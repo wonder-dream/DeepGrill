@@ -14,8 +14,11 @@ dependencies = [
     "pydantic",       # 请求体校验；pydantic-settings 读配置
     "pydantic-settings",
     "jinja2",         # 服务端渲染整页 HTML（ADR-0004）
-    "itsdangerous",   # 签名会话 cookie
 ]
+# ⚠️ 这里原先还有 `itsdangerous`（"签名会话 cookie"）—— **已删**。
+# 认证用的是 `user_tokens` 表里的不透明令牌 + sha256 存储 + HttpOnly Cookie
+# （`docs/v1行为规格.md` §9「继承」），签名 cookie 是**另一套**会话机制，
+# 两套并存等于两个会漂的真相。它不是实现时需要再决定的事：令牌形态已经定了。
 
 [project.optional-dependencies]
 dev = [

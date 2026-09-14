@@ -25,6 +25,14 @@ if hasattr(sys.stdout, "reconfigure"):
 ROOT = Path(__file__).resolve().parent.parent
 CHECKER = ROOT / "scripts" / "check_docs.py"
 
+# 规则 21 是**休眠规则**：它的对象在 `app/` 里，而那个目录此刻只有包的 docstring
+# —— 没有变异就没有证据。所以自检为它**临时造一个文件**，跑完删掉。
+# 这不是"为了有一条测试而造文件"：JSON 列的中文语义是 v1 明确要求继承的硬性契约
+# （`docs/v1行为规格.md` §8.7），而它的失效方式是静默的（SQL 文本匹配失效）。
+RULE21_PROBE = ROOT / "app" / "_selftest_ensure_ascii.py"
+RULE21_BAD = 'import json\n\nx = json.dumps({"a": "中文"})\n'
+RULE21_GOOD = 'import json\n\nx = json.dumps({"a": "中文"}, ensure_ascii=False)\n'
+
 # (说明, 目标文件, 原文, 篡改后) —— 每条对应一条规则，规则号写在说明里
 MUTATIONS: list[tuple[str, str, str, str]] = [
     ("规则1 顶层文档缺状态行", "README.md", "> 状态：活文档", "> 状态没了"),
@@ -36,7 +44,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ("规则9 INDEX 表格缺 docs/ 前缀", "docs/INDEX.md", "| `docs/v2数据模型.md` |", "| `v2数据模型.md` |"),
     ("规则10 ADR 影响文档指向不存在", "docs/adr/0008-hosting-overseas-single-node.md", "`AGENTS.md`", "`docs/nonexistent.md`"),
     ("规则11 引用台账里没有的决策号", "docs/v2数据模型.md", "（决策 21）", "（决策 999）"),
-    ("规则12 台账标题范围与实际不符", "docs/v2范围基线.md", "（1–58）", "（1–50）"),
+    ("规则12 台账标题范围与实际不符", "docs/v2范围基线.md", "（1–63）", "（1–50）"),
     ("规则13 accepted 的 ADR 缺 Consequences", "docs/adr/0006-offline-jobs-in-sql-with-a-worker.md", "## Consequences", "## 附注"),
     ("规则15 引用 ADR 缺 .md 后缀", "CONTEXT.md", "docs/adr/0005-code-is-split-by-domain.md", "docs/adr/0005"),
     ("规则16 AGENTS 未提 INDEX", "AGENTS.md", "`docs/INDEX.md`", "`docs/INDEX`", True),
@@ -44,6 +52,21 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ("规则18 实测数字无出处", "README.md",
      "本仓库目前包含的是重写前的完整设计文档：",
      "本仓库目前包含的是重写前的完整设计文档，共 2712 行："),
+    # 规则19/20 的目标是"引用已被决策废弃的标识符"与"术语取值被写成两值"。
+    # 两条都用**反向变异**：把修好的地方改回出错的样子。
+    #
+    # 规则19 的锚点必须选在**不含废弃标记**的行上：规则19 会跳过写着
+    # 「删除 / 移出 / 废止」的行（那是记录废弃，不是失效引用）。第一版锚点选在
+    # §5 的「不快照…`hits` 读 `attempts`」那句上，而那句本身含「删除」二字
+    # —— 变异因此被跳过，自检报"校验器没有报错"，看起来像规则失效（实测撞到）。
+    ("规则19 引用已被决策 28 移走的 evaluations.hits", "docs/v2数据模型.md",
+     "评语 → 读 evaluations；hits → 读 attempts",
+     "评语 → 读 evaluations；hits → 读 evaluations.hits"),
+    ("规则20 命中状态被写成两值", "docs/v2数据模型.md",
+     "JSON：`criterion_id → 命中状态`", "JSON：`criterion_id → 命中/未命中`"),
+    # 规则21 的对象在 `app/` 里（见 RULE21_PROBE 的说明）——自检会临时造文件。
+    ("规则21 JSON 列入库漏掉 ensure_ascii=False", "<probe>",
+     RULE21_GOOD, RULE21_BAD),
 ]
 
 
@@ -60,6 +83,22 @@ def main(verbose: bool = False) -> int:
     for mut in MUTATIONS:
         name, rel, old, new = mut[0], mut[1], mut[2], mut[3]
         replace_all = len(mut) > 4 and mut[4]
+        # 规则 21 的探测文件：造出来、写变异内容、跑校验器、删掉。
+        # 它必须**每次都被清掉** —— 残留会让下一次 check_docs 报出一个假失败。
+        if rel == "<probe>":
+            try:
+                RULE21_PROBE.write_text(new, encoding="utf-8", newline="\n")
+                ok, _ = run_checker()
+            finally:
+                RULE21_PROBE.unlink(missing_ok=True)
+            if ok:
+                caught += 1
+                if verbose:
+                    print(f"  [抓到] {name}")
+            else:
+                missed.append((name, "校验器没有报错"))
+            continue
+
         p = ROOT / rel
         if not p.exists():
             missed.append((name, f"文件不存在：{rel}"))

@@ -280,7 +280,13 @@ def main(verbose: bool = False) -> int:
         "假设", "假定", "粗估", "用户", "人以内", "名额",
     )
     # 不是实测数的形态：状态码、哈希/十六进制、版本号、常见技术数字
-    NOT_A_MEASURE = re.compile(r"\b[1-5]\d\d\b|sha\d+|SHA256|v\d|\d+x\d+", re.I)
+    # 以及**迁移文件名里的序号**（`0001_initial.sql` / `0001`）—— 规则 19 那次
+    # 改写窗口的讨论里满篇都是它，第一版没排除，于是那一段整段被规则 18 判成
+    # "实测数字"。注意 `\b0001\b` 匹配不到 `0001_initial`（`_` 是词字符），
+    # 所以这里要写成前缀形式 —— 第一次就是漏了这个，报错照旧。
+    NOT_A_MEASURE = re.compile(
+        r"\b[1-5]\d\d\b|sha\d+|SHA256|v\d|\d+x\d+|\b0001[0-9a-z_]*", re.I
+    )
     for p in [ROOT / n for n in ("README.md", "AGENTS.md", "CONTEXT.md")] + sorted(
         DOCS.rglob("*.md")
     ):
@@ -305,6 +311,111 @@ def main(verbose: bool = False) -> int:
                 continue
             if NUM.search(line) and not NOT_A_MEASURE.search(line):
                 check(False, f"{p.relative_to(ROOT)}:{i} 出现实测数字但没标出处（或加产品参数说明）")
+
+    # --- 规则 19：引用已被决策废弃的标识符 --------------------------------
+    # 对应失败：`migrations/0001_initial.sql` 的两处注释还写着 `evaluations.hits`
+    #          —— 而决策 28 早把它移到了 `attempts`，同一个文件里另一处注释
+    #          就写着「hits 不在本表」。照那条注释写注销流程会去查一个不存在的列。
+    #
+    # 判据：`<表>.<列>` 形态的引用，若该表**真的建出来了**、而该列不在它的列集里
+    #       → 这是一条失效引用（schema 是权威，见 docs/INDEX.md）。
+    #
+    # 两条排除，都是实测撞出来的（第一版报了 8 项、其中 5 项是误报：
+    # `v1现状` 里的 `sessions.user_id`、`0001` 自述里被删掉的 `evaluations.hits`）：
+    #   · 历史快照与 v1 规格**就是那些已删字段的权威处**，不许拿 v2 的 schema 去管它；
+    #   · 同一行里明确标了「删除 / 移出 / 不在 / 废止」的是**记录废弃**，不是失效引用。
+    # 只查"表存在但列不存在"：表本身不存在是另一类问题（规格漏项），
+    # 由 tools/_compare_schema.py 与人审负责 —— 混在一起会让这条规则变成噪音源。
+    V1_AUTHORITY = ("v1现状", "v1行为规格")
+    REMOVAL_MARKER = ("删", "移出", "不在", "废止", "曾为", "改名为", "改名")
+    sql_path = ROOT / "migrations" / "0001_initial.sql"
+    if sql_path.exists():
+        sql_text = read(sql_path)
+        table_cols: dict[str, set[str]] = {}
+        for m in re.finditer(
+            r"CREATE TABLE(?: IF NOT EXISTS)?\s+(\w+)\s*\((.*?)\n\);", sql_text, re.S
+        ):
+            cols = {
+                c.group(1).lower()
+                for c in re.finditer(r'^\s*[\["]?(\w+)[\]"]?\s+[A-Z]', m.group(2), re.M)
+            }
+            cols |= {
+                c
+                for pk in re.findall(r"PRIMARY KEY\s*\(([^)]+)\)", m.group(2))
+                for c in re.findall(r"\w+", pk)
+            }
+            table_cols[m.group(1).lower()] = cols
+
+        for p in [ROOT / n for n in ("README.md", "AGENTS.md", "CONTEXT.md")] + sorted(
+            DOCS.rglob("*.md")
+        ) + [sql_path, ROOT / "migrations" / "_runner.py"]:
+            if not p.exists() or any(h in p.name for h in V1_AUTHORITY):
+                continue
+            for i, line in enumerate(read(p).split("\n"), 1):
+                if any(h in line for h in REMOVAL_MARKER):
+                    continue
+                for ref in re.finditer(r"\b([a-z_]+)\.([a-z_]+)\b", line):
+                    t, c = ref.group(1).lower(), ref.group(2).lower()
+                    if t not in table_cols or c in table_cols[t]:
+                        continue
+                    check(
+                        False,
+                        f"{p.relative_to(ROOT)}:{i} 引用了 {t}.{c}，"
+                        f"但 migrations/0001_initial.sql 的 {t} 没有这一列（列："
+                        f"{', '.join(sorted(table_cols[t]))}）",
+                    )
+
+    # --- 规则 20：命中状态的取值只许有一种说法 ---------------------------
+    # 对应失败：`CONTEXT.md` 定义命中状态为三值（命中 / 未命中 / **未涉及**），
+    #          而 `docs/v2数据模型.md` 与 0001 的注释写的是「命中/未命中」两值。
+    #          这不是措辞问题：**掌握度矩阵的分母是"被考过的考察点"**，
+    #          靠"未涉及"把没问到的排到分母之外；两值说法会让实现丢掉一个状态。
+    #
+    # 判据（窄且可判定）：凡出现「criterion_id → 命中」这种**枚举写法**的地方，
+    # 同一行必须出现「未涉及」或指向 CONTEXT.md（术语权威）。
+    # 只在枚举写法上判定 —— 正文里说"命中/未命中"的地方很多，全文匹配会满屏误报。
+    for p in [ROOT / n for n in ("README.md", "AGENTS.md", "CONTEXT.md")] + sorted(
+        DOCS.rglob("*.md")
+    ) + [ROOT / "migrations" / "0001_initial.sql"]:
+        if not p.exists():
+            continue
+        for i, line in enumerate(read(p).split("\n"), 1):
+            if "criterion_id" not in line or "命中" not in line:
+                continue
+            if "未涉及" in line or "CONTEXT.md" in line:
+                continue
+            # 纯映射说明（只有两个箭头目标）才算枚举，避免误伤散文
+            if re.search(r"命中\s*[/、]\s*未命中", line):
+                check(
+                    False,
+                    f"{p.relative_to(ROOT)}:{i} 把命中状态写成了两值（命中/未命中）——"
+                    f"它是**三值**（命中 / 未命中 / 未涉及），权威定义见 CONTEXT.md；"
+                    f"少了「未涉及」，掌握度矩阵的分母就无法排除本轮没问到的考察点",
+                )
+
+    # --- 规则 21：JSON 列入库必须 ensure_ascii=False ----------------------
+    # 对应失败：`docs/v1行为规格.md` §8.7 把这条标成**硬性继承** —— v1 用自定义
+    #          类型 `JSONUtf8` 实现，且注明「历史遗留 bug，重构必须保留此语义」。
+    #          漏掉的后果是静默的：中文被存成 `\uXXXX` 之后，**对 JSON 列做 SQL
+    #          文本匹配会失效**（v1 真发生过，见那份文档记的 `tags LIKE '%"RAG"%'`）。
+    #
+    # 只查 `json.dumps`，因为它就是那一层会写进 JSON 列的东西。
+    # ⚠️ **此刻它是休眠规则**：`app/` 里还没有实现代码，所以没有任何断言会执行。
+    #    按本仓库的规矩（"测试全绿不是证据，能被变红才是"），给它配了一条变异 ——
+    #    见 `scripts/selftest_check_docs.py` 的规则 21 那条（自检会临时建出
+    #    `app/_selftest_ensure_ascii.py` 再删掉）。
+    app_dir = ROOT / "app"
+    if app_dir.is_dir():
+        for p in sorted(app_dir.rglob("*.py")):
+            for i, line in enumerate(read(p).split("\n"), 1):
+                if "json.dumps(" not in line or "ensure_ascii" in line:
+                    continue
+                check(
+                    False,
+                    f"{p.relative_to(ROOT)}:{i} 的 json.dumps 没有 ensure_ascii=False "
+                    f"—— 中文会存成 \\uXXXX，之后对这个 JSON 列的 SQL 文本匹配"
+                    f"**静默失效**（docs/v1行为规格.md §8.7）",
+                )
 
     # --- 输出 ------------------------------------------------------------
     # 注意：标记只用 ASCII —— Windows 控制台默认 GBK，✗/✓ 会让脚本自己崩掉。
