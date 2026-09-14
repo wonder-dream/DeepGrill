@@ -113,7 +113,7 @@
 | 还没有 | 归属 |
 |---|---|
 | 语音转写的**账号**（代码已就绪：`DEEPGRILL_STT_PROVIDER=api` + 三家 OpenAI 兼容的端点都能用；缺的只是一份 key 与模型名） | 决策 76 |
-| **嵌入的真实供应商**（接口 / 占位实现 / 缓存都就位；DeepSeek 不提供 embeddings，见 `.env.example`）—— 配好之前**全量装配跑不了** | ADR-0008 |
+| 嵌入与转写的**账号**（决策 76/79：代码与模型名都已配好 —— 硅基流动的 `BAAI/bge-m3` 与 `XingChenAGI/XingChenASR-V3.2-Ultra`，缺的只是一份 key）—— `python tools/check_providers.py --live` 一次验完 | 决策 79 |
 | **全量装配本身还没跑**：库里 3007 道导入题仍在待定池（真跑：配嵌入 → `propose --batched` → 人审 → `mount`） | 决策 44/46 |
 | 知识层的**增量维护**只剩"机器上装没装"这一步 —— 定时器已在 `deploy/deepgrill-maintenance.{service,timer}`（`generate --enqueue` + `worker --once`），装上即生效 | 决策 46 / 73 |
 | **备份的异地那一跳**：仓库做「快照 + 清单 + 当场自验 + 保留策略」与**定时**（`deploy/deepgrill-backup.timer`），上传对象存储仍留在部署侧一行 `ExecStartPost`（ADR-0008 明说频率与保留策略待定） | ADR-0008 / 决策 73 |
