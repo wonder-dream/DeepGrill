@@ -50,9 +50,13 @@ class Settings(BaseSettings):
 
     # 用途名 → 型号串（决策 50）。MVP 只用到面试官这一个用途；
     # 对话与判分共用它，是因为 MVP 不追求"判分用更强的模型"这个优化。
-    model_interviewer: str = "deepseek-v4.1-flash"
+    #
+    # 默认值是与 `.env.example` **对齐的**、且**实测可用**的那一组
+    # （deepseek-flash + https://api.deepseek.com）—— 模板与代码默认值不一致时，
+    # "照模板配"和"什么都不配"会得到两种行为，而那种分歧没有任何好处。
+    model_interviewer: str = "deepseek-flash"
     llm_api_key: str = ""
-    llm_base_url: str = "https://api.deepseek.com/v1"
+    llm_base_url: str = "https://api.deepseek.com"
 
     # Cookie 的 Secure 属性。默认关（http 本机开发）；线上必须开 ——
     # 上线检查项，不是默认值。

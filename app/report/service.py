@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import asdict, dataclass, field
 
 from sqlalchemy import select
@@ -47,6 +48,9 @@ class ItemReport:
     review: str = ""
     status: str = "ok"
     hits: dict[str, str] = field(default_factory=dict)
+    #: 这道题的考察点正文。它有两个用途：喂给判分的 prompt，以及
+    #: **让总结的 grounding 检查知道哪些技术名词是合法的**（见 `_known_names`）。
+    criteria_texts: list[str] = field(default_factory=list)
 
     @property
     def missed(self) -> list[str]:
@@ -90,11 +94,22 @@ class Report:
     summary_source: str = "llm"  # llm / fallback
 
     def to_body(self) -> dict:
-        """落库的形状（**不含 summary** —— 它单独一列，ADR-0003 的决定）。"""
+        """落库的形状。
+
+        **不含 `summary`**（它单独一列，ADR-0003 的决定）、也**不含
+        `criteria_texts`** —— 后者是"怎么算出来的"（判分 prompt 与 grounding 检查的
+        输入），它已经在同一行的 `criteria` 快照里了，不必存两份。
+        """
         return {
             "total_score": self.total_score,
-            "items": [asdict(i) for i in self.items],
-            "changes": [asdict(c) | {"covered_delta": c.covered_delta, "hit_delta": c.hit_delta} for c in self.changes],
+            "items": [
+                {k: v for k, v in asdict(i).items() if k != "criteria_texts"}
+                for i in self.items
+            ],
+            "changes": [
+                asdict(c) | {"covered_delta": c.covered_delta, "hit_delta": c.hit_delta}
+                for c in self.changes
+            ],
             "prerequisite_gaps": self.prerequisite_gaps,
             "top_problems": self.top_problems,
         }
@@ -182,6 +197,7 @@ def _evaluate_and_snapshot(session: Session, *, ts: InterviewSession, llm) -> It
         review=result.review,
         status=result.status,
         hits=snapshot.to_json(),
+        criteria_texts=[c.text for c in criteria],
     )
 
 
@@ -304,20 +320,45 @@ def _summarize(report: Report, llm) -> tuple[str, str]:
 
 
 def _known_names(report: Report) -> set[str]:
+    """总结里**允许出现**的技术名词集合。
+
+    不只是知识点名 —— 还包括每一题考察点正文里的拉丁词。为什么必须包括它们：
+    模型在解释"哪一条没答到"时**必然会复述那条考察点**，而考察点里天然含技术名词。
+
+    实测踩过：`volatile` 那道题的考察点是「与 synchronized 的适用场景区别」，
+    总结里写 `synchronized` 是**完全正确**的引用，而第一版检查把它判成"编造"，
+    于是**把一段好总结丢掉了**（那次的总结质量明显高于降级文案）。
+    这是本项目第三次踩"规则误报"（前两次在 `scripts/check_docs.py` 规则 18 与
+    题库的结构断言），所以这次改的是检查本身而不是文案。
+    """
     names: set[str] = set()
+
+    def add(text: str | None) -> None:
+        if text:
+            # 用 update 而不是 `names |= …`：后者的赋值语义会让 `names` 在这个
+            # 嵌套函数里变成**局部变量**，于是外层那份永远读不到（UnboundLocalError）。
+            names.update(_tokens(text))
+
     for item in report.items:
-        names |= _tokens(item.point_name)
+        add(item.point_name)
+        for criterion in item.criteria_texts:
+            add(criterion)
+        # 四维分的**维度名**也是报告自己的数据（它们就在 scores 里），模型引用它们
+        # 完全合法。实测踩过：总结写"accuracy 65、completeness 60…"被判成编造，
+        # 而那是照抄数据。
+        for dimension in item.scores:
+            add(dimension)
     for change in report.changes:
-        names |= _tokens(change.point_name)
+        add(change.point_name)
     for gap in report.prerequisite_gaps:
-        names |= _tokens(gap)
+        add(gap)
     for problem in report.top_problems:
-        names |= _tokens(problem.split("：")[0])
+        add(problem)
     return names
 
 
 def _tokens(name: str) -> set[str]:
-    """把一个知识点名拆成"可被提及的片段"。
+    """把一个名字拆成"可被提及的片段"，并单独取出其中的拉丁词。
 
     "JMM 内存模型" 这样带修饰的名字，模型可能只说"内存模型"或只说"JMM" ——
     都算提到了这个名字。所以按分隔符拆开，而不是要求逐字相同。
@@ -325,6 +366,7 @@ def _tokens(name: str) -> set[str]:
     parts = {name.strip()}
     parts |= {p.strip() for p in name.replace("（", " ").replace("）", " ").split()}
     parts |= {p.strip() for p in name.split("的")}
+    parts |= set(re.findall(r"[A-Za-z][A-Za-z0-9_.\-]{1,}", name))
     return {p for p in parts if p}
 
 
@@ -345,8 +387,6 @@ def _candidate_names(text: str) -> set[str]:
     再对"像名词的片段"做一次相似度匹配 —— 那是"阈值标定"那一类工作（§未决 6），
     属于 MVP 之后。所以这里只保证：**术语级幻觉会被拦下**。
     """
-    import re
-
     return set(re.findall(r"[A-Za-z][A-Za-z0-9_.\-]{1,}", text))
 
 
@@ -413,9 +453,22 @@ def _average_total(items: list[ItemReport]) -> int | None:
 # 读
 # ---------------------------------------------------------------------------
 def get_report(session: Session, interview: Interview) -> Report:
-    """读回**已落库**的报告（不重算）—— 这是"打开报告"走的那条路。"""
+    """读回**已落库**的报告（不重算）—— 这是"打开报告"走的那条路。
+
+    考察点正文从 `report_items` 的**快照**里取（`snap_criteria`）：它是"当时的
+    考察点"，与历史报告显示的内容一致 —— 而不是去读 `criteria` 表拿现在的定义
+    （那样报告会随你审知识点而变，正是快照要挡住的）。
+    """
     body = interview.report_body or {}
-    items = [ItemReport(**raw) for raw in body.get("items", [])]
+    criteria_by_seq = _criteria_by_seq(session, interview.id)
+
+    items: list[ItemReport] = []
+    for raw in body.get("items", []):
+        # 旧报告里可能没有 criteria_texts（本字段是后加的）—— 用快照补，缺失就空
+        fields = {k: v for k, v in raw.items() if k != "criteria_texts"}
+        fields.setdefault("criteria_texts", criteria_by_seq.get(raw.get("seq"), []))
+        items.append(ItemReport(**fields))
+
     changes = [
         MatrixChange(
             point_id=raw["point_id"],
@@ -439,6 +492,20 @@ def get_report(session: Session, interview: Interview) -> Report:
         summary=interview.report_summary or "",
         summary_source="stored",
     )
+
+
+def _criteria_by_seq(session: Session, interview_id: int) -> dict[int, list[str]]:
+    """从 `report_items` 的快照里取每道题的考察点正文（当时的，不是现在的）。"""
+    rows = session.execute(
+        select(ReportItem.seq, ReportItem.snap_criteria).where(
+            ReportItem.interview_id == interview_id
+        )
+    ).all()
+    out: dict[int, list[str]] = {}
+    for seq, snap in rows:
+        if isinstance(snap, dict):
+            out[seq] = list(snap.get("criteria") or [])
+    return out
 
 
 def attempts_for(session: Session, session_id: int) -> list[Attempt]:

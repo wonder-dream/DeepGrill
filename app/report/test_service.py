@@ -52,7 +52,9 @@ def session(tmp_dir: Path) -> Session:
         )
         s.flush()
         s.add(KnowledgePointEdge(from_point_id=1, to_point_id=2, kind="prerequisite"))
-        for seq, text in enumerate(["可见性与有序性", "底层内存屏障", "不保证原子性"], start=1):
+        for seq, text in enumerate(
+            ["可见性与有序性", "底层内存屏障", "与 synchronized 的适用场景区别"], start=1
+        ):
             s.add(Criterion(id=seq, point_id=2, seq=seq, text=text, shared=0))
         s.flush()
         s.add(
@@ -128,7 +130,11 @@ def test_report_is_assembled_from_data(session: Session) -> None:
     snap = session.query(ReportItem).one()
     assert snap.snap_stem == "说说 volatile 的作用"
     assert snap.snap_point_name == "volatile"
-    assert snap.snap_criteria["criteria"] == ["可见性与有序性", "底层内存屏障", "不保证原子性"]
+    assert snap.snap_criteria["criteria"] == [
+        "可见性与有序性",
+        "底层内存屏障",
+        "与 synchronized 的适用场景区别",
+    ]
 
 
 def test_report_is_reproducible(session: Session) -> None:
@@ -261,6 +267,52 @@ def test_summary_must_not_invent_names(session: Session) -> None:
 
     assert report.summary_source == "fallback", "编造的总结必须被拦下"
     assert "Kubernetes" not in report.summary
+
+
+def test_grounding_accepts_terms_from_the_criteria_text(session: Session) -> None:
+    """**回归测试**：总结里出现**考察点正文里的**技术名词必须被接受。
+
+    实测踩过（真调模型时才暴露）：考察点是「与 synchronized 的适用场景区别」，
+    而总结里写 `synchronized` 是**完全正确**的引用 —— 第一版检查只认知识点名，
+    于是把它判成"编造"，**把一段好总结丢掉了**（那次模型写的总结质量明显高于
+    降级文案）。修法是让"合法名字集合"包含考察点正文里的拉丁词。
+
+    这类误报在本项目里已经第三次出现（前两次在 `check_docs.py` 规则 18 与题库的
+    结构断言），所以它值得一条专门的测试。
+    """
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "未命中"), (3, "未命中")]),
+        _eval_reply(),
+        _summary_reply("volatile 的可见性答到了，但 synchronized 的适用场景没讲清。"),
+    )
+    interview = _play(session, hits=None, llm=llm)
+    report = service.finish_interview(session, interview=interview, llm=llm)
+
+    assert report.summary_source == "llm", "引用考察点里的名词不该被判成编造"
+    assert "synchronized" in report.summary
+
+
+def test_grounding_accepts_the_four_dimension_names(session: Session) -> None:
+    """**回归测试**：总结里引用四维分的维度名必须被接受。
+
+    实测踩过（真调模型时才暴露）：总结写「accuracy 65、completeness 60、clarity 55、
+    depth 40」—— 那是**照抄报告自己的数据**，却被判成"编造的技术名词"，于是又一次
+    把好总结丢掉。
+
+    这已经是这条检查第四次误报（前三次：`synchronized` 来自考察点、`## 它做什么`
+    这类标题行、以及最初的汉字片段）。四次都指向同一件事：**白名单必须覆盖报告
+    自己会引用的全部词汇**，否则它拦下的就是正常输出。
+    """
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "未命中"), (3, "未命中")]),
+        _eval_reply(),
+        _summary_reply("这题 accuracy 80、completeness 70、clarity 90、depth 60，深度是短板。"),
+    )
+    interview = _play(session, hits=None, llm=llm)
+    report = service.finish_interview(session, interview=interview, llm=llm)
+
+    assert report.summary_source == "llm", "照抄报告里的维度名不该被判成编造"
+    assert "accuracy" in report.summary
 
 
 def test_grounded_summary_is_accepted(session: Session) -> None:

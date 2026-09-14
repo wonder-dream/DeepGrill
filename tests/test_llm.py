@@ -198,6 +198,32 @@ def test_prompt_name_cannot_escape_the_prompts_dir() -> None:
         prompts_mod.resolve("../../etc/passwd")
 
 
+def test_every_prompt_mentions_json() -> None:
+    """**回归测试**：所有 prompt 里必须出现 "json" 这个词。
+
+    服务端对 `response_format={"type":"json_object"}` 的硬要求是**prompt 正文里
+    得有 json 这个词**，否则直接 400：
+    `Prompt must contain the word 'json' in some form to use 'response_format'`。
+
+    这类错只有**真调一次**才会暴露，而且表现是"报告总结每次都静默降级成确定性
+    文案"——看起来像模型不听话，其实是请求根本没被接受。实测踩过：
+    `report_summary.md` 写的是"综合成一段人话"，通篇没有 json。
+
+    只查"有没有这个词"，不查它出现在哪 —— 这是防 400 的最低要求，
+    再严就会开始猜措辞。
+    """
+    prompts_dir = prompts_mod.PROMPTS_DIR
+    checked = 0
+    for path in sorted(prompts_dir.rglob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        assert "json" in text.lower(), (
+            f"{path.relative_to(prompts_dir.parent)} 里没有 'json' 这个词 —— "
+            f"用 response_format=json_object 调它会被服务端 400 拒绝"
+        )
+        checked += 1
+    assert checked >= 3, f"只找到 {checked} 个 prompt，目录结构可能变了"
+
+
 def test_unfilled_placeholder_raises() -> None:
     """未填充的占位符送给模型等于让它猜 —— 不许静默。"""
     from app.llm import LLMError, Prompt

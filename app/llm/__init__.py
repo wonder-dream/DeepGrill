@@ -226,7 +226,15 @@ class LLMClient:
         temperature: float = 0.2,
         model: str | None = None,
     ) -> LLMReply:
-        """发一次调用。**内部已重试**，抛出的都是最终失败。"""
+        """发一次调用。**内部已重试**，抛出的都是最终失败。
+
+        ⚠️ **用 `json_mode=True` 时，prompt 正文里必须出现 "json" 这个词** ——
+        这是服务端对 `response_format={"type":"json_object"}` 的硬要求，不满足会
+        返回 **400**（我们把它当"请求本身的问题"、不重试、直接抛）。
+        实测踩过：`report_summary.md` 写的是"综合成一段人话"、通篇没有 json，
+        于是报告总结**每次都静默降级**成确定性文案。
+        `tests/test_llm.py::test_json_mode_prompts_mention_json` 守着这条。
+        """
         payload: dict[str, Any] = {
             "model": model or self.model,
             "messages": list(messages),
