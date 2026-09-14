@@ -50,19 +50,24 @@ def create_db_engine(path: Path, *, echo: bool = False) -> Engine:
     - `journal_mode=WAL`：单机 2C2G 上读写并发的前提（ADR-0008）。
       它是**持久属性**（写进库文件），每次连接重复设置是幂等的。
 
-    `isolation_level="AUTOCOMMIT"` 是 SQLAlchemy 侧的取舍，理由有两条：
-    ① **读不留长事务**：默认的 "BEGIN on first statement" 会让一次 SELECT 开启
-       事务并一直持有 —— 读到的是快照，且 WAL 模式下会挡住 checkpoint。
-       实测形态：一次读之后从别的连接插一行，再读仍是旧值。
-    ② 写路径本来就是"一次请求一个会话、成功即 commit"，显式 commit 仍然有效，
-       所以没有拿掉事务语义。
+    ⚠️ **这里不能设 `isolation_level="AUTOCOMMIT"`**（我曾设过，被测试推翻）。
+    AUTOCOMMIT 下每条语句自己提交，于是 `Session.rollback()` **什么也不回滚** ——
+    而 ADR-0006 选"库表 + worker"而不用 Redis 的**唯一不可替代收益**就是
+    「投递与业务写入同一事务」。实测对照：
+
+    ```
+    AUTOCOMMIT: flush 后另一个连接就看得见 → rollback 后仍然是 1 行
+    默认(DEFERRED): flush 后另一个连接看不见 → rollback 后是 0 行
+    ```
+
+    也就是说：AUTOCOMMIT 让那条理由**变成假话**，而且它不会报错 ——
+    任务记录会留下、业务写入却回滚了，正是 v1 那批"卡在中间态"的 bug 形状。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(
         f"sqlite:///{path}",
         echo=echo,
         connect_args=connect_args_for(path),
-        isolation_level="AUTOCOMMIT",
     )
 
     @event.listens_for(engine, "connect")

@@ -132,6 +132,36 @@ def cmd_mount(settings: Settings) -> int:
     return 0
 
 
+def cmd_worker(settings: Settings, once: bool) -> int:
+    """跑离线 worker。`--once` 跑空队列就退出（排查用；不常驻）。
+
+    任务函数由 `app/offline/tasks.py` 注册 —— 与 web 端共用同一批领域函数
+    （ADR-0006：worker 与 web 只是启动命令不同）。
+    """
+    from app.offline import jobs as jobs_module
+    from app.offline import tasks as _tasks  # noqa: F401  (side effect: register)
+    from app.offline.worker import worker_id
+
+    engine = create_db_engine(settings.resolved_database_path())
+    factory = create_session_factory(engine)
+    if not once:
+        print("常驻模式：Ctrl-C 退出")
+        return jobs_module.run_forever(session_factory=factory, worker_id=worker_id())
+
+    handled = 0
+    with factory() as session:
+        jobs_module.requeue_stale(session)
+        session.commit()
+    while True:
+        with factory() as session:
+            if not jobs_module.run_one(session, worker_id=worker_id()):
+                break
+            session.commit()
+        handled += 1
+    print(f"跑完 {handled} 条任务（--once 模式）")
+    return 0
+
+
 def cmd_status(settings: Settings) -> int:
     """看一眼库里的规模 —— 排查"页面为什么是空的"时第一条该跑的命令。"""
     from sqlalchemy import select
@@ -160,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
     propose = sub.add_parser("propose", help="提候选知识点 → 提案文件（供 /admin/review 审）")
     propose.add_argument("--domain", default="未命名领域", help="这批知识点属于哪个领域")
     sub.add_parser("mount", help="把题挂到已确认的知识点上（挂不上进待定池）")
+    worker = sub.add_parser("worker", help="跑离线 worker（jobs 表；Ctrl-C 退出）")
+    worker.add_argument("--once", action="store_true", help="跑空队列就退出（排查用）")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -172,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_propose(settings, args.domain)
     if args.command == "mount":
         return cmd_mount(settings)
+    if args.command == "worker":
+        return cmd_worker(settings, args.once)
     parser.error(f"未知命令：{args.command}")
     return 2
 
