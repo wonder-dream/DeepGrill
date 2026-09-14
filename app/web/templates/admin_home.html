@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}后台 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>后台</h1>
+  <p class="muted">本地管理工具：邀请码、账号、额度、内容治理。只有 owner 能进。</p>
+</section>
+
+<section class="card">
+  <h2>概览</h2>
+  <dl>
+    <dt>账号</dt><dd>{{ user_count }} 个</dd>
+    <dt>邀请码</dt>
+    <dd>未用 {{ invite_counts.unused }} · 已用 {{ invite_counts.used }} · 已过期 {{ invite_counts.expired }}</dd>
+    <dt>反馈</dt>
+    <dd>待处理 {{ feedback_counts.open }} · 已处理 {{ feedback_counts.resolved }} · 已驳回 {{ feedback_counts.dismissed }}</dd>
+  </dl>
+</section>
+
+<section class="card">
+  <h2>入口</h2>
+  <ul>
+    <li><a href="/admin/invites">邀请码</a> —— 生成（可设有效期）、作废</li>
+    <li><a href="/admin/users">账号</a> —— 重置口令、看各自额度</li>
+    <li><a href="/admin/feedback">反馈处理</a>{% if feedback_counts.open %}（<span class="warn">{{ feedback_counts.open }} 条待处理</span>）{% endif %}</li>
+    <li><a href="/admin/review">知识层人审</a> —— 候选知识点逐条通过/否决/合并</li>
+    <li><a href="/admin/observability">观测</a> —— 离线任务、库体积、质量仪表板</li>
+  </ul>
+</section>
+
+<section class="card">
+  <h2>最近的额度记录</h2>
+  {% if usage %}
+  <table>
+    <thead><tr><th>日期</th><th>用户</th><th>额度点</th><th>真实 token</th></tr></thead>
+    <tbody>
+      {% for r in usage %}
+      <tr>
+        <td>{{ r.day }}</td>
+        <td>#{{ r.user_id }}</td>
+        <td>{{ r.units_used }}</td>
+        <td>{{ r.tokens_used }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">额度点是用户看到的；真实 token 是决策 14 的第二道安全网。</p>
+  {% else %}
+  <p class="muted">还没有用量记录。</p>
+  {% endif %}
+</section>
+{% endblock %}

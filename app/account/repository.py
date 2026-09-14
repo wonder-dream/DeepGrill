@@ -102,6 +102,65 @@ def invite_is_usable(invite: InviteCode) -> bool:
     return invite.expires_at is None or invite.expires_at > now_iso()
 
 
+def invite_state(invite: InviteCode) -> str:
+    """把一张码的状态算成一个词 —— **后台要按状态看**，而这不是一个列（可从三列推出）。
+
+    不新增列的理由与决策 38 那条"存一个可从别处推出的字段只会多一个可能不一致的来源"
+    同一个道理：状态是 `used_by` 与 `expires_at` 的函数。
+    """
+    if invite.used_by is not None:
+        return "used"
+    if invite.expires_at is not None and invite.expires_at <= now_iso():
+        return "expired"
+    return "unused"
+
+
+def list_invites(session: Session) -> list[InviteCode]:
+    """全部邀请码（新的在前）—— 后台的列表。"""
+    return list(
+        session.execute(select(InviteCode).order_by(InviteCode.code.desc())).scalars().all()
+    )
+
+
+def delete_invite(session: Session, code: str) -> bool:
+    """作废一张**未使用**的码（决策 6：可作废回收）。
+
+    用过的码不许删：它是**发放记录**（谁用了、什么时候用的）。
+    删掉它会让"这个用户是怎么进来的"永久查不到。
+    """
+    invite = find_invite(session, code)
+    if invite is None:
+        return False
+    if invite.used_by is not None:
+        raise ValueError("这张码已经被使用 —— 它是发放记录，不能删")
+    session.delete(invite)
+    session.flush()
+    return True
+
+
+def set_password(session: Session, user: User, password_hash: str) -> None:
+    """改口令（管理员重置 / 用户自改都走这里）。
+
+    ⚠️ 它**不撤销已有令牌** —— 那是调用方的决定（重置口令时通常应该撤销，
+    见 `revoke_all_tokens`）。分清"改口令"与"踢下线"是两件事。
+    """
+    user.password_hash = password_hash
+    session.flush()
+
+
+def revoke_all_tokens(session: Session, user_id: int) -> int:
+    """撤销这个人的全部会话令牌。**管理员重置口令时必须调它** ——
+    否则旧会话仍然有效，"口令丢了"这件事就没被真正解决。"""
+    result = session.execute(delete(UserToken).where(UserToken.user_id == user_id))
+    session.flush()
+    return result.rowcount or 0
+
+
+def list_users(session: Session) -> list[User]:
+    """全部账号（后台用）。"""
+    return list(session.execute(select(User).order_by(User.id)).scalars().all())
+
+
 # ---------------------------------------------------------------------------
 # 额度账本（决策 13：单一额度点）
 # ---------------------------------------------------------------------------
@@ -127,3 +186,21 @@ def add_usage(
     row.tokens_used += tokens
     row.updated_at = now_iso()
     return row
+
+
+def recent_usage(session: Session, *, days: int = 30) -> list[QuotaLedger]:
+    """最近的额度记录（按天倒序）—— 后台的"钱花在哪"。
+
+    `days` 是"取最近多少行"而不是"最近多少天"：这个表**每天每人一行**，
+    所以行数与天数同量级，按行取更简单也够用。
+    """
+    return list(
+        session.execute(
+            select(QuotaLedger)
+            .where(QuotaLedger.kind == "day")
+            .order_by(QuotaLedger.day.desc(), QuotaLedger.user_id)
+            .limit(days)
+        )
+        .scalars()
+        .all()
+    )

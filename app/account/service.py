@@ -12,13 +12,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import secrets
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
 from app.account import repository
-from app.db.models import User
-from app.errors import Forbidden, InvalidInput, QuotaExhausted
+from app.db.models import InviteCode, QuotaLedger, User
+from app.errors import Forbidden, InvalidInput, NotFound, QuotaExhausted
 from app.security import hash_password, new_token, token_hash, verify_password
 
 #: 每日额度点上限。MVP 先用一个能演示的值；真实系数要按成本重标定（§未决 9）。
@@ -135,3 +136,67 @@ def record_tokens(session: Session, user_id: int, tokens: int) -> None:
     """把真实 token 开销记进第二道安全网（决策 14）。**不扣额度点。**"""
     if tokens > 0:
         repository.add_usage(session, user_id, day=today(), tokens=tokens)
+
+
+# ---------------------------------------------------------------------------
+# 管理员操作（决策 6 / 7）
+# ---------------------------------------------------------------------------
+def new_invite(
+    session: Session, *, created_by: int, days_valid: int | None = None
+) -> InviteCode:
+    """生成一张邀请码（决策 6：后台生成、可设有效期、可作废）。
+
+    码本身用 `secrets` 生成而不是自增序号：猜码要付出与暴力破解同等的代价。
+    **有效期是"天数"而不是时间戳** —— 后台界面给的是"7 天后过期"，
+    让调用方自己算时间戳只会多一处算错的机会（时区、格式）。
+    """
+    if days_valid is not None and days_valid <= 0:
+        raise InvalidInput("有效期必须是正数天（或留空表示永久有效）")
+
+    expires_at = None
+    if days_valid is not None:
+        expires_at = (datetime.now(UTC) + timedelta(days=days_valid)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+    for _ in range(5):  # 撞码概率极低，但撞了就重试，不抛给用户
+        code = "DG-" + secrets.token_hex(6).upper()
+        if repository.find_invite(session, code) is None:
+            break
+    else:
+        raise InvalidInput("生成邀请码失败（连续撞码）—— 请重试")
+
+    invite = repository.create_invite(session, code, expires_at=expires_at)
+    invite.created_by = created_by
+    session.flush()
+    return invite
+
+
+def revoke_invite(session: Session, code: str) -> None:
+    """作废一张未使用的码。"""
+    try:
+        ok = repository.delete_invite(session, code)
+    except ValueError as e:
+        raise InvalidInput(str(e)) from e
+    if not ok:
+        raise NotFound("这张邀请码不存在")
+
+
+def admin_reset_password(session: Session, *, user_id: int, new_password: str) -> int:
+    """管理员重置口令（决策 7：忘密码 = 管理员后台重置，不做邮箱找回）。
+
+    返回被撤销的令牌数 —— **重置口令必须同时踢下线**，否则旧会话还能用，
+    "口令丢了"就没被真正解决。
+    """
+    if len(new_password) < 8:
+        raise InvalidInput("口令至少 8 位")
+    user = repository.get_user(session, user_id)
+    if user is None:
+        raise NotFound("这个账号不存在")
+    repository.set_password(session, user, hash_password(new_password))
+    return repository.revoke_all_tokens(session, user_id)
+
+
+def usage_summary(session: Session, *, days: int = 30) -> list[QuotaLedger]:
+    """最近的额度记录（后台看"钱花在哪"，决策 14）。"""
+    return repository.recent_usage(session, days=days)

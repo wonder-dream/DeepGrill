@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}邀请码 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>邀请码</h1>
+  <p class="muted">注册 = 邀请码（决策 6）。名额由"发了多少码"决定，而不是一个全局计数器。</p>
+  <form method="post" action="/admin/invites">
+    <p><label>有效期（天，留空 = 永久有效）
+      <input type="text" name="days" size="6" placeholder="如 7"></label></p>
+    <p><button class="button" type="submit">生成一张</button></p>
+  </form>
+</section>
+
+<section class="card">
+  <table>
+    <thead><tr><th>码</th><th>状态</th><th>有效期</th><th>使用者</th><th></th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td><code>{{ row.invite.code }}</code></td>
+        <td>
+          {% if row.state == "unused" %}未使用
+          {% elif row.state == "used" %}已使用
+          {% else %}<span class="muted">已过期</span>{% endif %}
+        </td>
+        <td class="muted">{{ row.invite.expires_at or "永久" }}</td>
+        <td class="muted">{{ row.invite.used_by or "—" }}{% if row.invite.used_at %} · {{ row.invite.used_at }}{% endif %}</td>
+        <td>
+          {% if row.state == "unused" %}
+          <form method="post" action="/admin/invites/{{ row.invite.code }}/revoke">
+            <button class="link" type="submit">作废</button>
+          </form>
+          {% else %}
+          <span class="muted">—</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">用过的码不能删：它是**发放记录**（谁用了、什么时候）——
+  删掉它，"这个用户是怎么进来的"就永久查不到了。</p>
+</section>
+
+<section class="card"><p><a class="button" href="/admin">回后台</a></p></section>
+{% endblock %}

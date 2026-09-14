@@ -20,6 +20,7 @@ from app.deps import get_settings
 from app.errors import AppError, NotFound
 from app.web import (
     admin_page,
+    admin_users_page,
     auth_page,
     bank_page,
     feedback_page,
@@ -66,6 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(interview_page.router)
     app.include_router(report_page.router)
     app.include_router(admin_page.router)
+    app.include_router(admin_users_page.router)
     app.include_router(feedback_page.router)
 
     _install_error_handlers(app)

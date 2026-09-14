@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}账号 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>账号</h1>
+  {% if request.query_params.get("reset") == "ok" %}
+  <p class="muted">口令已重置，该用户的全部会话已被踢下线（旧令牌作废）。</p>
+  {% endif %}
+  <p class="muted">忘密码 = 管理员在这里重置（决策 7：不做邮箱找回，不需要 SMTP）。</p>
+</section>
+
+<section class="card">
+  {% for row in rows %}
+  <article>
+    <h3>#{{ row.account.id }} · {{ row.account.username }}
+      {% if row.account.role == "owner" %}<span class="muted">（owner）</span>{% endif %}</h3>
+    <p class="muted">{{ row.account.email }} · 注册于 {{ row.account.created_at }}</p>
+    <p>今日额度：用掉 {{ row.used_today }}，还剩 <strong>{{ row.remaining }}</strong></p>
+    <form method="post" action="/admin/users/{{ row.account.id }}/password">
+      <p><input type="password" name="new_password" size="24" required minlength="8"
+          placeholder="新口令（至少 8 位）">
+        <button class="button" type="submit">重置口令</button></p>
+    </form>
+  </article>
+  {% endfor %}
+</section>
+
+<section class="card"><p><a class="button" href="/admin">回后台</a></p></section>
+{% endblock %}
