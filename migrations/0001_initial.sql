@@ -33,7 +33,7 @@ CREATE TABLE users (
     email         TEXT    NOT NULL UNIQUE,
     username      TEXT    NOT NULL,
     password_hash TEXT    NOT NULL,
-    role          TEXT    NOT NULL DEFAULT 'user',
+    role          TEXT    NOT NULL DEFAULT 'user' CHECK (role IN ('owner', 'user')),
     created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 -- 没有 deleted_at：注销走硬删（决策 21）—— 删身份与原文，只把判定数据聚合进
@@ -100,8 +100,8 @@ CREATE TABLE knowledge_points (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     domain_id      INTEGER NOT NULL REFERENCES domains(id),
     name           TEXT    NOT NULL,
-    status         TEXT    NOT NULL DEFAULT 'draft',
-    origin         TEXT    NOT NULL DEFAULT 'proposed',
+    status         TEXT    NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed')),
+    origin         TEXT    NOT NULL DEFAULT 'proposed' CHECK (origin IN ('proposed', 'manual')),
     exclusions     TEXT,
     question_count INTEGER NOT NULL DEFAULT 0
 );
@@ -144,21 +144,29 @@ CREATE TABLE knowledge_point_edges (
 -- ---------------------------------------------------------------------------
 CREATE TABLE questions (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind              TEXT    NOT NULL,
+    kind              TEXT    NOT NULL CHECK (kind IN ('knowledge', 'design')),
     stem              TEXT    NOT NULL,
-    difficulty        INTEGER NOT NULL,
+    difficulty        INTEGER NOT NULL CHECK (difficulty BETWEEN 1 AND 5),
     primary_point_id  INTEGER REFERENCES knowledge_points(id),
     good_criteria     TEXT,
     bad_criteria      TEXT,
-    answer_tier       TEXT,
+    answer_tier       TEXT    CHECK (answer_tier IS NULL OR answer_tier IN ('common', 'long_tail')),
     reference_answer  TEXT,
-    origin            TEXT    NOT NULL DEFAULT 'generated',
+    origin            TEXT    NOT NULL DEFAULT 'generated'
+                              CHECK (origin IN ('seed', 'generated', 'promoted')),
     owner_user_id     INTEGER REFERENCES users(id),
-    visibility        TEXT    NOT NULL DEFAULT 'public',
+    visibility        TEXT    NOT NULL DEFAULT 'public'
+                              CHECK (visibility IN ('public', 'private', 'pending', 'hidden')),
     created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 -- kind: knowledge / design（决策 20）；项目深挖题只存在于私有题集
 -- difficulty: 1-5（继承 v1 的定义与标定）
+--
+-- ⚠️ 上面几个 CHECK 是**决策 57 的落地**：原先枚举列只靠业务层，SQLite 会静默接受
+--    `kind='K'`、`difficulty=9` 这类错值。事后加约束要写迁移，而此刻表是空的 ——
+--    所以那一笔"有意识的欠债"现在可以零成本还掉。
+--    留 NULL 的那些列（answer_tier / primary_point_id）允许 NULL：前者是"还没定档"，
+--    后者是 v1 导入的容错余地（见下）。
 -- primary_point_id: 必填由业务层保证（SQLite 加列时为兼容 v1 导入留了空），
 --   它只管挂载与自修复，**不参与掌握度计算**（决策 24）
 -- good_criteria / bad_criteria: **离线素材**，不是产品数据 —— 供知识层构建管道
@@ -170,9 +178,9 @@ CREATE TABLE questions (
 -- visibility: public / private / pending（晋升待门禁）/ hidden（质量信号差）
 
 CREATE TABLE question_points (
-    question_id INTEGER NOT NULL REFERENCES questions(id),
-    point_id    INTEGER NOT NULL REFERENCES knowledge_points(id),
-    source      TEXT    NOT NULL DEFAULT 'authored',
+    question_id  INTEGER NOT NULL REFERENCES questions(id),
+    point_id     INTEGER NOT NULL REFERENCES knowledge_points(id),
+    source       TEXT    NOT NULL DEFAULT 'authored' CHECK (source IN ('authored', 'inferred')),
     PRIMARY KEY (question_id, point_id)
 );
 -- 一道综合题还牵动哪些知识点（决策 24）。用于按知识点组卷与覆盖检查，
@@ -181,9 +189,11 @@ CREATE TABLE question_points (
 CREATE TABLE question_flags (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     question_id INTEGER NOT NULL REFERENCES questions(id),
-    kind        TEXT    NOT NULL,
+    kind        TEXT    NOT NULL
+                        CHECK (kind IN ('conflict', 'suspect_mount', 'suggest_move')),
     detail      TEXT,
     status      TEXT    NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open', 'resolved', 'dismissed'))
 );
 -- kind: conflict（与同知识点其他题口径不一致）/ suspect_mount（长期答不到本知识点的
 --   考察点）/ suggest_move
@@ -208,16 +218,20 @@ CREATE TABLE candidate_profiles (
 CREATE TABLE interviews (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id        INTEGER NOT NULL REFERENCES users(id),
-    mode           TEXT    NOT NULL,
+    mode           TEXT    NOT NULL CHECK (mode IN ('interview', 'drill')),
     plan           TEXT,
-    status         TEXT    NOT NULL DEFAULT 'active',
+    status         TEXT    NOT NULL DEFAULT 'active'
+                           CHECK (status IN ('active', 'finished', 'abandoned')),
     quota_charged  INTEGER NOT NULL DEFAULT 0,
     report_body    TEXT,
     report_summary TEXT,
     started_at     TEXT    NOT NULL DEFAULT (datetime('now')),
     ended_at       TEXT
 );
--- mode: interview（完整面试）/ drill（单题追问）/ browse（题库刷题）
+-- mode: **interview（完整面试）/ drill（单题追问）** —— `browse` 不建面试行！
+--   题库练习按 CONTEXT.md 的定义「不进入面试、也没有编排」，且额度点为 0、
+--   不调 LLM。给它建行会连带 `sessions.question_id NOT NULL` 逼你挑一道题占位。
+--   （第一版注释里写着 browse，与实现不符 —— 决策 63 那轮一并收敛掉了。）
 -- plan: 编排配置 + 调整日志（初始题单 / 每题追问轮数上限 / 是否要报告，
 --   以及面试过程中编排层的每次跳过与插入）。调整必须留痕，否则报告无法解释
 --   "为什么这场只问了 5 道而计划是 6 道"。
@@ -247,8 +261,8 @@ CREATE TABLE sessions (
     interview_id INTEGER NOT NULL REFERENCES interviews(id),
     question_id INTEGER NOT NULL REFERENCES questions(id),
     seq         INTEGER NOT NULL,
-    status      TEXT    NOT NULL DEFAULT 'active',
-    max_rounds  INTEGER NOT NULL,
+    status      TEXT    NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'finished')),
+    max_rounds  INTEGER NOT NULL CHECK (max_rounds >= 1),
     UNIQUE (interview_id, seq)
 );
 -- 第二层（题会话）。max_rounds 是**编排参数，不再由难度推导**（ADR-0001）——
@@ -258,8 +272,8 @@ CREATE TABLE attempts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id    INTEGER NOT NULL REFERENCES sessions(id),
     round_no      INTEGER NOT NULL,
-    is_followup   INTEGER NOT NULL DEFAULT 0,
-    input_mode    TEXT    NOT NULL DEFAULT 'text',
+    is_followup   INTEGER NOT NULL DEFAULT 0 CHECK (is_followup IN (0, 1)),
+    input_mode    TEXT    NOT NULL DEFAULT 'text' CHECK (input_mode IN ('voice', 'text')),
     stt_text      TEXT,
     answer_text   TEXT,
     feedback_text TEXT,
@@ -286,7 +300,7 @@ CREATE TABLE evaluations (
     scores      TEXT,
     total_score REAL,
     review      TEXT,
-    status      TEXT    NOT NULL DEFAULT 'ok'
+    status      TEXT    NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'failed'))
 );
 -- 取代 v1 的 judgments。**题会话级的最终评分**（不是逐轮评分）。
 -- scores: accuracy / completeness / clarity / depth 四维 JSON，
@@ -317,7 +331,9 @@ CREATE TABLE question_feedback (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     question_id           INTEGER NOT NULL REFERENCES questions(id),
     user_id               INTEGER REFERENCES users(id),
-    kind                  TEXT    NOT NULL,
+    kind                  TEXT    NOT NULL
+                                  CHECK (kind IN ('wrong', 'unclear', 'duplicate',
+                                                  'not_interview', 'other')),
     detail                TEXT,
     duplicate_question_ids TEXT,
     created_at            TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -338,9 +354,10 @@ CREATE TABLE jobs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     kind         TEXT    NOT NULL,
     payload      TEXT,
-    status       TEXT    NOT NULL DEFAULT 'pending',
-    attempts     INTEGER NOT NULL DEFAULT 0,
-    max_attempts INTEGER NOT NULL DEFAULT 3,
+    status       TEXT    NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending', 'running', 'done', 'failed')),
+    attempts     INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    max_attempts INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts >= 1),
     worker_id    TEXT,
     heartbeat_at TEXT,
     progress     REAL,

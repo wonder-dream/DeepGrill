@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
+from app.db.startup import assert_database_is_ready
 from app.deps import get_settings
 from app.errors import AppError, NotFound
 from app.web import admin_page, auth_page, bank_page, home_page, interview_page, me_page, report_page
@@ -23,6 +24,13 @@ from app.web.templating import WEB_DIR, render
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
+
+    # 启动期只做"读配置 + 校验"（ADR-0010）—— **不建表、不迁移**（AGENTS.md §3.7），
+    # 但**要拒绝带着占位口令的库**（决策 58）。这一条与"什么都不做"不冲突：
+    # 它是检查，不是副作用。
+    assert_database_is_ready(
+        settings.resolved_database_path(), require_secure=settings.require_secure_db
+    )
 
     app = FastAPI(
         title="DeepGrill",

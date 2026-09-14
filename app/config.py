@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     # 上线检查项，不是默认值。
     session_cookie_secure: bool = False
 
+    #: 启动时是否**拒绝带着占位口令的库**（决策 58）。
+    #:
+    #: 默认 `False`：本机开发就是从一个占位 owner 开始的（`0001` 里那条 INSERT），
+    #: 而"开发时也要先改口令"只会让人绕开这个检查 —— 那比没有检查更糟。
+    #: **线上必须设成 `true`**：那时"上线前记得替换"不再是一句提醒，而是启动就拦。
+    require_secure_db: bool = False
+
     def resolved_database_path(self) -> Path:
         """把相对路径解析到仓库根下。"""
         p = self.database_path
