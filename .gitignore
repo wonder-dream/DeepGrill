@@ -23,6 +23,14 @@ pytest-cache-files-*/
 # `python -m migrations.run` 生成，因此不需要进库。
 data/
 
+# 密钥与机器相关的配置。**这一条是安全底线**：`app/config.py` 会读 `.env`，
+# 而它里面装的是 LLM API key —— 一旦进库就是一次真实的凭据泄露
+# （v1 就把真实 key 与 cookie 打进过部署包，见 docs/v1现状-20260913.md §6-P4）。
+# 要提交模板就提交 `.env.example`，它下面有单独的例外。
+.env
+.env.*
+!.env.example
+
 # 编辑器
 .idea/
 .vscode/

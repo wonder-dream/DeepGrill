@@ -3,9 +3,21 @@
 模型名按用途命名、集中在配置里（决策 50）：代码只引用用途名
 （`settings.model_interviewer`），不写死型号串 —— 换模型是改配置，不是改代码。
 
-为什么要显式 `env_prefix`：v1 用 `config.yaml` + `.env` 两套来源，同一个键
-在两边出现过，于是"当前值到底是哪个"要靠读代码确认。v2 只有一个来源即环境，
-前缀让 `DEEPGRILL_*` 与机器上其他变量不会撞名。
+**顺序**（后者覆盖前者，pydantic-settings 的默认语义）：
+
+```
+类默认值  →  .env 文件  →  真实环境变量
+```
+
+于是 `.env` 能当"本机默认值"，而临时换一次只要在环境变量里给一下
+（`$env:DEEPGRILL_LLM_API_KEY = "sk-…"`）—— 不必去改文件。
+
+`.env` 的路径**相对仓库根解析**（不是 cwd），理由与库路径、prompt 路径相同：
+从别的目录启动不该静默读到另一个配置（ADR-0010 记的同类入口）。
+
+为什么要显式 `env_prefix`：v1 用 `config.yaml` + `.env` 两套来源、同一个键
+在两边都出现过，于是"当前值到底是哪个"要靠读代码确认。v2 只有一个来源
+（环境，含 `.env` 这一层），前缀让 `DEEPGRILL_*` 与机器上其他变量不会撞名。
 """
 
 from __future__ import annotations
@@ -25,7 +37,12 @@ class Settings(BaseSettings):
     没有默认值的一项判据：**猜错了会有真实后果**（如 API key）。
     """
 
-    model_config = SettingsConfigDict(env_prefix="DEEPGRILL_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="DEEPGRILL_",
+        env_file=REPO_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     # 库路径相对**仓库根**解析，不是相对 cwd —— 否则从别的目录启动会静默
     # 指向另一个库（ADR-0010 记的同类入口）。

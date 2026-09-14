@@ -32,8 +32,45 @@ python -m uvicorn app.main:app    # 起服务
 演示账号 `demo@local` / `deepgrill-demo`（口令是公开常量，只用于本地演示库）；
 邀请码 `DEEPGRILL-DEMO` 可用来注册新账号。
 
-**要真调模型**需要 `DEEPGRILL_LLM_API_KEY`。没有它应用照样起得来 —— 判定会走
-降级路径（页面上明确提示、本轮记为「未涉及」、会话不中断），而不是崩掉或假装成功。
+### 配 API key（要真调模型才需要）
+
+**它只影响"面试官说什么"**：不配也能注册、登录、浏览题库、开面试、出报告 ——
+判定会走降级路径（页面上明确提示、本轮记为「未涉及」、会话**不中断**），
+而不是崩掉或假装成功。
+
+**方式一：写进 `.env`（推荐，本机长期用）**
+
+```bash
+cp .env.example .env        # Windows: Copy-Item .env.example .env
+```
+
+然后编辑 `.env`，填三行：
+
+```ini
+DEEPGRILL_LLM_API_KEY=sk-…
+DEEPGRILL_LLM_BASE_URL=https://api.deepseek.com/v1
+DEEPGRILL_MODEL_INTERVIEWER=deepseek-v4.1-flash
+```
+
+`.env` 已被 `.gitignore` 挡住（**它装的是密钥，不要提交**）；`.env.example` 是
+可提交的模板。
+
+**方式二：只给这一次（临时）**
+
+```powershell
+$env:DEEPGRILL_LLM_API_KEY = "sk-…"     # Windows PowerShell
+python -m uvicorn app.main:app
+```
+
+```bash
+export DEEPGRILL_LLM_API_KEY=sk-…        # macOS / Linux
+```
+
+**优先级**：真实环境变量 > `.env` > 代码里的默认值（所以临时换一次不必改文件）。
+
+配置只有一个来源即环境（含 `.env` 这一层），全部键名以 `DEEPGRILL_` 开头；
+模型名按**用途**命名（决策 50），换模型是改这个值、不是改代码。可配的键与默认值
+见 `.env.example` 与 `app/config.py`（配置的权威在那两个地方，本文不复述）。
 
 ### 已经能用的
 
