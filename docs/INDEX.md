@@ -71,34 +71,45 @@
 
 ## 代码的现状（哪些已经存在、哪些还没有）
 
-**MVP 已经能跑。** 那条链是：登录 → 题库挑题 → 逐轮追问 → 收尾 → 面试报告 →
-掌握度矩阵。跑法与演示账号见 `README.md`。
+**那条主链已经跑通**：登录 → 题库挑题 → 逐轮追问 → 收尾 → 面试报告 → 掌握度矩阵。
+在这条链之外，v1 题目已全量导入、知识层管道与人审页、简历→私有题集、注销与导出、
+反馈闭环、后台与观测页都在了。跑法与演示账号见 `README.md`。
 
 | 已经有 | 位置 |
 |---|---|
-| v2 的**表结构权威**（执行 `python -m migrations.run` 得到全库） | `migrations/0001_initial.sql` |
-| 迁移执行器 + 14 条测试（回滚 / 外键 / 记账 / splitter 都各有守门测试） | `migrations/_runner.py`、`migrations/test_runner.py` |
-| 组装根、配置、引擎与会话、错误页 | `app/main.py`、`app/config.py`、`app/db/`、`app/errors.py`、`app/deps.py` |
-| 全部 24 张表的映射 + 与迁移逐列对账 | `app/db/models.py`、`app/db/test_models.py` |
-| LLM 客户端（重试纪律 / JSON 容错）+ prompt 从文件读 | `app/llm/`、`prompts/` |
-| 领域：账号 / 题库 / 面试 / 报告 / 知识（掌握度） | `app/account/`、`app/bank/`、`app/interview/`、`app/report/`、`app/knowledge/` |
-| 页面：首页 / 题库 / 登录注册 / 我的 / 答题 / 报告 | `app/web/`（一个文件 = 一个 URL） |
-| 演示数据与运维命令、登录可用的 demo 账号 | `app/cli.py`、`app/offline/seed.py` |
+| v2 的**表结构权威**（执行 `python -m migrations.run` 得到全库） | `migrations/0001_initial.sql`（后续增量：`migrations/0002_feedback_workflow.sql`） |
+| 迁移执行器（按文件事务 / 逐语句执行 / 校验和漂移检测） | `migrations/_runner.py`、`migrations/test_runner.py` |
+| 组装根、配置、引擎与会话、启动期校验、错误页 | `app/main.py`、`app/config.py`、`app/db/`、`app/errors.py`、`app/deps.py` |
+| 全部表的映射 + 与迁移逐列对账 | `app/db/models.py`、`app/db/test_models.py` |
+| LLM 客户端（重试纪律 / JSON 容错 / token 记账）+ prompt 从文件读 | `app/llm/`、`prompts/` |
+| 领域：账号 / 题库 / 面试 / 报告 / 知识（掌握度）/ 画像与注销 | `app/account/`、`app/bank/`、`app/interview/`、`app/report/`、`app/knowledge/`、`app/profile/` |
+| 离线队列与 worker（原子认领 / 心跳回退 / 幂等 / TTL 回收 / 任务报告） | `app/offline/`（`jobs` · `worker` · `tasks` 三个模块） |
+| 离线管道：简历→档案→私有题集、知识层提议与人审 | `app/offline/profile_pipeline.py`、`app/offline/knowledge_pipeline.py` |
+| 页面：首页 / 题库 / 登录注册 / 我的 / 答题 / 报告 / 反馈 / 后台 / 观测 | `app/web/`（一个文件 = 一个 URL） |
+| 观测页（决策 23）：离线队列 / 待定池 / 库体积 / 质量仪表板 / 离线报告 | `app/web/observability.py`、`app/web/observability_page.py` |
+| 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker`） | `app/cli.py`、`app/offline/seed.py` |
+| v1 题目导入（只读连接 + 幂等 + 标签映射） | `tools/import_v1.py`、`tools/test_import_v1.py` |
 | 对照工具（文档 vs SQL 字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
 | 依赖与 pytest 配置（收集范围已配死） | `pyproject.toml` |
 
 | 还没有 | 归属 |
 |---|---|
-| v1 题目导入（`tools/import_v1.py`） | §未决 2 |
+| 语音输入：**接口已留**（`attempts.input_mode` / `stt_text` 在表里，判分 prompt 有语音分支）、**STT 未接** | 决策 9、32 / ADR-0009 |
+| 晋升（私有题 → 公共题库，走内容门禁）与 `question_flags` 的冲突检测 | 决策 5、9 |
+| 面试页 SSE 流式（ADR-0004 给面试页的第三件事） | ADR-0004 |
+| 知识层全量提议（分批 + 嵌入聚类）—— 现在只支持小样本单次调用 | 决策 44、46 |
+| 额度耗尽时的降级提示（降到纯题库模式） | 决策 13 |
+| 阈值标定的实验脚本（`docs/v1行为规格.md` §11 的每个数字） | §未决 6 |
+| 验收标准 | §未决 5 |
 | ruff / mypy 与它们的提交前检查 | 决策 38（未实施） |
-| 语音输入（**接口已留，STT 未接**）/ 晋升 / admin 其余页面 / 观测页 / SSE 流式 | 基线 In 里尚未开工或未完成的部分 |
-| 迁移通道、测试策略、验收标准、阈值标定 | §未决 2 / 3 / 5 / 6 |
 
-> **已经还掉的两笔债**（原先在这张表里）：枚举列的 `CHECK` 约束（决策 57）已进
+> **已经还掉的三笔债**（原先在这张表里）：枚举列的 `CHECK` 约束（决策 57）已进
 > `migrations/0001_initial.sql`；**启动拒绝占位口令**（决策 58）已进
-> `app/db/startup.py`（开关 `DEEPGRILL_REQUIRE_SECURE_DB`，**线上必须开**）。
+> `app/db/startup.py`（开关 `DEEPGRILL_REQUIRE_SECURE_DB`，**线上必须开**）；
+> **v1 题目导入**（§未决 2）已进 `tools/import_v1.py`。
 
 > **收藏夹不在这张表里** —— 它已经建好了（决策 63，`user_favorites`，见 `migrations/0001_initial.sql`）。
+> **反馈闭环也不在** —— 决策 64 把它定成继承 v1 的工单形态（`migrations/0002_feedback_workflow.sql`）。
 
 > **这张表会过期**，它的用途只是"接手时别以为代码已经在那儿了"。`docs/v2范围基线.md` §未决是待办清单的权威。
 
