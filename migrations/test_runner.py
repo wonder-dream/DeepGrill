@@ -57,10 +57,22 @@ def fake_migrations(tmp_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return d
 
 
+def _migration_names() -> list[str]:
+    """磁盘上全部迁移的文件名（排序）。
+
+    ⚠️ 断言不要写死 `["0001_initial.sql"]`：**加一条迁移就会红**，而那时该改的是
+    测试，不是迁移。第一版就是写死的，于是 0002 一落地两条测试同时红 ——
+    修的方式是把它改成"与磁盘一致"，这样 0003、0004 都不会再触发同类修改。
+    """
+    from migrations._runner import _migration_files
+
+    return [p.name for p in _migration_files()]
+
+
 def test_initial_creates_all_tables(tmp_dir: Path) -> None:
-    """`0001_initial.sql` 跑完应当建出设计里的全部表，并留下记账。"""
+    """跑完全部迁移后应当建出设计里的全部表，并留下记账。"""
     db = tmp_dir / "t.db"
-    assert migrate(db) == 1
+    assert migrate(db) == len(_migration_names())
 
     names = _tables(db)
     expected = {
@@ -72,7 +84,7 @@ def test_initial_creates_all_tables(tmp_dir: Path) -> None:
         "user_favorites",
     }
     assert expected <= names, f"缺少：{expected - names}"
-    assert _recorded(db) == ["0001_initial.sql"]
+    assert _recorded(db) == _migration_names()
 
 
 def _columns(db: Path, table: str) -> list[str]:
@@ -379,7 +391,7 @@ def test_cli_migrate_and_check(tmp_dir: Path) -> None:
 
     db = tmp_dir / "cli.db"
     assert main(["--db", str(db)]) == 0
-    assert _recorded(db) == ["0001_initial.sql"]
+    assert _recorded(db) == _migration_names()
     assert main(["--db", str(db)]) == 0, "幂等：第二遍也要成功"
     assert main(["--db", str(db), "--check"]) == 0
     assert main(["--db"]) == 2, "缺参数要报错退出，不是静默用默认库"

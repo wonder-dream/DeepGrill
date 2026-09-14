@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}我的反馈 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>我的反馈</h1>
+  <p class="muted">你报过的题目问题与处理状态。同一道题在处理完之前只能报一次。</p>
+</section>
+
+<section class="card">
+  {% if not rows %}
+  <p class="muted">还没有报过问题。在题目页可以报"答案有错""题干不清楚"这类问题。</p>
+  {% else %}
+  <table>
+    <thead><tr><th>题</th><th>类型</th><th>状态</th><th>说明</th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td><a href="/bank/{{ r.question_id }}">#{{ r.question_id }}</a></td>
+        <td>{{ labels.get(r.kind, r.kind) }}</td>
+        <td>
+          {% if r.status == "open" %}<span class="warn">待处理</span>
+          {% elif r.status == "resolved" %}已处理
+          {% else %}<span class="muted">已驳回</span>{% endif %}
+        </td>
+        <td class="muted">{{ r.detail or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="card"><p><a class="button" href="/me">回我的</a></p></section>
+{% endblock %}

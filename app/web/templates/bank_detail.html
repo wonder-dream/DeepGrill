@@ -44,6 +44,31 @@
 </section>
 
 <section class="card">
+  <h2>报问题</h2>
+  {% if request.query_params.get("feedback") == "ok" %}
+  <p class="muted">已提交，谢谢。可以在<a href="/me/feedback">我的反馈</a>里看处理进度。</p>
+  {% endif %}
+  <form method="post" action="/bank/{{ data.question.id }}/feedback">
+    <p>
+      <label>类型
+        <select name="kind">
+          <option value="wrong">答案或评分标准有错</option>
+          <option value="unclear" selected>题干表述不清楚</option>
+          <option value="duplicate">和别的知识点重复</option>
+          <option value="not_interview">这题不适合面试</option>
+          <option value="other">其他问题</option>
+        </select>
+      </label>
+    </p>
+    <p><input type="text" name="detail" size="60" placeholder="补充说明（可选）"></p>
+    <p><input type="text" name="duplicate_point_ids" size="20"
+        placeholder="若选“重复”，填知识点 id（逗号分隔）"></p>
+    <p><button class="button" type="submit">提交</button></p>
+  </form>
+  <p class="muted">需要登录；同一道题在处理完之前只能报一次。</p>
+</section>
+
+<section class="card">
   <p><a class="button" href="/bank">回题库</a></p>
 </section>
 {% endblock %}

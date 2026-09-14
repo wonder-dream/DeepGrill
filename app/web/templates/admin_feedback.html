@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}反馈处理 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>反馈处理</h1>
+  <dl>
+    <dt>待处理</dt><dd>{{ counts.open }}</dd>
+    <dt>已处理</dt><dd>{{ counts.resolved }}</dd>
+    <dt>已驳回</dt><dd>{{ counts.dismissed }}</dd>
+  </dl>
+</section>
+
+<section class="card">
+  {% if not rows %}
+  <p class="muted">没有待处理的反馈。</p>
+  {% else %}
+  {% for r in rows %}
+  <article>
+    <h3>#{{ r.question_id }} · {{ labels.get(r.kind, r.kind) }}</h3>
+    {% set q = question_of(r) %}
+    {% if q %}<p>{{ q.stem }}</p>{% else %}<p class="muted">（这道题已不在公共题库里）</p>{% endif %}
+    {% if r.detail %}<p class="muted">用户说：{{ r.detail }}</p>{% endif %}
+    {% if r.duplicate_question_ids %}
+    <p class="muted">用户指认重复的知识点：{{ r.duplicate_question_ids | join("、") }}</p>
+    {% endif %}
+    <form method="post" action="/admin/feedback/{{ r.id }}/resolved">
+      <p><input type="text" name="note" size="50" placeholder="处理说明（可选，会留痕）"></p>
+      <p><button class="button" type="submit">标记已处理</button></p>
+    </form>
+    <form method="post" action="/admin/feedback/{{ r.id }}/dismissed">
+      <p><input type="text" name="note" size="50" placeholder="驳回理由（可选）"></p>
+      <p><button class="button" type="submit">驳回</button></p>
+    </form>
+  </article>
+  {% endfor %}
+  {% endif %}
+</section>
+
+<section class="card"><p><a class="button" href="/admin">回后台</a></p></section>
+{% endblock %}

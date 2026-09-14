@@ -21,39 +21,59 @@ from app.db.models import Interview, User, metadata
 from migrations._runner import migrate
 
 SQL_FILE = Path(__file__).resolve().parents[2] / "migrations" / "0001_initial.sql"
+MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
 #: 出现在表级约束里、但不是列名的词。踩过一次：`RE.findall(r"\w+", "PRIMARY KEY (...)")`
 #: 会把 "PRIMARY" 本身当成一个列名，于是每个复合主键表都报"迁移多一列 primary"。
 SQL_KEYWORDS = {"primary", "key", "unique", "foreign", "check", "constraint"}
 
 
+def _migration_files() -> list[Path]:
+    """全部迁移文件（按文件名排序）。
+
+    ⚠️ **不能只看 `0001`**：第一条迁移之后的 `ALTER TABLE ... ADD COLUMN` 也是
+    schema 的一部分（`0002` 加了 `question_feedback.status`）。第一版只读 `0001`，
+    于是加了 0002 之后这条对账测试会报"models 多一列 status" —— 那时该改的是
+    测试的读取范围，不是把列删掉。
+    """
+    return sorted(p for p in MIGRATIONS_DIR.glob("*.sql") if not p.name.startswith("_"))
+
+
 def _sql_schema() -> dict[str, set[str]]:
-    """从迁移文件解析出 表名 → 列名集合。
+    """从**全部迁移文件**解析出 表名 → 列名集合。
 
     解析规则与 `migrations/_runner.py` 的 splitter 同一前提：迁移文件是受控的
-    （列定义形如 `name TYPE`，复合主键写在 `PRIMARY KEY (...)` 里）。
+    （列定义形如 `name TYPE`，复合主键写在 `PRIMARY KEY (...)` 里，加列形如
+    `ALTER TABLE t ADD COLUMN name TYPE`）。
     """
-    body = SQL_FILE.read_text(encoding="utf-8")
     schema: dict[str, set[str]] = {}
-    for m in re.finditer(
-        r"CREATE TABLE(?: IF NOT EXISTS)?\s+(\w+)\s*\((.*?)\n\);", body, re.S
-    ):
-        name, inner = m.group(1), m.group(2)
-        cols: set[str] = set()
-        for line in inner.split("\n"):
-            line = line.strip()
-            if not line or line.startswith("--"):
-                continue
-            cm = re.match(r'^[\["]?(\w+)[\]"]?\s+[A-Z]', line)
-            # 表级约束行（`PRIMARY KEY (a, b)`）的第一词是关键字，不是列名 ——
-            # 踩过一次：它让每个复合主键表都报"迁移多一列 primary"。
-            if cm and cm.group(1).lower() not in SQL_KEYWORDS:
-                cols.add(cm.group(1).lower())
-        for pk in re.findall(r"PRIMARY KEY\s*\(([^)]+)\)", inner):
-            cols |= {
-                c.lower() for c in re.findall(r"\w+", pk) if c.lower() not in SQL_KEYWORDS
-            }
-        schema[name] = cols
+    for path in _migration_files():
+        body = path.read_text(encoding="utf-8")
+        for m in re.finditer(
+            r"CREATE TABLE(?: IF NOT EXISTS)?\s+(\w+)\s*\((.*?)\n\);", body, re.S
+        ):
+            name, inner = m.group(1), m.group(2)
+            cols: set[str] = set()
+            for line in inner.split("\n"):
+                line = line.strip()
+                if not line or line.startswith("--"):
+                    continue
+                cm = re.match(r'^[\["]?(\w+)[\]"]?\s+[A-Z]', line)
+                # 表级约束行（`PRIMARY KEY (a, b)`）的第一词是关键字，不是列名 ——
+                # 踩过一次：它让每个复合主键表都报"迁移多一列 primary"。
+                if cm and cm.group(1).lower() not in SQL_KEYWORDS:
+                    cols.add(cm.group(1).lower())
+            for pk in re.findall(r"PRIMARY KEY\s*\(([^)]+)\)", inner):
+                cols |= {
+                    c.lower() for c in re.findall(r"\w+", pk) if c.lower() not in SQL_KEYWORDS
+                }
+            schema.setdefault(name, set()).update(cols)
+
+        # 后继迁移里的加列（0002 起）
+        for m in re.finditer(
+            r"ALTER TABLE\s+(\w+)\s+ADD COLUMN\s+[\[\"]?(\w+)[\]\"]?", body, re.I
+        ):
+            schema.setdefault(m.group(1), set()).add(m.group(2).lower())
     return schema
 
 

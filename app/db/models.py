@@ -317,6 +317,8 @@ question_feedback = Table(
     Column("detail", Text),
     Column("duplicate_question_ids", JsonText),
     Column("created_at", String, nullable=False, server_default=_NOW),
+    # `0002_feedback_workflow.sql` 加的列（v1 的工单三态，§未决 12）
+    Column("status", String, nullable=False, server_default="open"),
 )
 
 task_logs = Table(
