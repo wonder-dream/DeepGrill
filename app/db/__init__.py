@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, event
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session as SQLAlchemySession
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.types import TEXT, TypeDecorator
 
 
@@ -97,10 +98,30 @@ class JsonText(TypeDecorator):
         return json.loads(value)
 
 
+class Session(SQLAlchemySession):
+    """会话的薄子类：加一个**认表名**的 `one`。
+
+    为什么需要它：v2 的仓储层按领域分（`bank/repository.py` 只碰题目表…），
+    而"取一行"这个动作要重复很多次。`session.get(Model, id)` 要求调用方知道
+    模型类 —— 而模型集中在 `app/db/models.py`，领域层因此要多 import 一个类。
+    `session.one("questions", 12)` 让领域层只记表名（与它自己的 SQL 一致），
+    同时仍然是**类型安全**的（表名错在运行时立刻 KeyError，不会静默查错表）。
+    """
+
+    def one(self, table_name: str, pk: object) -> object | None:
+        from app.db import models
+
+        for table, cls in models.CLASS_BY_TABLE.items():
+            if table.name == table_name:
+                return self.get(cls, pk)
+        raise KeyError(f"没有映射的表：{table_name}")
+
+
 def create_session_factory(engine: Engine) -> sessionmaker[Session]:
     """会话工厂。`expire_on_commit=False`：提交后还要读对象（返回响应时）。"""
-    return sessionmaker(bind=engine, expire_on_commit=False, future=True)
-
+    return sessionmaker(
+        bind=engine, class_=Session, expire_on_commit=False, future=True
+    )
 
 def make_session_dependency(factory: sessionmaker[Session]):
     """把会话工厂包成 FastAPI 依赖。
