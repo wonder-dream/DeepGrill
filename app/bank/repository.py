@@ -119,7 +119,19 @@ def criteria_of_question(session: Session, question: Question) -> list[Criterion
     """
     if question.primary_point_id is None:
         return []
-    return criteria_of_point(session, question.primary_point_id)
+    # **主知识点 + 关联知识点**的判据（决策 24 / 80）：综合题的判分要覆盖它牵动的
+    # 每一个点，否则「一道综合题同时更新多个知识点的掌握度」这条判据根本不可能成立 ——
+    # 挂载挂上去了、判据却只读主的，格子照样只亮一个。
+    point_ids = [question.primary_point_id, *related_points(session, question.id)]
+    out: list[Criterion] = []
+    seen: set[int] = set()
+    for point_id in point_ids:
+        for criterion in criteria_of_point(session, point_id):
+            if criterion.id in seen:
+                continue
+            seen.add(criterion.id)
+            out.append(criterion)
+    return out
 
 
 def criteria_of_point(session: Session, point_id: int) -> list[Criterion]:

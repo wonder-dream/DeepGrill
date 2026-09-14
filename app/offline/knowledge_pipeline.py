@@ -391,6 +391,47 @@ def _attach_questions(session: Session, *, point_id: int, question_ids: list[int
     return updated
 
 
+def _related_ids(item: dict[str, Any], *, known: set[int], primary: int) -> list[int]:
+    """把模型给的 `related_point_ids` 收敛成**干净的**那部分（决策 80）。
+
+    · 不认识的 id 丢掉（**绝不新建**知识点 —— 与主知识点同一条纪律）
+    · 与主知识点重复的丢掉、自己重复的丢掉
+    · 上限 3 个：模型偶尔会热情地把半个清单抄回来，而每多一个点就是
+      多一套考察点进判分（也会让那个点的掌握度凭空多一格）
+    """
+    raw = item.get("related_point_ids") or []
+    if not isinstance(raw, list):
+        return []
+    out: list[int] = []
+    for value in raw:
+        try:
+            pid = int(value)
+        except (TypeError, ValueError):
+            continue
+        if pid == primary or pid not in known or pid in out:
+            continue
+        out.append(pid)
+    return out[:MAX_RELATED_POINTS]
+
+
+def _add_related_point(session: Session, *, question_id: int, point_id: int) -> None:
+    """写一行 `question_points`（决策 24 的关联轴）。
+
+    ⚠️ 幂等：装配会被重跑（`propose_batched` 的恢复方式就是再跑一次），
+    重复插入会撞主键 —— 所以先查再插。
+    """
+    from app.db.models import QuestionPoint
+
+    exists = session.execute(
+        select(QuestionPoint).where(
+            QuestionPoint.question_id == question_id,
+            QuestionPoint.point_id == point_id,
+        )
+    ).first()
+    if exists is None:
+        session.add(QuestionPoint(question_id=question_id, point_id=point_id))
+
+
 # ---------------------------------------------------------------------------
 # ④ 挂载（独立于提候选：它按**已确认的**知识点工作）
 # ---------------------------------------------------------------------------
@@ -465,8 +506,14 @@ def mount_questions(
                 result.details.append({"question_id": qid, "reason": "挂不上或目标不存在"})
                 continue
             question.primary_point_id = int(point_id)
+            related = _related_ids(item, known=known, primary=int(point_id))
+            for related_id in related:
+                _add_related_point(session, question_id=qid, point_id=related_id)
             result.mounted += 1
-            result.details.append({"question_id": qid, "point_id": int(point_id)})
+            result.details.append(
+                {"question_id": qid, "point_id": int(point_id),
+                 "related_point_ids": related}
+            )
         # 模型漏答的题也进待定池 —— 不能因为"没提到"就当它挂好了
         for q in batch:
             if q.id not in decided and q.primary_point_id is None:
@@ -514,6 +561,9 @@ def derive_edges(*args: object, **kwargs: object) -> list[object]:
 #: 一批多少道题去提候选。它同时受两个东西约束：上下文长度（越大越容易被截断）
 #: 与"跨批重复"（越小重复越多）。40 是 `docs/知识层构建管道.md` 里给的起点，
 #: 该按实测重标定（那份文档点明了它是第一个该试的参数）。
+#: 一道题最多挂在几个知识点上（主 + 关联）。上限的理由见 `_related_ids`。
+MAX_RELATED_POINTS = 3
+
 PROPOSE_BATCH = 40
 #: 粗筛聚类的相似度阈值。**同样是待标定的**：太高 → 同一个知识点被拆成好几条候选
 #: （人审时要合并很多次）；太低 → 不同的知识点被并到一起（人审时要拆开，更难）。

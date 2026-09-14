@@ -260,3 +260,94 @@ def test_prerequisite_edges_are_deliberately_not_implemented() -> None:
     （那里写了决策 48 要求的两类有依据的边）。
     """
     assert kp.derive_edges() == []
+
+
+# ---------------------------------------------------------------------------
+# 关联知识点（决策 24 / 80）：一道综合题可以同时挂在多个点上
+# ---------------------------------------------------------------------------
+def _points(session: Session, *ids: int) -> None:
+    session.add(Domain(id=1, name="D"))
+    for pid in ids:
+        session.add(
+            KnowledgePoint(id=pid, domain_id=1, name=f"点{pid}", status="confirmed")
+        )
+    session.commit()
+
+
+def test_mounting_can_attach_related_points(session: Session) -> None:
+    """**决策 80**：挂载不再只写一个点。
+
+    在这之前 `prompts/offline/mount_questions.md` 的契约是"每题给出**一个**
+    `point_id`"，于是 `question_points`（决策 24 的关联轴）在所有写入路径上都只有
+    0/1 行 —— 而「一道综合题同时更新多个知识点的掌握度」那条验收判据要求 ≥2。
+    """
+    from app.db.models import QuestionPoint
+
+    _points(session, 7, 8)
+    questions = session.execute(select(Question)).scalars().all()
+    llm = FakeLLM().queue(
+        FakeReply(data={"assignments": [
+            {"question_id": 1, "point_id": 7, "related_point_ids": [8]},
+        ]})
+    )
+    result = kp.mount_questions(session, questions=questions[:1], llm=llm)
+    session.commit()
+
+    assert result.mounted == 1
+    assert result.details[0]["related_point_ids"] == [8]
+    rows = session.execute(select(QuestionPoint)).scalars().all()
+    assert [(r.question_id, r.point_id) for r in rows] == [(1, 8)]
+
+
+def test_related_points_are_cleaned_before_they_are_written(session: Session) -> None:
+    """未知 id 丢掉（**绝不新建**，与主知识点同一条纪律）、重复的丢掉、超过 3 个截断。
+
+    上限不是洁癖：每多一个关联点就是多一套考察点进判分，而且会让那个点的掌握度
+    **凭空多一格** —— 模型偶尔会把半个清单抄回来。
+    """
+    from app.db.models import KnowledgePoint as K
+    from app.db.models import QuestionPoint
+
+    _points(session, 7, 8, 9, 10, 11)
+    questions = session.execute(select(Question)).scalars().all()
+    llm = FakeLLM().queue(
+        FakeReply(data={"assignments": [
+            {"question_id": 1, "point_id": 7,
+             "related_point_ids": [7, 8, 8, 999, "x", 9, 10, 11]},
+        ]})
+    )
+    kp.mount_questions(session, questions=questions[:1], llm=llm)
+    session.commit()
+
+    written = {r.point_id for r in session.execute(select(QuestionPoint)).scalars()}
+    assert written == {8, 9, 10}, f"去重 / 丢未知 / 截到 3 个：{written}"
+    assert len(session.execute(select(K)).scalars().all()) == 5, "不许新建知识点"
+
+
+def test_a_related_point_brings_its_criteria_into_scoring(session: Session) -> None:
+    """**整件事的重点**：关联点的考察点要进判分。
+
+    只写 `question_points` 而不把关联点的判据算进来，格子照样只亮一个 ——
+    挂载挂上了，掌握度矩阵上什么都不会发生。
+    """
+    from app.bank import repository as bank_repository
+    from app.db.models import Criterion, QuestionPoint
+    from app.db.models import KnowledgePoint as K
+
+    session.add(Domain(id=1, name="D"))
+    session.add(K(id=7, domain_id=1, name="缓存一致性", status="confirmed"))
+    session.add(K(id=8, domain_id=1, name="限流算法", status="confirmed"))
+    # 先 flush 知识点再插考察点：映射是命令式的（没有 relationship），
+    # 不 flush 就是 FOREIGN KEY constraint failed（同一坑踩过多次）
+    session.flush()
+    session.add(Criterion(point_id=7, seq=1, text="更新顺序", shared=0))
+    session.add(Criterion(point_id=8, seq=1, text="令牌桶与漏桶", shared=0))
+    session.flush()
+    question = session.get(Question, 1)
+    assert question is not None
+    question.primary_point_id = 7
+    session.add(QuestionPoint(question_id=1, point_id=8))
+    session.commit()
+
+    texts = [c.text for c in bank_repository.criteria_of_question(session, question)]
+    assert texts == ["更新顺序", "令牌桶与漏桶"], "关联点的判据没进判分"
