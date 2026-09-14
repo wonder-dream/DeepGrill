@@ -107,6 +107,7 @@
 | 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker` / `backup` / `generate` / `calibrate`） | `app/cli.py`、`app/offline/seed.py` |
 | v1 题目导入（只读连接 + 幂等 + 标签映射） | `tools/import_v1.py`、`tools/test_import_v1.py` |
 | 对照工具（文档 vs SQL 字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
+| 验收标准的**执行器**（决策 74）：逐条跑判据、打印 PASS/FAIL/BLOCKED/MANUAL；自检用变异证明它会报错 | `scripts/check_acceptance.py`、`scripts/selftest_check_acceptance.py` |
 | 依赖与 pytest 配置（收集范围已配死） | `pyproject.toml` |
 
 | 还没有 | 归属 |
@@ -116,7 +117,7 @@
 | **全量装配本身还没跑**：库里 3007 道导入题仍在待定池（真跑：配嵌入 → `propose --batched` → 人审 → `mount`） | 决策 44/46 |
 | 知识层的**增量维护**只剩"机器上装没装"这一步 —— 定时器已在 `deploy/deepgrill-maintenance.{service,timer}`（`generate --enqueue` + `worker --once`），装上即生效 | 决策 46 / 73 |
 | **备份的异地那一跳**：仓库做「快照 + 清单 + 当场自验 + 保留策略」与**定时**（`deploy/deepgrill-backup.timer`），上传对象存储仍留在部署侧一行 `ExecStartPost`（ADR-0008 明说频率与保留策略待定） | ADR-0008 / 决策 73 |
-| 验收标准的**逐条检查**还没跑过一遍（标准本身已定于决策 74，每条都写清"怎么验"） | §未决 5 / 决策 74 |
+| 验收标准里剩两条不是绿的就跑不完：**待定池为 0**（等装配）与**综合题人工验证**（真题 1065）—— 其余 10 条由 `scripts/check_acceptance.py` 自动跑 | 决策 74 |
 
 > **已经还掉的三笔债**（原先在这张表里）：枚举列的 `CHECK` 约束（决策 57）已进
 > `migrations/0001_initial.sql`；**启动拒绝占位口令**（决策 58）已进

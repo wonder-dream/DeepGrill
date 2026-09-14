@@ -45,15 +45,20 @@ python -m pytest                     # 测试
 python -m ruff check .               # lint（决策 38）
 python -m mypy                       # 类型检查（决策 38；两处豁免的理由在 pyproject.toml）
 python scripts/check_docs.py         # 文档一致性
+python scripts/check_acceptance.py   # 验收标准逐条检查（决策 74；跑几分钟）
 ```
 
-**这几条由 pre-commit 钩子自动跑**（`git config core.hooksPath .githooks`）。
+**前四条由 pre-commit 钩子自动跑**（`git config core.hooksPath .githooks`）。
 本机没装 dev extra 时钩子会提示一句并跳过 lint/类型检查 —— 拦住提交会让人用
 `--no-verify`，而那连文档校验一起跳过了。
 
+`check_acceptance.py` 不进钩子（它要跑几分钟的测试，进钩子只会让人开始用
+`--no-verify`）：它是**发布前**跑一次的清单，逐条打印 `PASS / FAIL / BLOCKED / MANUAL`，
+没过的以非零退出码结束。
+
 运维：`python -m app.cli backup` 做一份备份并**当场验证它能不能恢复**（ADR-0008 的硬
 要求 —— 备份"成功"但恢复不了，只在需要它的那一天暴露）；`python -m app.cli status`
-看库里的规模。
+看库里的规模与**冷启动顺序**；`python -m app.cli calibrate` 出阈值标定报告（只读）。
 
 ### 配 API key（要真调模型才需要）
 

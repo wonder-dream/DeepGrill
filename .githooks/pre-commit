@@ -80,6 +80,11 @@ if git diff --cached --name-only | grep -qE '^(scripts/|docs/|CONTEXT\.md|AGENTS
     ok=1
     "$PY" scripts/selftest_check_docs.py || ok=0
     "$PY" scripts/selftest_check_staged.py || ok=0
+    # 验收执行器的自检比较慢（它要真跑几条测试），所以只在**它自己**改动时跑 ——
+    # 改别的文档时没必要把它拖进来（那会让人开始用 --no-verify）。
+    if git diff --cached --name-only | grep -q '^scripts/check_acceptance\.py'; then
+        "$PY" scripts/selftest_check_acceptance.py || ok=0
+    fi
     if [ "$ok" -ne 1 ]; then
         echo "" >&2
         echo "提交被拦下：校验器自检未通过 —— 某条规则已失效，或测试本身无效。" >&2
