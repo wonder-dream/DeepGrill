@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import Settings
 from app.deps import get_settings
 from app.errors import AppError, NotFound
-from app.web import bank_page, home_page
+from app.web import auth_page, bank_page, home_page
 from app.web.templating import WEB_DIR, render
 
 
@@ -44,6 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(home_page.router)
     app.include_router(bank_page.router)
+    app.include_router(auth_page.router)
 
     _install_error_handlers(app)
 

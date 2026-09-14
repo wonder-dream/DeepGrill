@@ -19,31 +19,41 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.bank import pages, service
-from app.deps import get_session
+from app.db.models import User
+from app.deps import get_current_user, get_session
 from app.web.templating import render
 
 router = APIRouter()
 
 SessionDep = Annotated[Session, Depends(get_session)]
+CurrentUserDep = Annotated[User | None, Depends(get_current_user)]
 
-#: MVP：还没有登录，每个请求都是"匿名查看者"。
-#: 它**不是**"没有权限" —— 匿名能看到全部公共题（产品面向公众，决策 6）。
-ANONYMOUS: int | None = None
+
+def _viewer(user: User | None) -> int | None:
+    """把"当前用户"折成仓储要的 `viewer_id`。
+
+    匿名（None）**不是**"没有权限" —— 匿名能看到全部公共题（面向公众，决策 6）；
+    登录之后多看到的是**自己的私有题集**。
+    """
+    return user.id if user is not None else None
 
 
 @router.get("/bank")
 def bank_list(
     request: Request,
     session: SessionDep,
+    user: CurrentUserDep,
     kind: Annotated[str | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
 ) -> object:
-    data = pages.bank_list(session, ANONYMOUS, kind=kind, page=page)
+    data = pages.bank_list(session, _viewer(user), kind=kind, page=page)
     return render(request, "bank_list.html", {"data": data})
 
 
 @router.get("/bank/{question_id}")
-def bank_detail(request: Request, question_id: int, session: SessionDep) -> object:
+def bank_detail(
+    request: Request, question_id: int, session: SessionDep, user: CurrentUserDep
+) -> object:
     # 不可见与不存在都由 service 抛 NotFound → main 的异常处理器渲染错误页
-    data = service.detail(session, question_id, ANONYMOUS)
+    data = service.detail(session, question_id, _viewer(user))
     return render(request, "bank_detail.html", {"data": data})

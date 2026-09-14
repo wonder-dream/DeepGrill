@@ -12,6 +12,12 @@
     <nav>
       <a href="/bank">题库</a>
       <a href="/me">我的</a>
+      {% if user %}
+      <span class="muted">{{ user.username }}</span>
+      <form class="inline" method="post" action="/logout"><button class="link" type="submit">退出</button></form>
+      {% else %}
+      <a href="/login">登录</a>
+      {% endif %}
     </nav>
   </header>
   <main>

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}登录 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>登录</h1>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <form method="post" action="/login">
+    <p><label>邮箱<br><input type="email" name="email" value="{{ email }}" required></label></p>
+    <p><label>口令<br><input type="password" name="password" required></label></p>
+    <p><button class="button" type="submit">登录</button></p>
+  </form>
+  <p class="muted">没有账号？<a href="/register">用邀请码注册</a></p>
+</section>
+{% endblock %}

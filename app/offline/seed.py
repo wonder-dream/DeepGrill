@@ -17,12 +17,21 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.account import repository as account_repository
 from app.bank import repository
-from app.db.models import Criterion, Domain, KnowledgePoint, Question, User
+from app.db.models import Criterion, Domain, InviteCode, KnowledgePoint, Question, User
 
 logger = logging.getLogger(__name__)
 
 SEED_EMAIL = "demo@local"
+
+#: 种子里那张可用的邀请码。演示时用它注册一个新账号。
+SEED_INVITE = "DEEPGRILL-DEMO"
+
+
+def repository_invite(session: Session, code: str) -> InviteCode | None:
+    """取一张邀请码 —— 走账号域的仓储，不自己 select（表的所有权在 `account`）。"""
+    return account_repository.find_invite(session, code)
 
 #: 与 `tools/_compare_schema.py` 无关，纯粹是演示题库的形状：
 #: 领域 → 知识点 → 考察点，题挂在知识点上。故意跨三个领域，
@@ -84,7 +93,7 @@ def seed(session: Session) -> dict[str, int]:
     就靠它们，而生产导入的题有自己的去重通道（ADR-0002：重复的定义是"指向同一
     知识点"）。
     """
-    created = {"domains": 0, "points": 0, "criteria": 0, "questions": 0, "users": 0}
+    created = {"domains": 0, "points": 0, "criteria": 0, "questions": 0, "users": 0, "invites": 0}
 
     if session.execute(select(User).where(User.email == SEED_EMAIL)).scalar_one_or_none() is None:
         session.add(
@@ -98,6 +107,13 @@ def seed(session: Session) -> dict[str, int]:
             )
         )
         created["users"] += 1
+
+    # 一张可用的邀请码：否则演示时**注册这条路根本走不通**（决策 6：注册 = 邀请码），
+    # 而"注册走不通"会被误读成"注册功能坏了"。
+    if repository_invite(session, SEED_INVITE) is None:
+        session.add(InviteCode(code=SEED_INVITE))
+        created["invites"] += 1
+        session.flush()
 
     point_by_name: dict[str, KnowledgePoint] = {}
     for domain_name, points in SEED.items():

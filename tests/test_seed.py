@@ -56,7 +56,21 @@ def test_seed_is_idempotent(session) -> None:
     assert first["questions"] > 0
     assert second["questions"] == 0, "第二次不该再建题"
     assert before == after
-    assert second["points"] == 0 and second["criteria"] == 0
+    assert second["points"] == 0 and second["criteria"] == 0 and second["invites"] == 0
+
+
+def test_seed_provides_a_usable_invite(session) -> None:
+    """种子必须给一张**可用**的邀请码，否则演示时注册这条路走不通（决策 6）。
+
+    "注册走不通"会被误读成"注册功能坏了" —— 这条测试就是为了不让那次误读发生。
+    """
+    from app.account import repository as account_repo
+    from app.offline.seed import SEED_INVITE
+
+    seed(session)
+    invite = account_repo.find_invite(session, SEED_INVITE)
+    assert invite is not None
+    assert account_repo.invite_is_usable(invite)
 
 
 def test_cli_seed_refuses_when_not_migrated(tmp_dir: Path) -> None:

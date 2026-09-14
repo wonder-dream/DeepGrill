@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}我的 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>{{ user.username }}</h1>
+  <dl>
+    <dt>邮箱</dt><dd>{{ user.email }}</dd>
+    <dt>今日额度</dt><dd>{{ remaining }} / {{ daily }} 点</dd>
+  </dl>
+  <form method="post" action="/logout"><button class="button" type="submit">退出</button></form>
+</section>
+
+<section class="card">
+  <h2>这场面试怎么算额度</h2>
+  <p class="muted">模拟面试 6 点、单题追问 1 点、题库浏览 0 点（决策 2）。额度用完后
+  题库仍可浏览 —— 降级，不是拒绝。</p>
+</section>
+{% endblock %}

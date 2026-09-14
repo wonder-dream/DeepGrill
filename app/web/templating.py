@@ -32,6 +32,13 @@ _env = Environment(
 
 
 def render(request: Request, name: str, context: dict[str, Any] | None = None) -> HTMLResponse:
-    """渲染一个整页。`request` 传进模板是为了取 URL 与服务端状态（ADR-0004）。"""
-    template = _env.get_template(name)
-    return HTMLResponse(template.render(request=request, **(context or {})))
+    """渲染一个整页。`request` 传进模板是为了取 URL 与服务端状态（ADR-0004）。
+
+    **当前用户在这里统一注入**，不让每个页面各自传：导航栏是每个页面都有的
+    （base.html），而"每个调用点都记得传 user"正是会漏的那类事 —— 漏了的页面
+    导航栏会静默显示成"未登录"。取不到（没接账号域、或匿名）就是 None。
+    """
+    ctx: dict[str, Any] = {"user": None, **(context or {})}
+    return HTMLResponse(
+        _env.get_template(name).render(request=request, **ctx)
+    )

@@ -65,3 +65,15 @@ dd { margin: 0; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); }
 th { color: var(--muted); font-weight: 600; }
+
+form.inline { display: inline; }
+button.link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+}
+button.link:hover { color: var(--accent); }
+input { padding: 0.3rem 0.4rem; border: 1px solid var(--line); border-radius: 0.25rem; font: inherit; }
