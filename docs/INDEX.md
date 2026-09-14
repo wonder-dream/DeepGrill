@@ -71,25 +71,29 @@
 
 ## 代码的现状（哪些已经存在、哪些还没有）
 
-新会话容易误判的一件事：**`app/` 目录存在，但里面只有包的 docstring —— 应用起不来。**
-已经落地的是**迁移这一层**：schema 是权威的、runner 能跑且有测试守着。别把"库能建出来"当成"应用能跑"。
+**MVP 已经能跑。** 那条链是：登录 → 题库挑题 → 逐轮追问 → 收尾 → 面试报告 →
+掌握度矩阵。跑法与演示账号见 `README.md`。
 
 | 已经有 | 位置 |
 |---|---|
 | v2 的**表结构权威**（执行 `python -m migrations.run` 得到全库） | `migrations/0001_initial.sql` |
-| 迁移执行器 + 12 条测试（回滚 / 外键 / 记账 / splitter 都各有守门测试） | `migrations/_runner.py`、`migrations/test_runner.py` |
-| 对照工具（文档 vs SQL 的字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
+| 迁移执行器 + 14 条测试（回滚 / 外键 / 记账 / splitter 都各有守门测试） | `migrations/_runner.py`、`migrations/test_runner.py` |
+| 组装根、配置、引擎与会话、错误页 | `app/main.py`、`app/config.py`、`app/db/`、`app/errors.py`、`app/deps.py` |
+| 全部 24 张表的映射 + 与迁移逐列对账 | `app/db/models.py`、`app/db/test_models.py` |
+| LLM 客户端（重试纪律 / JSON 容错）+ prompt 从文件读 | `app/llm/`、`prompts/` |
+| 领域：账号 / 题库 / 面试 / 报告 / 知识（掌握度） | `app/account/`、`app/bank/`、`app/interview/`、`app/report/`、`app/knowledge/` |
+| 页面：首页 / 题库 / 登录注册 / 我的 / 答题 / 报告 | `app/web/`（一个文件 = 一个 URL） |
+| 演示数据与运维命令、登录可用的 demo 账号 | `app/cli.py`、`app/offline/seed.py` |
+| 对照工具（文档 vs SQL 字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
 | 依赖与 pytest 配置（收集范围已配死） | `pyproject.toml` |
-| 共享 fixture（`tmp_dir`） | `conftest.py`（仓库根，见 `docs/adr/0010-repository-layout-and-import-boundaries.md`） |
 
 | 还没有 | 归属 |
 |---|---|
-| `app/db`（引擎 / session / `Depends` / **JSON 列必须 `ensure_ascii=False`**） | 见 `docs/v1行为规格.md` §8.7 |
-| `app/main.py`（组装根）与 `app/web` 的第一个页面 | ADR-0010 |
 | 启动时**拒绝带占位口令的库**的检查 | 决策 58（未实施） |
 | 枚举列的 `CHECK` 约束 | `docs/v2范围基线.md` §未决 7 |
 | v1 题目导入（`tools/import_v1.py`） | §未决 2 |
 | ruff / mypy 与它们的提交前检查 | 决策 38（未实施） |
+| 语音输入 / 简历题集 / 知识层构建 / 晋升 / 离线 worker / admin / SSE 流式 | 基线 In 里尚未开工的那些 |
 | 迁移通道、测试策略、验收标准、阈值标定 | §未决 2 / 3 / 5 / 6 |
 
 > **收藏夹不在这张表里** —— 它已经建好了（决策 63，`user_favorites`，见 `migrations/0001_initial.sql`）。
