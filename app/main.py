@@ -27,6 +27,7 @@ from app.web import (
     home_page,
     interview_page,
     me_page,
+    observability_page,
     report_page,
 )
 from app.web.templating import WEB_DIR, render
@@ -69,6 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_page.router)
     app.include_router(admin_users_page.router)
     app.include_router(feedback_page.router)
+    app.include_router(observability_page.router)
 
     _install_error_handlers(app)
 

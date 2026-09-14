@@ -37,7 +37,7 @@ from typing import Any
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
-from app.db.models import Job
+from app.db.models import Job, TaskLog
 
 logger = logging.getLogger(__name__)
 
@@ -163,9 +163,14 @@ def requeue_stale(session: Session, *, now: str | None = None) -> int:
     requeued = 0
     for job in stale:
         if job.attempts >= job.max_attempts:
-            job.status = "failed"
-            job.error = f"心跳超时 {int(STALE_AFTER.total_seconds())} 秒且已达重试上限（{job.max_attempts}）"
-            job.finished_at = reference
+            # 走 finish 而不是就地改字段：**终态任务都要留下一行报告**
+            # （否则"这条为什么没跑成"只有 jobs 里那一条，而它 7 天后就被回收了）。
+            finish(
+                session,
+                job,
+                error=f"心跳超时 {int(STALE_AFTER.total_seconds())} 秒且已达重试上限（{job.max_attempts}）",
+                now=reference,
+            )
             continue
         job.status = "pending"
         job.worker_id = None
@@ -175,14 +180,43 @@ def requeue_stale(session: Session, *, now: str | None = None) -> int:
     return requeued
 
 
-def finish(session: Session, job: Job, *, result: dict[str, Any] | None = None, error: str = "") -> None:
+def _write_task_log(
+    session: Session, job: Job, *, result: dict[str, Any] | None, error: str
+) -> None:
+    """把终态任务抄一份进 `task_logs`（"离线任务报告"）。
+
+    **为什么两份都要有**：`jobs` 是队列，它的终态记录 7 天后被回收者删掉（§3.2 的
+    TTL）；`task_logs` 是**给人看的报告**，它不回收 —— 否则"上个月那次批量生成
+    到底跑出什么"会随着回收一起消失。
+
+    失败也写（`status: failed` + `error`）—— AGENTS.md §3.1 要的"可查询的失败记录"
+    落在这里。
+    """
+    body: dict[str, Any] = {"job_id": job.id, "status": "failed" if error else "done"}
+    if error:
+        body["error"] = error
+    if isinstance(result, dict):
+        body.update(result)
+    session.add(TaskLog(kind=job.kind, payload=job.payload or {}, result=body))
+    session.flush()
+
+
+def finish(
+    session: Session,
+    job: Job,
+    *,
+    result: dict[str, Any] | None = None,
+    error: str = "",
+    now: str | None = None,
+) -> None:
     """标记任务结束。**成功与失败都要落库**（失败不静默）。"""
     job.status = "failed" if error else "done"
     job.error = error or None
     job.message = (result or {}).get("message") if isinstance(result, dict) else None
     job.progress = 1.0 if not error else job.progress
-    job.finished_at = now_iso()
+    job.finished_at = now or now_iso()
     session.flush()
+    _write_task_log(session, job, result=result, error=error)
 
 
 def purge_finished(session: Session, *, older_than: timedelta = FINISHED_TTL) -> int:

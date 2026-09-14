@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}观测 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>观测</h1>
+  <p class="muted">只读、不调模型 —— 它是在"是不是模型挂了"时你要打开的那个页面，
+  所以它自己不能依赖模型。</p>
+</section>
+
+<section class="card">
+  <h2>库体积</h2>
+  <dl>
+    <dt>主库</dt><dd>{{ human_bytes(o.db_bytes) }}</dd>
+    <dt>WAL</dt><dd>{{ human_bytes(o.db_wal_bytes) }}</dd>
+    <dt>合计</dt><dd><strong>{{ human_bytes(o.db_total_bytes) }}</strong></dd>
+  </dl>
+  <p class="muted">WAL 也要盯：写入繁忙时它会明显长大（2C2G 机器上这是要看的数字）。</p>
+</section>
+
+<section class="card">
+  <h2>规模</h2>
+  <dl>
+    <dt>题目</dt><dd>{{ o.library.questions }}（公共 {{ o.library.public_questions }} · 私有 {{ o.library.private_questions }}）</dd>
+    <dt>已挂载</dt>
+    <dd>
+      {% if o.library.mounted_ratio is none %}—（还没有公共题）
+      {% else %}{{ (o.library.mounted_ratio * 100) | round(1) }}%{% endif %}
+    </dd>
+    <dt>知识点</dt><dd>{{ o.library.knowledge_points }}（其中 draft {{ o.library.draft_points }}）</dd>
+    <dt>考察点</dt><dd>{{ o.library.criteria }}</dd>
+    <dt>用户</dt><dd>{{ o.library.users }}</dd>
+  </dl>
+</section>
+
+<section class="card">
+  <h2>待定池</h2>
+  <p>
+    <strong>{{ o.library.unmounted }}</strong> 道公共题还没挂到知识点上。
+  </p>
+  <p class="muted">挂不上的题就留在这里 —— <strong>绝不自动新建知识点</strong>（决策 46：
+  骨架的判定权在人手上）。挂载命令：<code>python -m app.cli mount</code></p>
+</section>
+
+<section class="card">
+  <h2>离线任务</h2>
+  <dl>
+    <dt>总计</dt><dd>{{ o.jobs.total }}</dd>
+    {% for status, n in o.jobs.counts.items() %}<dt>{{ status }}</dt><dd>{{ n }}</dd>{% endfor %}
+  </dl>
+  {% if o.jobs.oldest_pending %}
+  <p>最老的一条待执行：<code>#{{ o.jobs.oldest_pending.id }} {{ o.jobs.oldest_pending.kind }}</code>
+    （{{ o.jobs.oldest_pending.created_at }}）—— 若它很旧，说明没有 worker 在跑。</p>
+  {% endif %}
+  {% if o.jobs.recent_failures %}
+  <h3>最近的失败</h3>
+  <table>
+    <thead><tr><th>#</th><th>任务</th><th>原因</th></tr></thead>
+    <tbody>
+      {% for j in o.jobs.recent_failures %}
+      <tr><td>{{ j.id }}</td><td>{{ j.kind }}</td><td class="error">{{ j.error }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">没有失败的任务。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>题库质量仪表板</h2>
+  <p class="muted">ADR-0002 说"矛盾记录是这套结构唯一白送的能力"—— 这一节就是它。</p>
+  {% if o.quality.open_flags %}
+  <dl>
+    {% for kind, n in o.quality.open_flags.items() %}<dt>{{ kind }}</dt><dd>{{ n }}</dd>{% endfor %}
+  </dl>
+  <table>
+    <thead><tr><th>题</th><th>类型</th><th>证据</th></tr></thead>
+    <tbody>
+      {% for f in o.quality.recent_flags %}
+      <tr>
+        <td><a href="/bank/{{ f.question_id }}">#{{ f.question_id }}</a></td>
+        <td>{{ f.kind }}</td>
+        <td class="muted">{{ f.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">没有未处理的质量标记。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>离线任务报告</h2>
+  <p class="muted">队列里的终态记录 7 天后会被回收，这份报告不会 —— 所以"上个月那次
+  批量生成跑出什么"查得到。</p>
+  {% if o.task_logs %}
+  <table>
+    <thead><tr><th>#</th><th>任务</th><th>时间</th><th>结果</th></tr></thead>
+    <tbody>
+      {% for t in o.task_logs %}
+      <tr>
+        <td>{{ t.id }}</td><td>{{ t.kind }}</td><td class="muted">{{ t.created_at }}</td>
+        <td class="{{ 'error' if t.failed else 'muted' }}">{{ t.text }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">还没有离线任务报告。</p>
+  {% endif %}
+</section>
+
+<section class="card"><p><a class="button" href="/admin">回后台</a></p></section>
+{% endblock %}

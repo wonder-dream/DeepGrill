@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import create_db_engine, create_session_factory
-from app.db.models import Job
+from app.db.models import Job, TaskLog
 from app.offline import jobs
 from migrations._runner import migrate
 
@@ -270,3 +270,77 @@ def test_purge_keeps_recent_finished_jobs(session: Session) -> None:
 
     assert jobs.purge_finished(session) == 0
     assert session.get(Job, job.id) is not None
+
+
+# ---------------------------------------------------------------------------
+# 离线任务报告（task_logs）
+# ---------------------------------------------------------------------------
+def test_successful_job_leaves_a_report(session: Session) -> None:
+    """`jobs` 是队列（终态 7 天后被回收），`task_logs` 是**不回收的报告**。
+
+    只有队列记录的话，"上个月那次批量生成跑出什么"会随着回收一起消失 ——
+    这正是 ADR-0006 与观测页要分开存两份的原因。
+    """
+    _register()
+    jobs.enqueue(session, kind="demo", payload={"a": 1})
+    session.commit()
+    jobs.run_one(session, worker_id="w")
+    session.commit()
+
+    log = session.execute(select(TaskLog)).scalars().one()
+    assert log.kind == "demo"
+    assert log.payload == {"a": 1}
+    assert log.result["status"] == "done"
+    assert log.result["message"] == "跑了 {'a': 1}"
+
+
+def test_failed_job_leaves_a_report(session: Session) -> None:
+    """§3.1 要的"可查询的失败记录"落在 task_logs 上 —— 失败也必须留一行。"""
+
+    def boom(session, payload):
+        raise RuntimeError("外部服务挂了")
+
+    _register(fn=boom)
+    jobs.enqueue(session, kind="demo")
+    session.commit()
+    jobs.run_one(session, worker_id="w")
+    session.commit()
+
+    log = session.execute(select(TaskLog)).scalars().one()
+    assert log.result["status"] == "failed"
+    assert "外部服务挂了" in log.result["error"]
+
+
+def test_timeout_over_limit_also_leaves_a_report(session: Session) -> None:
+    """`requeue_stale` 那条"重试到上限"的路径**也必须**留报告。
+
+    第一版它是就地改字段、绕过 `finish()` 的 —— 于是任务死了却没有报告，
+    而这条路径恰恰是最需要解释的那一种（"它为什么没跑成"）。
+    """
+    _register()
+    jobs.enqueue(session, kind="demo", max_attempts=1)
+    session.commit()
+    job = jobs.claim_one(session, worker_id="w")
+    job.heartbeat_at = (datetime.now(UTC) - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+    session.commit()
+
+    jobs.requeue_stale(session)
+    session.commit()
+
+    log = session.execute(select(TaskLog)).scalars().one()
+    assert log.result["status"] == "failed"
+    assert "心跳超时" in log.result["error"]
+
+
+def test_requeued_job_leaves_no_report_yet(session: Session) -> None:
+    """回退到 pending 的任务**还没结束**，不该留报告 —— 否则一次超时会留下
+    "失败"的记录，而它下一轮就跑成了。"""
+    _register()
+    jobs.enqueue(session, kind="demo")
+    session.commit()
+    job = jobs.claim_one(session, worker_id="w")
+    job.heartbeat_at = (datetime.now(UTC) - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+    session.commit()
+
+    assert jobs.requeue_stale(session) == 1
+    assert session.execute(select(TaskLog)).first() is None
