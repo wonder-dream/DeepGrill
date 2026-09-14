@@ -22,6 +22,7 @@ from app.config import Settings
 from app.db import create_db_engine, create_session_factory, make_session_dependency
 from app.db.models import User
 from app.errors import Forbidden
+from app.llm import LLMCallError, LLMClient
 
 
 @lru_cache(maxsize=8)
@@ -71,3 +72,36 @@ def require_user(user: User | None = Depends(get_current_user)) -> User:
     if user is None:
         raise Forbidden("请先登录")
     return user
+
+
+def get_llm(settings: Settings = Depends(get_settings)) -> object:
+    """LLM 客户端（每请求一个）。**没有 key 时返回一个"明确失败"的替身**。
+
+    这样建这个客户端本身不会让应用起不来（本机开发常常没有 key），而一旦真的
+    要用它就会拿到一条清楚的错误 —— 而不是悄悄用假数据糊过去
+    （AGENTS.md §3.1：降级可以，静默不行）。
+    """
+    if not settings.llm_api_key:
+        return _MissingKeyLLM()
+    return LLMClient(
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
+        model=settings.model_interviewer,
+    )
+
+
+class _MissingKeyLLM:
+    """没配 key 时的替身：**任何调用都抛 LLMCallError**。
+
+    它让"判定失败"走既有的降级路径（会话不中断、这一轮记为未涉及、页面提示），
+    所以没配 key 的机器上整条链仍然能跑通并被人工看到问题。
+    """
+
+    def chat(self, messages, **kwargs):
+        raise LLMCallError("没有配置 DEEPGRILL_LLM_API_KEY —— 无法调用模型")
+
+    def chat_json(self, messages, **kwargs):
+        raise LLMCallError("没有配置 DEEPGRILL_LLM_API_KEY —— 无法调用模型")
+
+    def close(self) -> None:
+        pass

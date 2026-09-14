@@ -56,4 +56,4 @@ def bank_detail(
 ) -> object:
     # 不可见与不存在都由 service 抛 NotFound → main 的异常处理器渲染错误页
     data = service.detail(session, question_id, _viewer(user))
-    return render(request, "bank_detail.html", {"data": data})
+    return render(request, "bank_detail.html", {"data": data, "can_start": user is not None})

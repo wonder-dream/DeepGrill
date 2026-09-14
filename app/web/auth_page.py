@@ -122,19 +122,3 @@ def logout(request: Request, session: SessionDep) -> RedirectResponse:
     response = RedirectResponse("/", status_code=302)
     response.delete_cookie(SESSION_COOKIE, path="/")
     return response
-
-
-@router.get("/me")
-def me_page(request: Request, session: SessionDep, user: CurrentUserDep) -> object:
-    """个人状态页。MVP 只做"我是谁 + 今天还剩多少额度"。"""
-    if user is None:
-        return RedirectResponse("/login", status_code=302)
-    return render(
-        request,
-        "me.html",
-        {
-            "user": user,
-            "remaining": account.remaining_units(session, user.id),
-            "daily": account.DAILY_UNITS,
-        },
-    )

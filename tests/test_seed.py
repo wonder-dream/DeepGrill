@@ -73,6 +73,22 @@ def test_seed_provides_a_usable_invite(session) -> None:
     assert account_repo.invite_is_usable(invite)
 
 
+def test_seed_demo_account_can_actually_log_in(session) -> None:
+    """演示账号必须**真的能登录**。
+
+    第一版给它塞了一个占位哈希（`scrypt$demo$demo`），于是"用演示账号进去看看"
+    这条路根本走不通 —— 而那正是接手的人做的第一件事。
+    """
+    from app.account import service as account_service
+    from app.offline.seed import SEED_EMAIL, SEED_PASSWORD
+    from app.security import verify_password
+
+    seed(session)
+    user = account_service.repository.find_user_by_email(session, SEED_EMAIL)
+    assert user is not None
+    assert verify_password(SEED_PASSWORD, user.password_hash), "演示账号的口令必须能验通过"
+
+
 def test_cli_seed_refuses_when_not_migrated(tmp_dir: Path) -> None:
     """没迁移的库上跑 seed 要**明确失败并给出那条命令**，而不是建出半个库。"""
     from app.cli import cmd_seed

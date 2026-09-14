@@ -12,6 +12,13 @@
     <li><strong>单题追问</strong>：挑一道题挖到深处</li>
     <li><strong>题库练习</strong>：只看题与评分标准，不调 LLM、不耗额度</li>
   </ul>
+  {% if user %}
+  <form method="post" action="/interview/start">
+    <button class="button" name="mode" value="interview" type="submit">开始模拟面试（6 点）</button>
+  </form>
+  {% else %}
+  <p><a class="button" href="/bank">从题库挑一道题开始</a></p>
+  {% endif %}
 </section>
 
 <section class="card">

@@ -30,6 +30,20 @@
 {% endif %}
 
 <section class="card">
+  <h2>开始面试</h2>
+  {% if can_start %}
+  <form method="post" action="/interview/start">
+    <input type="hidden" name="question_id" value="{{ data.question.id }}">
+    <button class="button" name="mode" value="drill" type="submit">单题追问（1 点）</button>
+    <button class="button" name="mode" value="interview" type="submit">用这道题开一场模拟面试（6 点）</button>
+  </form>
+  <p class="muted">追问由考察点命中驱动；每道题的追问上限到顶时由程序强制收尾。</p>
+  {% else %}
+  <p><a class="button" href="/login">登录后开始面试</a></p>
+  {% endif %}
+</section>
+
+<section class="card">
   <p><a class="button" href="/bank">回题库</a></p>
 </section>
 {% endblock %}

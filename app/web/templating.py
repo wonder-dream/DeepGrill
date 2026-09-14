@@ -31,14 +31,24 @@ _env = Environment(
 )
 
 
-def render(request: Request, name: str, context: dict[str, Any] | None = None) -> HTMLResponse:
+def render(
+    request: Request,
+    name: str,
+    context: dict[str, Any] | None = None,
+    *,
+    status_code: int = 200,
+) -> HTMLResponse:
     """渲染一个整页。`request` 传进模板是为了取 URL 与服务端状态（ADR-0004）。
 
     **当前用户在这里统一注入**，不让每个页面各自传：导航栏是每个页面都有的
     （base.html），而"每个调用点都记得传 user"正是会漏的那类事 —— 漏了的页面
     导航栏会静默显示成"未登录"。取不到（没接账号域、或匿名）就是 None。
+
+    `status_code` 必须能透传：错误页配 200 是**静默的错**（缓存、爬虫、前端分支
+    全都会判断错），而它不会有人肉眼发现。实测踩过两次 —— 领域层的 `NotFound`
+    与 `Forbidden` 都曾渲染出 200 的错误页。
     """
     ctx: dict[str, Any] = {"user": None, **(context or {})}
     return HTMLResponse(
-        _env.get_template(name).render(request=request, **ctx)
+        _env.get_template(name).render(request=request, **ctx), status_code=status_code
     )

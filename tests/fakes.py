@@ -15,6 +15,23 @@ from typing import Any
 
 from app.llm import LLMError, LLMReply, loads_tolerant
 
+#: 按 prompt 正文里的一句特征分辨"这次调用是在干什么"。
+#: 它跟着 prompt 文件走 —— 改 prompt 时这两句特征必须还在（否则按种类分派失效，
+#: 而且会以"队列空了"的形式响亮失败，不会静默给错数据）。
+_KIND_MARKERS = (
+    ("round", "逐条判定命中情况"),
+    ("eval", "四维分"),
+    ("summary", "综合成一段人话"),
+)
+
+
+def _kind_of(messages: list[dict[str, str]]) -> str:
+    text = " ".join(m.get("content", "") for m in messages)
+    for kind, marker in _KIND_MARKERS:
+        if marker in text:
+            return kind
+    return "unknown"
+
 
 @dataclass
 class FakeReply:
@@ -62,10 +79,28 @@ class FakeLLM:
     replies: list[FakeReply] = field(default_factory=list)
     calls: list[dict[str, Any]] = field(default_factory=list)
     model: str = "fake-model"
+    #: 按"调用种类"分派：`{"round": [reply, ...]}`。见 `on()`。
+    by_kind: dict[str, list[FakeReply]] = field(default_factory=dict)
 
     def queue(self, *replies: FakeReply | Any) -> FakeLLM:
         for r in replies:
             self.replies.append(r if isinstance(r, FakeReply) else FakeReply(data=r))
+        return self
+
+    def on(self, kind: str, *replies: FakeReply | Any) -> FakeLLM:
+        """按**调用种类**排队，而不是按调用顺序。
+
+        为什么需要它：一场多题面试里，LLM 的调用顺序取决于**代码的收尾判据**
+        （一道题可能问 1 轮也可能问 3 轮）。用"顺序队列"写测试，就等于在测试里
+        重写一遍那个判据 —— 改一次判据要改一堆测试，而且失败信息完全指不出真因
+        （实测为了一次 `200 != 302` 排查了四轮）。
+
+        种类由 prompt 正文里的一句特征判断（见 `_kind_of`），所以它跟着 prompt
+        文件走，不跟着调用顺序走。
+        """
+        bucket = self.by_kind.setdefault(kind, [])
+        for r in replies:
+            bucket.append(r if isinstance(r, FakeReply) else FakeReply(data=r))
         return self
 
     def queue_text(self, *texts: str) -> FakeLLM:
@@ -89,6 +124,9 @@ class FakeLLM:
                 "model": model or self.model,
             }
         )
+        bucket = self.by_kind.get(_kind_of(messages))
+        if bucket:
+            return bucket.pop(0).resolve(json_mode=json_mode)
         if not self.replies:
             raise LLMError(
                 f"FakeLLM 的响应队列空了（第 {len(self.calls)} 次调用）—— "

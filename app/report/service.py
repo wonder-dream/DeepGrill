@@ -28,6 +28,7 @@ from app.db.models import (
 )
 from app.interview import rules, service as interview_service
 from app.knowledge import service as knowledge_service
+from app.errors import NotFound
 from app.llm import LLMError, prompts
 
 logger = logging.getLogger(__name__)
@@ -448,3 +449,64 @@ def evaluation_for(session: Session, session_id: int) -> Evaluation | None:
     return session.execute(
         select(Evaluation).where(Evaluation.session_id == session_id)
     ).scalar_one_or_none()
+
+
+def finish_interview_by_id(session: Session, *, interview_id: int, llm) -> Report:
+    """按 id 收尾。页面只拿得到 id（URL 里就是 id），所以入口收 id 而不是对象。"""
+    interview = session.get(Interview, interview_id)
+    if interview is None:
+        raise NotFound("这场面试不存在")
+    return finish_interview(session, interview=interview, llm=llm)
+
+
+def next_pending_session(session: Session, *, interview_id: int) -> InterviewSession | None:
+    """下一道**还没答完**的题；没有就返回 None（调用方据此决定收尾）。"""
+    for ts in interview_service.sessions_of(session, interview_id):
+        if ts.status != "finished":
+            return ts
+    return None
+
+
+@dataclass
+class InterviewPageData:
+    """答题页要显示的东西。
+
+    形状由 `web/` 决定（ADR-0010：领域不知道页面长什么样），但它住的这里是
+    `pages.py` 该有的位置 —— 只是本领域只有这一个页面，单开一个文件不值当。
+    """
+
+    session: InterviewSession
+    interview: Interview
+    question: Question
+    point_name: str
+    criteria: list[str]
+    rounds: list[Attempt]
+    snapshot: rules.HitSnapshot
+    seq: int
+    total_questions: int
+
+
+def interview_page_data(session: Session, *, ts: InterviewSession, user_id: int) -> InterviewPageData:
+    """答题页的数据。**只读**，不调 LLM。"""
+    interview = session.get(Interview, ts.interview_id)
+    if interview is None or interview.user_id != user_id:
+        raise NotFound("这个会话不存在")
+    question = session.get(Question, ts.question_id)
+    if question is None:
+        raise NotFound("这道题的题目行不见了")
+
+    criteria = bank_repository.criteria_of_question(session, question)
+    names = bank_repository.point_names(
+        session, {question.primary_point_id} if question.primary_point_id else set()
+    )
+    return InterviewPageData(
+        session=ts,
+        interview=interview,
+        question=question,
+        point_name=names.get(question.primary_point_id or -1, ""),
+        criteria=[c.text for c in criteria],
+        rounds=interview_service.attempts_of(session, ts.id),
+        snapshot=interview_service.current_snapshot(session, ts.id),
+        seq=ts.seq,
+        total_questions=len(interview_service.sessions_of(session, interview.id)),
+    )

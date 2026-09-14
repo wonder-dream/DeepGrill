@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import Settings
 from app.deps import get_settings
 from app.errors import AppError, NotFound
-from app.web import auth_page, bank_page, home_page
+from app.web import auth_page, bank_page, home_page, interview_page, me_page, report_page
 from app.web.templating import WEB_DIR, render
 
 
@@ -45,6 +45,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(home_page.router)
     app.include_router(bank_page.router)
     app.include_router(auth_page.router)
+    app.include_router(me_page.router)
+    app.include_router(interview_page.router)
+    app.include_router(report_page.router)
 
     _install_error_handlers(app)
 
@@ -66,7 +69,11 @@ def _install_error_handlers(app: FastAPI) -> None:
     def _app_error(request: Request, exc: AppError) -> object:
         # 用公开的 render()，不碰 templating 的内部环境 —— 一旦有人把"错误页"
         # 做成需要自己拼 HTML 的东西，XSS 纪律（ADR-0004）就从这里破口。
-        return render(request, "error.html", {"message": exc.message})
+        # ⚠️ `status_code` 必须跟着异常走：第一版漏了它，于是 `Forbidden`/`NotFound`
+        # 都渲染出 **200 的错误页**（静默的错，没人会肉眼发现）。
+        return render(
+            request, "error.html", {"message": exc.message}, status_code=exc.status_code
+        )
 
     @app.exception_handler(404)
     def _not_found(request: Request, exc: object) -> JSONResponse:

@@ -84,7 +84,11 @@ def start_interview(
         rows, _ = bank_repository.list_questions(
             session, user_id, limit=INTERVIEW_QUESTION_COUNT
         )
-        usable = [q.id for q in rows]
+        # 仓储按 id 倒序取"最近的"，这里再翻正 —— 让第 1 题真的排在第 1 位。
+        # 不翻正也能跑，但计划里写的是 `[2, 1]` 而题会话的 seq 是 1、2：
+        # 于是"第 1 题"在页面上显示的是 id=2 的那道，读日志与读页面会得出不同结论
+        # （实测为此排查了一轮）。顺序是产品语义的一部分，不该由查询的排序默认值决定。
+        usable = [q.id for q in reversed(rows)]
     if not usable:
         raise InvalidInput("题库里还没有可用的题，先跑 python -m app.cli seed")
 

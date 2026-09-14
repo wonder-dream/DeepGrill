@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 SEED_EMAIL = "demo@local"
 
+#: 演示账号的口令。它是**公开常量**（README 里写着），只用于本地演示库。
+SEED_PASSWORD = "deepgrill-demo"
+
 #: 种子里那张可用的邀请码。演示时用它注册一个新账号。
 SEED_INVITE = "DEEPGRILL-DEMO"
 
@@ -96,13 +99,16 @@ def seed(session: Session) -> dict[str, int]:
     created = {"domains": 0, "points": 0, "criteria": 0, "questions": 0, "users": 0, "invites": 0}
 
     if session.execute(select(User).where(User.email == SEED_EMAIL)).scalar_one_or_none() is None:
+        from app.security import hash_password
+
         session.add(
             User(
                 email=SEED_EMAIL,
                 username="demo",
-                # 演示账号的口令是明文常量，**只在开发/演示库上用**。
-                # 生产库的占位口令由决策 58 的启动检查拦下（那条还没实现）。
-                password_hash="scrypt$demo$demo",
+                # 演示账号的口令是**公开常量**，与用户名一起写在 README 里 ——
+                # 它只用于本地演示库。生产库的口令来自环境，占位口令由决策 58
+                # 的启动检查拦下（那条还没实现）。
+                password_hash=hash_password(SEED_PASSWORD),
                 role="user",
             )
         )

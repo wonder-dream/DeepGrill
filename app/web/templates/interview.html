@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}第 {{ data.seq }} 题 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <p class="muted">
+    第 {{ data.seq }} / {{ data.total_questions }} 题 · 知识点 {{ data.point_name or "—" }}
+    · 已问 {{ data.rounds | length }} 轮
+  </p>
+  <h1>{{ data.question.stem }}</h1>
+</section>
+
+{% if data.criteria %}
+<section class="card">
+  <h2>这道题考什么</h2>
+  <ol>
+    {% for c in data.criteria %}
+    <li>
+      {{ c }}
+      {% set st = data.snapshot.statuses.get(loop.index) %}
+      {% if st %}<span class="tag">{{ st }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  <p class="muted">「未涉及」= 这一轮没问到；「未命中」= 问了但没答到。两者不是一回事。</p>
+</section>
+{% endif %}
+
+{% if data.rounds %}
+<section class="card">
+  <h2>对话</h2>
+  {% for r in data.rounds %}
+  <p><strong>你：</strong>{{ r.answer_text or "（未作答）" }}</p>
+  {% if r.feedback_text %}<p class="muted"><strong>面试官：</strong>{{ r.feedback_text }}</p>{% endif %}
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if llm_failed %}
+<p class="warn">这一轮的判定没成功（模型没接上），本轮记为「未涉及」，可以继续作答。</p>
+{% endif %}
+
+<section class="card">
+  <h2>{{ "继续回答" if data.rounds else "你的回答" }}</h2>
+  <form method="post" action="/interview/{{ data.session.id }}/answer">
+    <p><textarea name="answer_text" rows="6" cols="60" required
+        placeholder="说清楚你的思路：为什么、怎么权衡、边界在哪。"></textarea></p>
+    <p><button class="button" type="submit">提交这一轮</button></p>
+  </form>
+  <p class="muted">追问上限 {{ data.session.max_rounds }} 轮；到顶由程序强制收尾，不靠模型自觉。</p>
+</section>
+{% endblock %}
