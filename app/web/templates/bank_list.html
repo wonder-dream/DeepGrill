@@ -4,6 +4,12 @@
 <section class="card">
   <h1>题库</h1>
   <p class="muted">共 {{ data.total }} 道{% if data.kind %}（kind={{ data.kind }}）{% endif %}。浏览不消耗额度点。</p>
+  {% if quota %}
+  <p class="muted">今日额度还剩 {{ quota.remaining }} / {{ quota.daily }} 点。</p>
+  {% if quota.library_only %}
+  <p class="warn"><strong>纯题库模式</strong>：额度用完了，面试官休息，题与评分标准照看。</p>
+  {% endif %}
+  {% endif %}
 </section>
 
 {% if not data.cards %}

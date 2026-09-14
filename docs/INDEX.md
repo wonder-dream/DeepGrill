@@ -83,6 +83,7 @@
 | 全部表的映射 + 与迁移逐列对账 | `app/db/models.py`、`app/db/test_models.py` |
 | LLM 客户端（重试纪律 / JSON 容错 / token 记账）+ prompt 从文件读 | `app/llm/`、`prompts/` |
 | 领域：账号 / 题库 / 面试 / 报告 / 知识（掌握度）/ 画像与注销 | `app/account/`、`app/bank/`、`app/interview/`、`app/report/`、`app/knowledge/`、`app/profile/` |
+| 额度与降级（决策 13）：单一额度点、耗尽后纯题库模式、token 第二道安全网 | `app/account/service.py`、`app/account/repository.py` |
 | 离线队列与 worker（原子认领 / 心跳回退 / 幂等 / TTL 回收 / 任务报告） | `app/offline/`（`jobs` · `worker` · `tasks` 三个模块） |
 | 离线管道：简历→档案→私有题集、知识层提议与人审 | `app/offline/profile_pipeline.py`、`app/offline/knowledge_pipeline.py` |
 | 页面：首页 / 题库 / 登录注册 / 我的 / 答题 / 报告 / 反馈 / 后台 / 观测 | `app/web/`（一个文件 = 一个 URL） |
@@ -98,7 +99,6 @@
 | 晋升（私有题 → 公共题库，走内容门禁）与 `question_flags` 的冲突检测 | 决策 5、9 |
 | 面试页 SSE 流式（ADR-0004 给面试页的第三件事） | ADR-0004 |
 | 知识层全量提议（分批 + 嵌入聚类）—— 现在只支持小样本单次调用 | 决策 44、46 |
-| 额度耗尽时的降级提示（降到纯题库模式） | 决策 13 |
 | 阈值标定的实验脚本（`docs/v1行为规格.md` §11 的每个数字） | §未决 6 |
 | 验收标准 | §未决 5 |
 | ruff / mypy 与它们的提交前检查 | 决策 38（未实施） |

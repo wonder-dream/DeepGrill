@@ -31,13 +31,21 @@
 
 <section class="card">
   <h2>开始面试</h2>
-  {% if can_start %}
+  {% if can_start and quota and quota.library_only %}
+  <p class="warn">额度用完了 —— 现在是<strong>纯题库模式</strong>。这道题的题干、考察点与
+     参考答案照看；明天额度恢复后可以拿它开一场。</p>
+  {% elif can_start %}
   <form method="post" action="/interview/start">
     <input type="hidden" name="question_id" value="{{ data.question.id }}">
+    {% if quota.affords("drill") %}
     <button class="button" name="mode" value="drill" type="submit">单题追问（1 点）</button>
+    {% endif %}
+    {% if quota.affords("interview") %}
     <button class="button" name="mode" value="interview" type="submit">用这道题开一场模拟面试（6 点）</button>
+    {% endif %}
   </form>
-  <p class="muted">追问由考察点命中驱动；每道题的追问上限到顶时由程序强制收尾。</p>
+  <p class="muted">追问由考察点命中驱动；每道题的追问上限到顶时由程序强制收尾。
+     今日额度还剩 {{ quota.remaining }} / {{ quota.daily }} 点。</p>
   {% else %}
   <p><a class="button" href="/login">登录后开始面试</a></p>
   {% endif %}

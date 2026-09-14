@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.account import service as account
 from app.db.models import User
 from app.deps import get_current_user, get_llm, get_session
-from app.errors import AppError
+from app.errors import AppError, QuotaExhausted
 from app.interview import service as interview
 from app.report import service as report_service
 from app.web.templating import render
@@ -52,7 +52,11 @@ def start(
     mode: Annotated[str, Form()] = "drill",
     question_id: Annotated[int | None, Form()] = None,
 ) -> object:
-    """从题库页（或首页）开始一次面试。**扣额度点在这里发生**（service 里）。"""
+    """从题库页（或首页）开始一次面试。**扣额度点在这里发生**（service 里）。
+
+    额度不足**不是错误页**，而是决策 13 的降级：面试官今天歇了，题库照旧。
+    所以这一支单独渲染，把"还能做什么"写在页面上 —— 用户看到的不该是一堵墙。
+    """
     me = _require(user, session)
     try:
         if mode == "interview":
@@ -62,9 +66,20 @@ def start(
             if question_id is None:
                 raise AppError("请选择一道题")
             ts = interview.start_drill(session, user_id=me.id, question_id=question_id)
+    except QuotaExhausted as e:
+        return render(
+            request,
+            "interview_start_failed.html",
+            {
+                "message": e.message,
+                "exhausted": True,
+                "quota": account.quota_state(session, me.id),
+            },
+            status_code=e.status_code,
+        )
     except AppError as e:
         return render(
-            request, "interview_start_failed.html", {"message": e.message},
+            request, "interview_start_failed.html", {"message": e.message, "exhausted": False},
             status_code=e.status_code,
         )
 

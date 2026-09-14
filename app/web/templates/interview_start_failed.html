@@ -1,9 +1,24 @@
 {% extends "base.html" %}
-{% block title %}无法开始 · DeepGrill{% endblock %}
+{% block title %}{{ "今天先到这儿" if exhausted else "无法开始" }} · DeepGrill{% endblock %}
 {% block content %}
+{% if exhausted %}
+<section class="card">
+  <h1>面试官今天歇了</h1>
+  <p class="warn">{{ message }}</p>
+  <p class="muted">额度只影响「面试官」这部分，<strong>题库整个都还在</strong> ——
+  题干、考察点、参考答案、你的收藏与历史记录都能看。明天额度会恢复。</p>
+  <p class="muted">今日额度：还剩 {{ quota.remaining }} / {{ quota.daily }} 点。</p>
+  <p>
+    <a class="button" href="/bank">去题库（不耗额度）</a>
+    <a class="button" href="/me">看我的记录</a>
+  </p>
+</section>
+{% else %}
 <section class="card">
   <h1>这场面试没能开始</h1>
   <p class="warn">{{ message }}</p>
+  <p class="muted">这一条不是额度问题 —— 额度照旧，换一道题或稍后再试都可以。</p>
   <p><a class="button" href="/bank">回题库</a></p>
 </section>
+{% endif %}
 {% endblock %}

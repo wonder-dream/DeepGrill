@@ -18,6 +18,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
+from app.account import service as account
 from app.bank import pages, service
 from app.db.models import User
 from app.deps import get_current_user, get_session
@@ -47,7 +48,12 @@ def bank_list(
     page: Annotated[int, Query(ge=1)] = 1,
 ) -> object:
     data = pages.bank_list(session, _viewer(user), kind=kind, page=page)
-    return render(request, "bank_list.html", {"data": data})
+    return render(
+        request,
+        "bank_list.html",
+        # 浏览**永远**可用（决策 13），所以这里只带额度状态用于提示，不做拦截。
+        {"data": data, "quota": account.quota_state(session, user.id) if user else None},
+    )
 
 
 @router.get("/bank/{question_id}")
@@ -56,4 +62,12 @@ def bank_detail(
 ) -> object:
     # 不可见与不存在都由 service 抛 NotFound → main 的异常处理器渲染错误页
     data = service.detail(session, question_id, _viewer(user))
-    return render(request, "bank_detail.html", {"data": data, "can_start": user is not None})
+    return render(
+        request,
+        "bank_detail.html",
+        {
+            "data": data,
+            "can_start": user is not None,
+            "quota": account.quota_state(session, user.id) if user else None,
+        },
+    )

@@ -18,14 +18,17 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.account import service as account
 from app.config import Settings
-from app.deps import get_session, get_settings
+from app.db.models import User
+from app.deps import get_current_user, get_session, get_settings
 from app.web.templating import render
 
 router = APIRouter()
 
 SessionDep = Annotated[Session, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+CurrentUserDep = Annotated[User | None, Depends(get_current_user)]
 
 
 def _count(session: Session, table: str) -> int | None:
@@ -43,7 +46,9 @@ def _count(session: Session, table: str) -> int | None:
 
 
 @router.get("/")
-def home(request: Request, session: SessionDep, settings: SettingsDep) -> object:
+def home(
+    request: Request, session: SessionDep, settings: SettingsDep, user: CurrentUserDep
+) -> object:
     question_count = _count(session, "questions")
     point_count = _count(session, "knowledge_points")
 
@@ -60,6 +65,9 @@ def home(request: Request, session: SessionDep, settings: SettingsDep) -> object
             "database_status": status,
             "question_count": question_count or 0,
             "point_count": point_count or 0,
+            # 额度是首页必须显示的一件事：它决定"主按钮按下去会发生什么"（决策 13）。
+            # 匿名访客没有额度这回事，所以是 None。
+            "quota": account.quota_state(session, user.id) if user else None,
         },
     )
 

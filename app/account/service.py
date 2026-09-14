@@ -7,12 +7,14 @@
 · **单一额度点**：用户只理解一个数字（"今天还剩几场"），所以 `remaining_units()`
   返回的是余量而不是流水。
 · **耗尽降级、不硬拒绝**：`spend_units()` 在余额不足时抛 `QuotaExhausted`，
-  但**题库仍然可用** —— 那由题库领域自己保证（它根本不查额度）。
+  但**题库仍然可用** —— 那由题库领域自己保证（它根本不查额度）。页面要做的
+  是把这件事**说清楚**（`QuotaState.library_only`），而不是把入口藏起来。
 """
 
 from __future__ import annotations
 
 import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
@@ -25,12 +27,17 @@ from app.security import hash_password, new_token, token_hash, verify_password
 #: 每日额度点上限。MVP 先用一个能演示的值；真实系数要按成本重标定（§未决 9）。
 DAILY_UNITS = 20
 
-#: 各形态的扣减（决策 2 的额度点列）。
+#: 各形态的扣减（决策 2 的额度点列）。`browse` 恒为 0 —— 题库永远可用。
 COST = {"interview": 6, "drill": 1, "browse": 0}
+
+#: 最便宜的一个**面试官**动作。决策 13 说的"耗尽"以它为界，而不是以 0 为界：
+#: 还剩 3 点时单题追问仍然能用，那时不该宣称"降到纯题库模式"。
+MIN_COST = min(c for c in COST.values() if c > 0)
 
 
 def today() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d")
+
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +120,39 @@ def remaining_units(session: Session, user_id: int) -> int:
     return max(0, DAILY_UNITS - units_used_today(session, user_id))
 
 
+@dataclass(frozen=True)
+class QuotaState:
+    """今日额度的**可读状态**（决策 13）。
+
+    两个问题分开答：`remaining` 是"还剩几点"，`library_only` 是"是不是只剩题库了"。
+    合成一个布尔会让页面说不出"还剩 3 点、单题追问还能用"这句话。
+    """
+
+    remaining: int
+    daily: int
+
+    @property
+    def library_only(self) -> bool:
+        """连最便宜的一个面试官动作都开不起了 —— 只剩题库。
+
+        判据是 `MIN_COST` 而不是 `remaining == 0`：面试官动作有两种价格（6 / 1），
+        所以"还剩 3 点"时单题追问仍然可用，那时**不是**纯题库模式。
+        """
+        return self.remaining < MIN_COST
+
+    def affords(self, mode: str) -> bool:
+        """这个形态现在开不开得起。未知形态抛 `InvalidInput`（不是返回 False）。"""
+        cost = COST.get(mode)
+        if cost is None:
+            raise InvalidInput(f"未知的形态：{mode}")
+        return self.remaining >= cost
+
+
+def quota_state(session: Session, user_id: int) -> QuotaState:
+    """一次把额度状态算出来。页面只调它，不自己减。"""
+    return QuotaState(remaining=remaining_units(session, user_id), daily=DAILY_UNITS)
+
+
 def spend_units(
     session: Session, user_id: int, mode: str, *, tokens: int = 0
 ) -> int:
@@ -126,7 +166,7 @@ def spend_units(
         raise InvalidInput(f"未知的形态：{mode}")
     if cost == 0:
         return 0
-    if remaining_units(session, user_id) < cost:
+    if not quota_state(session, user_id).affords(mode):
         raise QuotaExhausted()
     repository.add_usage(session, user_id, day=today(), units=cost, tokens=tokens)
     return cost

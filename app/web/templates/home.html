@@ -5,6 +5,19 @@
   <p>面试官读完你的简历之外的东西还不在 MVP 里 —— 此刻能跑通的是"从题库抽题、逐题追问、结束给报告"这条主线。</p>
 </section>
 
+{% if quota %}
+<section class="card">
+  <h2>今日额度</h2>
+  <p>还剩 <strong>{{ quota.remaining }} / {{ quota.daily }}</strong> 点。
+     <span class="muted">模拟面试 6 点 · 单题追问 1 点 · 题库浏览不耗额度。</span></p>
+  {% if quota.library_only %}
+  <p class="warn">额度用完了 —— 现在是<strong>纯题库模式</strong>：题目、考察点、参考答案、
+     收藏与历史记录都还能看，只有面试官休息。明天额度自动恢复。</p>
+  <p><a class="button" href="/bank">去题库</a> <a class="button" href="/me">看我的记录</a></p>
+  {% endif %}
+</section>
+{% endif %}
+
 <section class="card">
   <h2>三个入口</h2>
   <ul>
@@ -12,10 +25,13 @@
     <li><strong>单题追问</strong>：挑一道题挖到深处</li>
     <li><strong>题库练习</strong>：只看题与评分标准，不调 LLM、不耗额度</li>
   </ul>
-  {% if user %}
+  {% if user and quota and not quota.library_only %}
   <form method="post" action="/interview/start">
     <button class="button" name="mode" value="interview" type="submit">开始模拟面试（6 点）</button>
   </form>
+  <p class="muted">也可以先去<a href="/bank">题库</a>挑一道题做单题追问。</p>
+  {% elif user %}
+  <p><a class="button" href="/bank">从题库挑一道题（不耗额度）</a></p>
   {% else %}
   <p><a class="button" href="/bank">从题库挑一道题开始</a></p>
   {% endif %}
