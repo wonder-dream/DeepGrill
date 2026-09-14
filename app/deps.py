@@ -24,6 +24,7 @@ from app.db import create_db_engine, create_session_factory, make_session_depend
 from app.db.models import User
 from app.errors import Forbidden
 from app.llm import LLMCallError, LLMClient
+from app.llm.stt import FakeSTT, NoProviderSTT, SpeechToText
 
 
 @lru_cache(maxsize=8)
@@ -118,6 +119,17 @@ def get_llm(settings: Settings = Depends(get_settings)) -> object:
         base_url=settings.llm_base_url,
         model=settings.model_interviewer,
     )
+
+
+def get_stt(settings: Settings = Depends(get_settings)) -> SpeechToText:
+    """语音转写（决策 32）。**没有供应商时返回一个"明确失败"的实现**。
+
+    与 `get_llm` 同一个模式：应用照常起得来，而一旦真的要用它就会拿到一条清楚的
+    错误 —— 面试页把它显示在页面上并让用户改用打字，而不是拿一段假转写去骗判分。
+    """
+    if settings.stt_provider == "fake":
+        return FakeSTT()
+    return NoProviderSTT()
 
 
 class _MissingKeyLLM:

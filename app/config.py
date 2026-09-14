@@ -58,6 +58,15 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = "https://api.deepseek.com"
 
+    #: 语音转写的供应商（决策 32：面试页默认语音）。
+    #:
+    #: `"none"`（默认）= **没有接** —— 每次调用都明确失败，页面让用户改用打字
+    #: （降级可以，静默不行：绝不返回一段假转写去骗判分）。
+    #: `"fake"` = 占位实现，返回一段**标着占位**的文字，只为让整条语音链路
+    #: （录音 → 转写 → 判分 → 落库）在没有供应商时也能被走通。
+    #: 接真实供应商时在这里加一个值 —— 模型名同样按用途命名（决策 50）。
+    stt_provider: str = "none"
+
     # Cookie 的 Secure 属性。默认关（http 本机开发）；线上必须开 ——
     # 上线检查项，不是默认值。
     session_cookie_secure: bool = False

@@ -130,10 +130,26 @@ def _create_interview(
 # ---------------------------------------------------------------------------
 # 记一轮
 # ---------------------------------------------------------------------------
-def submit_answer(session: Session, *, ts: InterviewSession, answer_text: str, llm) -> RoundResult:
+def submit_answer(
+    session: Session,
+    *,
+    ts: InterviewSession,
+    answer_text: str,
+    llm,
+    input_mode: str = "text",
+    stt_text: str | None = None,
+) -> RoundResult:
     """候选人答了一轮。返回判定结果与下一问。
 
     ⚠️ **先取上一轮快照，再写本轮**（§3.6 的具体 bug，重写极易再犯）。
+
+    `input_mode` / `stt_text` 是决策 32/33 的两列：语音轮次里 `stt_text` 是**转写
+    原文**、`answer_text` 是**实际送进判分的文本**。两列分开存的理由写在
+    `migrations/0001_initial.sql` 的 `attempts` 注释里（清晰度要有原始素材），
+    而"不设确认环节"意味着它们**通常相同** —— 用户顺手改过才会不同。
+
+    录音本身**不经过这里**：`transcribe` 在路由层就做完了，这一层只见文字
+    （决策 33：不保存原始录音）。
     """
     previous = current_snapshot(session, ts.id)  # ← 必须在写库之前
     round_no = next_round_no(session, ts.id)
@@ -181,7 +197,8 @@ def submit_answer(session: Session, *, ts: InterviewSession, answer_text: str, l
         session_id=ts.id,
         round_no=round_no,
         is_followup=1 if round_no > 1 else 0,
-        input_mode="text",
+        input_mode=input_mode,
+        stt_text=stt_text,
         answer_text=answer_text,
         feedback_text=followup,
         hits=snapshot.to_json(),

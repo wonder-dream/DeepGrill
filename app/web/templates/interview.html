@@ -29,10 +29,25 @@
 <section class="card">
   <h2>对话</h2>
   {% for r in data.rounds %}
-  <p><strong>你：</strong>{{ r.answer_text or "（未作答）" }}</p>
+  <p>
+    <strong>你{% if r.input_mode == "voice" %}<span class="tag">语音</span>{% endif %}：</strong>
+    {{ r.answer_text or "（未作答）" }}
+  </p>
   {% if r.feedback_text %}<p class="muted"><strong>面试官：</strong>{{ r.feedback_text }}</p>{% endif %}
   {% endfor %}
 </section>
+{% endif %}
+
+{% if notice %}
+<p class="warn">{{ notice }}</p>
+{% endif %}
+
+{% if voice_error %}
+<p class="warn">这一轮没成：{{ voice_error }}
+  {% if voice_error_kind == "stt_unavailable" %}
+  —— <strong>这一轮没有被记录</strong>，改用下面打字作答即可继续。
+  {% endif %}
+</p>
 {% endif %}
 
 {% if llm_failed %}
@@ -41,11 +56,38 @@
 
 <section class="card">
   <h2>{{ "继续回答" if data.rounds else "你的回答" }}</h2>
-  <form method="post" action="/interview/{{ data.session.id }}/answer">
-    <p><textarea name="answer_text" rows="6" cols="60" required
-        placeholder="说清楚你的思路：为什么、怎么权衡、边界在哪。"></textarea></p>
-    <p><button class="button" type="submit">提交这一轮</button></p>
-  </form>
+
+  <p class="muted">
+    <label><input type="radio" name="answer-mode" value="voice" checked> 语音作答（默认）</label>
+    <label><input type="radio" name="answer-mode" value="text"> 打字作答</label>
+    <span class="muted">语音转写直接进判分，没有"核对一遍再交"这一步（决策 33）。</span>
+  </p>
+
+  <div id="voice-pane">
+    <p>
+      <button class="button" id="record-btn" type="button">开始录音</button>
+      <span class="muted" id="record-status">点一下开始，说完再点一下结束。</span>
+    </p>
+    <form id="voice-form" method="post" enctype="multipart/form-data"
+          action="/interview/{{ data.session.id }}/voice">
+      <input type="file" name="audio" id="audio-input" accept="audio/*" hidden>
+    </form>
+    <p class="muted">录音只用来转写成文字：<strong>服务端不保存原始录音</strong>。
+       浏览器不给麦克风权限、或这个环境没有 STT 供应商时，会提示你改用打字。</p>
+  </div>
+
+  {# 默认**不隐藏**：没有 JS 时语音按钮是死的，而打字框必须还能用。
+     JS 起来之后才按当前模式收起其中一个 —— 这是渐进增强，不是"靠 JS 才可用"。 #}
+  <div id="text-pane">
+    <form method="post" action="/interview/{{ data.session.id }}/answer">
+      <p><textarea name="answer_text" rows="6" cols="60" required
+          placeholder="说清楚你的思路：为什么、怎么权衡、边界在哪。"></textarea></p>
+      <p><button class="button" type="submit">提交这一轮</button></p>
+    </form>
+  </div>
+
   <p class="muted">追问上限 {{ data.session.max_rounds }} 轮；到顶由程序强制收尾，不靠模型自觉。</p>
 </section>
+
+<script src="/static/interview.js"></script>
 {% endblock %}

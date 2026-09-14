@@ -90,6 +90,7 @@
 | 首页 = 内容推荐中心（决策 3/23/63）：主按钮 / 今日推荐题（按掌握度现算）/ 私有题集 / 继续未完成 / 收藏 | `app/web/home_page.py` |
 | 观测页（决策 23）：离线队列 / 待定池 / 库体积 / 质量仪表板 / 离线报告 | `app/web/observability.py`、`app/web/observability_page.py` |
 | 收藏夹（决策 63）：收藏 / 取消 / 我的收藏页 / 题库列表 ★ 标记 / 首页与「我的」入口 | `app/bank/favorites.py`、`app/web/favorites_page.py`、`app/web/templates/my_favorites.html` |
+| 语音输入（决策 32/33）：**STT 接口 + 占位实现**、面试页录音与模式切换、轮次标「语音」 | `app/llm/stt.py`、`app/web/static/interview.js` |
 | 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker`） | `app/cli.py`、`app/offline/seed.py` |
 | v1 题目导入（只读连接 + 幂等 + 标签映射） | `tools/import_v1.py`、`tools/test_import_v1.py` |
 | 对照工具（文档 vs SQL 字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
@@ -97,7 +98,7 @@
 
 | 还没有 | 归属 |
 |---|---|
-| 语音输入：**接口已留**（`attempts.input_mode` / `stt_text` 在表里，判分 prompt 有语音分支）、**STT 未接** | 决策 9、32 / ADR-0009 |
+| 语音转写的**真实供应商**（接口与占位实现已就位；`DEEPGRILL_STT_PROVIDER=none` 时明确失败并让人改用打字） | 决策 32 / ADR-0009 |
 | 晋升（私有题 → 公共题库，走内容门禁）与 `question_flags` 的冲突检测 | 决策 5、9 |
 | 面试页 SSE 流式（ADR-0004 给面试页的第三件事） | ADR-0004 |
 | 知识层全量提议（分批 + 嵌入聚类）—— 现在只支持小样本单次调用 | 决策 44、46 |

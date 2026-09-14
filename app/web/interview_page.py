@@ -1,10 +1,12 @@
 """面试页的路由（`web/` 层，一个文件 = 一个 URL —— ADR-0010）。
 
 **面试页是唯一跑 JS 的页面**（ADR-0004），它要做三件服务端替代不了的事：SSE 流式、
-录音转写、当前轮次状态。**MVP 只做其中不需要 JS 的那部分**：表单提交 + 整页重渲染。
-流式与语音都在后面各自的笔里 —— 先把"这条链能不能跑通"做出来。
+录音转写、当前轮次状态。这个文件现在有**录音转写**（决策 32）与轮次状态；
+SSE 流式是第三件，还没做。
 
 状态住 URL 与服务端（ADR-0004）：题目 id、会话 id 全在路径里，刷新与前进后退天然正确。
+**语音也是同一套**：录音由浏览器 POST 到这个页面的 `/voice`，服务端转写完直接判分、
+返回整页 —— 没有"先转写、让用户确认、再提交"那一套（决策 33）。
 
 判分是**同步**的（`def` handler → FastAPI 丢线程池）：一次 LLM 调用要等几秒，
 但"事件循环里做同步 DB 查询"那条禁令（AGENTS.md §3.3）因此不会被踩到。
@@ -15,15 +17,16 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.account import service as account
 from app.db.models import User
-from app.deps import get_current_user, get_llm, get_session
+from app.deps import get_current_user, get_llm, get_session, get_stt
 from app.errors import AppError, QuotaExhausted
 from app.interview import service as interview
+from app.llm.stt import MAX_AUDIO_BYTES, STTError, STTUnavailable
 from app.report import service as report_service
 from app.web.templating import render
 
@@ -105,10 +108,103 @@ def answer(
 ) -> object:
     me = _require(user, session)
     ts = interview.get_session_row(session, session_id, me.id)
+    return _submit_round(
+        request, session, me, ts, answer_text=answer_text.strip(), llm=llm, input_mode="text"
+    )
 
+
+@router.post("/interview/{session_id}/voice")
+def answer_voice(
+    request: Request,
+    session_id: int,
+    session: SessionDep,
+    user: UserDep,
+    llm=Depends(get_llm),
+    stt=Depends(get_stt),
+    audio: Annotated[UploadFile | None, File()] = None,
+) -> object:
+    """语音作答（决策 32、33）。**转写直接进判分，不设确认环节。**
+
+    三件事按顺序说清楚：
+
+    ① **录音只在内存里过一遍**。它被读成 bytes、交给 `stt.transcribe`，然后就被
+       丢掉 —— 不写库、不写文件、不进 `task_logs`（决策 33 的原话是"不保存原始
+       录音"，这是这条链上唯一的隐私面）。
+       ⚠️ 唯一的落盘可能是 Starlette 自己的 spooled 临时文件（请求结束即删），
+       我们**不额外**保存任何东西。
+
+    ② **没有供应商时明确失败**（`STTUnavailable`）：页面上显示"语音转写还没接入，
+       请用打字作答"，并且**不落这一轮** —— 绝不拿一段假转写去骗判分。
+
+    ③ 占位实现（`DEEPGRILL_STT_PROVIDER=fake`）的转写会**在页面上被标注为占位**，
+       然后照常进判分：它存在的意义就是让整条链路能被真的走一遍。
+    """
+    me = _require(user, session)
+    ts = interview.get_session_row(session, session_id, me.id)
+    data = report_service.interview_page_data(session, ts=ts, user_id=me.id)
+
+    if audio is None:
+        return _render_round_error(request, data, "没有收到音频文件。")
+
+    raw = audio.file.read(MAX_AUDIO_BYTES + 1)  # 多读一个字节才能发现"超了"
+    if not raw:
+        return _render_round_error(request, data, "这段录音是空的 —— 再录一次试试。")
+    if len(raw) > MAX_AUDIO_BYTES:
+        return _render_round_error(
+            request, data, f"录音太大了（上限 {MAX_AUDIO_BYTES // (1024 * 1024)} MB）。"
+        )
+
+    try:
+        transcript = stt.transcribe(raw, content_type=audio.content_type or "")
+    except STTUnavailable as e:
+        # **不落这一轮**：转写没有发生，就不该有一条"候选人的回答"
+        return _render_round_error(request, data, str(e), kind="stt_unavailable")
+    except STTError as e:
+        return _render_round_error(request, data, f"转写失败：{e}", kind="stt_error")
+
+    return _submit_round(
+        request,
+        session,
+        me,
+        ts,
+        answer_text=transcript.text.strip(),
+        llm=llm,
+        input_mode="voice",
+        stt_text=transcript.text,
+        notice=(
+            "这一轮是**占位转写**（没有接 STT 供应商）—— 上面那句不是真的识别结果。"
+            if transcript.placeholder
+            else None
+        ),
+    )
+
+
+def _submit_round(
+    request: Request,
+    session: Session,
+    me: User,
+    ts,
+    *,
+    answer_text: str,
+    llm,
+    input_mode: str,
+    stt_text: str | None = None,
+    notice: str | None = None,
+) -> object:
+    """答一轮的**公共后半段**（打字与语音走同一条）—— 收尾、跳题、记账、渲染。
+
+    两条入口（`/answer` 与 `/voice`）只在前半段不同：一个直接拿表单文本，一个先
+    转写。**后半段合成一处**，是为了让"收尾 → 下一题 / 出报告"那条分支只有一份
+    实现 —— 抄一遍就是多一处会漂的地方。
+    """
     before = _usage_snapshot(llm)
     result = interview.submit_answer(
-        session, ts=ts, answer_text=answer_text.strip(), llm=llm
+        session,
+        ts=ts,
+        answer_text=answer_text,
+        llm=llm,
+        input_mode=input_mode,
+        stt_text=stt_text,
     )
 
     if result.finished:
@@ -131,7 +227,23 @@ def answer(
     return render(
         request,
         "interview.html",
-        {"data": data, "last": result, "llm_failed": result.llm_failed},
+        {"data": data, "last": result, "llm_failed": result.llm_failed, "notice": notice},
+    )
+
+
+def _render_round_error(request: Request, data, message: str, *, kind: str = "input") -> object:
+    """录音这一侧的失败页（**不落轮次**）。
+
+    状态码用 400：这是"这次请求的输入不对 / 环境没配好"，不是服务端错误。页面照常
+    渲染出来，用户可以直接改用打字继续 —— 不中断这场面试（决策 13 的同一种态度：
+    降级，而不是把用户堵在门口）。
+    """
+    logger.info("语音这一轮没成（%s）：%s", kind, message)
+    return render(
+        request,
+        "interview.html",
+        {"data": data, "voice_error": message, "voice_error_kind": kind},
+        status_code=400,
     )
 
 
