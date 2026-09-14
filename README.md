@@ -20,8 +20,13 @@
 
 ## 现状
 
-**MVP 可运行。** 一条端到端的链已经跑通：**登录 → 题库挑题 → 逐轮追问 → 收尾 →
-面试报告 → 掌握度矩阵**。
+**那条主链能完整跑起来**：登录 → 题库挑题 → 逐轮追问（SSE 流式 + 语音输入）→ 收尾 →
+面试报告 → 掌握度矩阵。在这条链之外还建起了：v1 题目全量导入、知识层构建管道（分批
+提议 + 嵌入聚类 + 人审）、简历 → 私有题集、晋升与内容门禁、事后治理、反馈闭环、
+注销与导出、后台与观测页、限流、备份与恢复验证。
+
+**哪些已经做完、哪些还没有，权威在 [`docs/INDEX.md`](docs/INDEX.md) 的「代码的现状」
+一节** —— 本文不复述那张表（复述一份必然与代码漂移，而 README 正是这么过期的）。
 
 ```bash
 python -m migrations.run          # 建库（迁移是显式的一步，不在启动时跑）
@@ -31,6 +36,24 @@ python -m uvicorn app.main:app    # 起服务
 
 演示账号 `demo@local` / `deepgrill-demo`（口令是公开常量，只用于本地演示库）；
 邀请码 `DEEPGRILL-DEMO` 可用来注册新账号。
+
+### 开发（装 dev extra，跑四条校验）
+
+```bash
+python -m pip install -e ".[dev]"   # pytest + ruff + mypy
+python -m pytest                     # 测试
+python -m ruff check .               # lint（决策 38）
+python -m mypy                       # 类型检查（决策 38；两处豁免的理由在 pyproject.toml）
+python scripts/check_docs.py         # 文档一致性
+```
+
+**这几条由 pre-commit 钩子自动跑**（`git config core.hooksPath .githooks`）。
+本机没装 dev extra 时钩子会提示一句并跳过 lint/类型检查 —— 拦住提交会让人用
+`--no-verify`，而那连文档校验一起跳过了。
+
+运维：`python -m app.cli backup` 做一份备份并**当场验证它能不能恢复**（ADR-0008 的硬
+要求 —— 备份"成功"但恢复不了，只在需要它的那一天暴露）；`python -m app.cli status`
+看库里的规模。
 
 ### 配 API key（要真调模型才需要）
 
@@ -48,9 +71,15 @@ cp .env.example .env        # Windows: Copy-Item .env.example .env
 
 ```ini
 DEEPGRILL_LLM_API_KEY=sk-…
-DEEPGRILL_LLM_BASE_URL=https://api.deepseek.com/v1
-DEEPGRILL_MODEL_INTERVIEWER=deepseek-v4.1-flash
+DEEPGRILL_LLM_BASE_URL=https://api.deepseek.com
+DEEPGRILL_MODEL_INTERVIEWER=deepseek-flash
 ```
+
+**这三个键的权威值是 `.env.example` 与 `app/config.py`**（本文不复述型号串：
+换模型是改配置，不是改代码 —— 决策 50）。语音转写与嵌入是两个**独立**的供应商配置
+（`DEEPGRILL_STT_PROVIDER` / `DEEPGRILL_EMBEDDING_PROVIDER`），默认 `none` =
+**没接**：调用时明确失败并让用户改用别的路，而不是拿假数据糊过去。
+⚠️ DeepSeek 不提供 embeddings，所以知识层聚类要另外配一家。
 
 `.env` 已被 `.gitignore` 挡住（**它装的是密钥，不要提交**）；`.env.example` 是
 可提交的模板。
@@ -69,25 +98,10 @@ export DEEPGRILL_LLM_API_KEY=sk-…        # macOS / Linux
 **优先级**：真实环境变量 > `.env` > 代码里的默认值（所以临时换一次不必改文件）。
 
 配置只有一个来源即环境（含 `.env` 这一层），全部键名以 `DEEPGRILL_` 开头；
-模型名按**用途**命名（决策 50），换模型是改这个值、不是改代码。可配的键与默认值
-见 `.env.example` 与 `app/config.py`（配置的权威在那两个地方，本文不复述）。
+模型名按**用途**命名（决策 50）。可配的键与默认值见 `.env.example` 与
+`app/config.py`（配置的权威在那两个地方，本文不复述）。
 
-### 已经能用的
-
-| | |
-|---|---|
-| 模拟面试 / 单题追问 | 逐轮追问由**考察点命中状态**驱动；追问上限到顶时由**程序**强制收尾（ADR-0001） |
-| 题库 | 浏览与看题（含"这道题考什么"），**不消耗额度点**；私有题与公共题同一张表，靠统一入口过滤 |
-| 面试报告 | 由已落库的数据拼装，只有一段总结由 LLM 生成（ADR-0003） |
-| 掌握度矩阵 | 每格 = 该知识点下「被考过的考察点」里答到了多少；「没考过」是空格、不是 0% |
-| 账号 | 邀请码注册 / 登录 / 会话令牌 / 每日额度点 |
-
-### 还没有（都在 `docs/v2范围基线.md` 的 In 里，按需要排）
-
-语音输入（ADR-0009）· 简历 → 私有题集 · 知识层构建管道（离线）· 晋升与内容门禁 ·
-离线 worker（ADR-0006）· admin 后台 · SSE 流式 · v1 题库导入。
-
-设计与取舍都在文档里，**不在本文复述**：
+### 设计与取舍都在文档里，**不在本文复述**
 
 - 产品边界与验收标准 → [`docs/v2范围基线.md`](docs/v2范围基线.md)
 - 架构决策（以及**被否决的备选**）→ [`docs/adr/`](docs/adr/)
