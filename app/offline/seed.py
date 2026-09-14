@@ -117,8 +117,9 @@ def seed(session: Session) -> dict[str, int]:
                 email=SEED_EMAIL,
                 username="demo",
                 # 演示账号的口令是**公开常量**，与用户名一起写在 README 里 ——
-                # 它只用于本地演示库。生产库的口令来自环境，占位口令由决策 58
-                # 的启动检查拦下（那条还没实现）。
+                # 它只用于本地演示库。生产库的口令来自环境，而带着占位口令
+                # （`PLACEHOLDER__…`）的库会被启动检查拒绝（决策 58，
+                # 落地在 `app/db/startup.py`；线上把 `DEEPGRILL_REQUIRE_SECURE_DB` 打开）。
                 password_hash=hash_password(SEED_PASSWORD),
                 role="user",
             )
