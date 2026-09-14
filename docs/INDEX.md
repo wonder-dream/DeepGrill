@@ -69,6 +69,31 @@
 
 ---
 
+## 代码的现状（哪些已经存在、哪些还没有）
+
+新会话容易误判的一件事：**`app/` 目录存在，但里面只有包的 docstring。服务起不来。**
+
+| 已经有 | 位置 |
+|---|---|
+| v2 的**表结构权威**（执行 `python -m migrations.run` 得到全库） | `migrations/0001_initial.sql` |
+| 迁移执行器 + 4 条测试 | `migrations/_runner.py`、`migrations/test_runner.py` |
+| 依赖与 pytest 配置（收集范围已配死） | `pyproject.toml` |
+| 共享 fixture（`tmp_dir`） | `conftest.py`（仓库根，见 `docs/adr/0010-repository-layout-and-import-boundaries.md`） |
+
+| 还没有 | 归属 |
+|---|---|
+| `app/db`（引擎 / session / `Depends` / **JSON 列必须 `ensure_ascii=False`**） | 见 `docs/v1行为规格.md` §8.7 |
+| `app/main.py`（组装根）与 `app/web` 的第一个页面 | ADR-0010 |
+| 启动时**拒绝带占位口令的库**的检查 | 决策 58（未实施） |
+| 枚举列的 `CHECK` 约束 | `docs/v2范围基线.md` §未决 7 |
+| v1 题目导入（`tools/import_v1.py`） | §未决 2 |
+| ruff / mypy 与它们的提交前检查 | 决策 38（未实施） |
+| 迁移通道、测试策略、验收标准、阈值标定 | §未决 2 / 3 / 5 / 6 |
+
+> **这张表会过期**，它的用途只是"接手时别以为代码已经在那儿了"。`docs/v2范围基线.md` §未决是待办清单的权威。
+
+---
+
 ## 每份文档头部应声明的事
 
 活文档与会过期的文档，头部都要有一行说明自己的身份：
