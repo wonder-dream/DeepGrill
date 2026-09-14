@@ -1,6 +1,6 @@
 # 面试报告由数据拼装，只有一段总结由 LLM 生成
 
-> 状态：accepted ｜ 影响文档：`docs/v2数据模型.md`（interviews.report_body / report_summary · report_items）· `CONTEXT.md`（面试报告）· `docs/v2范围基线.md` 决策 27
+> 状态：accepted ｜ 影响文档：`docs/v2数据模型.md`（interviews.report_body / report_summary · report_items）· `CONTEXT.md`（面试报告）· `docs/v2范围基线.md` 决策 27 · `AGENTS.md` §四
 
 一场**模拟面试**结束后的报告，其主体（总分、四维分、掌握度矩阵的变化、逐题回顾、该补的前置知识点、主要问题清单）全部由**已经产生并落库的数据**查表或运算得到；只有最后一段「这场面试说明了什么」的自然语言总结由 LLM 生成。
 
@@ -22,7 +22,7 @@
   题目 / 考察点 / 评分标准          ← report_items 的快照（生成时冻结）
   你的回答                        ← attempts.answer_text
   面试官评语                      ← evaluations.review
-  判定（① 半对 ② 未命中 ③ 未命中）  ← evaluations.hits
+  判定（① 半对 ② 未命中 ③ 未命中）  ← attempts.hits（末轮快照）
 ```
 
 **只有 ②④⑤ 需要计算，且都不调 LLM** —— ②⑤ 是聚合，④ 是沿**前置依赖边**走一跳（「volatile 的考察点②没答到」→ 查前置边 → 「建议先补 JMM 内存模型」）。
