@@ -30,6 +30,25 @@
 {% endif %}
 
 <section class="card">
+  <h2>收藏</h2>
+  {% if request.query_params.get("favorite") == "ok" %}
+  <p class="muted">已收藏 —— 在<a href="/me/favorites">我的收藏</a>里找得到它。</p>
+  {% elif request.query_params.get("favorite") == "off" %}
+  <p class="muted">已取消收藏。</p>
+  {% endif %}
+  {% if is_favorited %}
+  <form method="post" action="/bank/{{ data.question.id }}/favorite/remove">
+    <button class="button" type="submit">取消收藏</button>
+  </form>
+  {% else %}
+  <form method="post" action="/bank/{{ data.question.id }}/favorite">
+    <button class="button" type="submit">收藏这道题</button>
+  </form>
+  {% endif %}
+  <p class="muted">收藏不消耗额度点，也不改变题目本身 —— 它只是你自己的一个指针（决策 63）。</p>
+</section>
+
+<section class="card">
   <h2>开始面试</h2>
   {% if can_start and quota and quota.library_only %}
   <p class="warn">额度用完了 —— 现在是<strong>纯题库模式</strong>。这道题的题干、考察点与

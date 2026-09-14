@@ -88,6 +88,7 @@
 | 离线管道：简历→档案→私有题集、知识层提议与人审 | `app/offline/profile_pipeline.py`、`app/offline/knowledge_pipeline.py` |
 | 页面：首页 / 题库 / 登录注册 / 我的 / 答题 / 报告 / 反馈 / 后台 / 观测 | `app/web/`（一个文件 = 一个 URL） |
 | 观测页（决策 23）：离线队列 / 待定池 / 库体积 / 质量仪表板 / 离线报告 | `app/web/observability.py`、`app/web/observability_page.py` |
+| 收藏夹（决策 63）：收藏 / 取消 / 我的收藏页 / 题库列表 ★ 标记 / 首页与「我的」入口 | `app/bank/favorites.py`、`app/web/favorites_page.py`、`app/web/templates/my_favorites.html` |
 | 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker`） | `app/cli.py`、`app/offline/seed.py` |
 | v1 题目导入（只读连接 + 幂等 + 标签映射） | `tools/import_v1.py`、`tools/test_import_v1.py` |
 | 对照工具（文档 vs SQL 字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
@@ -108,7 +109,7 @@
 > `app/db/startup.py`（开关 `DEEPGRILL_REQUIRE_SECURE_DB`，**线上必须开**）；
 > **v1 题目导入**（§未决 2）已进 `tools/import_v1.py`。
 
-> **收藏夹不在这张表里** —— 它已经建好了（决策 63，`user_favorites`，见 `migrations/0001_initial.sql`）。
+> **收藏夹已经不在这张表里** —— 决策 63 整条落地了（表 + 动作 + 三个页面入口，见上表）。
 > **反馈闭环也不在** —— 决策 64 把它定成继承 v1 的工单形态（`migrations/0002_feedback_workflow.sql`）。
 
 > **这张表会过期**，它的用途只是"接手时别以为代码已经在那儿了"。`docs/v2范围基线.md` §未决是待办清单的权威。

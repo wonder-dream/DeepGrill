@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.account import service as account
-from app.bank import pages, service
+from app.bank import favorites, pages, service
 from app.db.models import User
 from app.deps import get_current_user, get_session
 from app.web.templating import render
@@ -52,7 +52,18 @@ def bank_list(
         request,
         "bank_list.html",
         # 浏览**永远**可用（决策 13），所以这里只带额度状态用于提示，不做拦截。
-        {"data": data, "quota": account.quota_state(session, user.id) if user else None},
+        {
+            "data": data,
+            "quota": account.quota_state(session, user.id) if user else None,
+            # 一页的收藏状态**一次问完**（决策 63）—— 不在模板里逐题查库
+            "favorited": (
+                favorites.favorited_ids(
+                    session, user_id=user.id, question_ids=[c.id for c in data.cards]
+                )
+                if user
+                else set()
+            ),
+        },
     )
 
 
@@ -69,5 +80,10 @@ def bank_detail(
             "data": data,
             "can_start": user is not None,
             "quota": account.quota_state(session, user.id) if user else None,
+            "is_favorited": (
+                favorites.is_favorited(session, user_id=user.id, question_id=question_id)
+                if user
+                else False
+            ),
         },
     )

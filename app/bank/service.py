@@ -45,7 +45,12 @@ class QuestionDetail:
     related_point_ids: list[int] = field(default_factory=list)
 
 
-def _to_card(q: Question, point_name: str) -> QuestionCard:
+def to_card(q: Question, point_name: str) -> QuestionCard:
+    """把一行题变成列表卡片。
+
+    公开（无下划线）是因为 `favorites.py` 也要它 —— 收藏夹列的是同一种卡片，
+    抄一份"列表行长什么样"就是第二个会漂的真相。
+    """
     return QuestionCard(
         id=q.id,
         kind=q.kind,
@@ -78,7 +83,7 @@ def browse(
     names = repository.point_names(
         session, {q.primary_point_id for q in rows if q.primary_point_id is not None}
     )
-    cards = [_to_card(q, names.get(q.primary_point_id or -1, "")) for q in rows]
+    cards = [to_card(q, names.get(q.primary_point_id or -1, "")) for q in rows]
     return cards, total
 
 

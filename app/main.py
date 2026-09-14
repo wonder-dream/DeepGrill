@@ -23,6 +23,7 @@ from app.web import (
     admin_users_page,
     auth_page,
     bank_page,
+    favorites_page,
     feedback_page,
     home_page,
     interview_page,
@@ -70,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_page.router)
     app.include_router(admin_users_page.router)
     app.include_router(feedback_page.router)
+    app.include_router(favorites_page.router)
     app.include_router(observability_page.router)
 
     _install_error_handlers(app)

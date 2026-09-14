@@ -20,7 +20,7 @@
 <section class="card">
   <table>
     <thead>
-      <tr><th>#</th><th>题干</th><th>知识点</th><th>难度</th><th>来源</th></tr>
+      <tr><th>#</th><th>题干</th><th>知识点</th><th>难度</th><th>来源</th><th></th></tr>
     </thead>
     <tbody>
       {% for c in data.cards %}
@@ -30,6 +30,7 @@
         <td>{{ c.point_name or "—" }}</td>
         <td>{{ c.difficulty }}</td>
         <td>{% if c.is_private %}私有{% else %}公共{% endif %}</td>
+        <td>{% if c.id in favorited %}<span title="已收藏">★</span>{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>

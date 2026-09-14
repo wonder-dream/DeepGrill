@@ -27,10 +27,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, delete, func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Criterion, KnowledgePoint, Question, QuestionPoint
+from app.db.models import Criterion, KnowledgePoint, Question, QuestionPoint, UserFavorite
 
 #: 公共列表只认这一种可见性。`pending`（晋升待门禁）与 `hidden` 都不算公共。
 PUBLIC_VISIBILITY = "public"
@@ -200,3 +200,79 @@ def owned_questions(session: Session, user_id: int) -> list[Question]:
         .scalars()
         .all()
     )
+
+
+# ---------------------------------------------------------------------------
+# 收藏夹（决策 63）
+# ---------------------------------------------------------------------------
+# 为什么这四个函数在**仓储**里而不是 `favorites.py` 里：收藏夹指向的是题，
+# 而"题怎么查"只有这一条通道（AGENTS.md §3.5）。把 `select(UserFavorite)` 留在
+# 领域服务里会在结构测试的豁免边上打洞 —— 那条测试抓的正是"题目相关的查询绕开了
+# `visible_to()`"。这里每个返回题的函数都从 `visible_to()` 起手。
+def list_favorites(
+    session: Session, user_id: int, *, offset: int = 0, limit: int = 20
+) -> tuple[list[Question], int]:
+    """这位用户收藏的题（分页）。**仍然要过可见性**。
+
+    收藏只是一根指针：题被标 `hidden` 或换成了别人的私有题之后，收藏夹不能再把它
+    露出来（`visible_to()` 的注释里点了这个场景 —— 宁可"收藏里少一行"）。
+    悬空行（题已被删）连 join 都过不去，自然也不会出现。
+    """
+    ids = select(UserFavorite.question_id).where(UserFavorite.user_id == user_id)
+    stmt = visible_to(user_id).where(Question.id.in_(ids))
+    total = session.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+    rows = session.execute(
+        stmt.order_by(Question.id.desc()).offset(offset).limit(limit)
+    ).scalars().all()
+    return list(rows), int(total)
+
+
+def favorited_ids(session: Session, user_id: int, question_ids: list[int]) -> set[int]:
+    """这批题里哪些已被收藏 —— **列表页一次问完**，不在循环里逐题查（v1 的 N+1）。"""
+    if not question_ids:
+        return set()
+    rows = session.execute(
+        select(UserFavorite.question_id).where(
+            UserFavorite.user_id == user_id,
+            UserFavorite.question_id.in_(question_ids),
+        )
+    ).all()
+    return {r[0] for r in rows}
+
+
+def favorite_count(session: Session, user_id: int) -> int:
+    return int(
+        session.execute(
+            select(func.count()).select_from(UserFavorite).where(UserFavorite.user_id == user_id)
+        ).scalar_one()
+    )
+
+
+def find_favorite(session: Session, user_id: int, question_id: int) -> UserFavorite | None:
+    return session.execute(
+        select(UserFavorite).where(
+            UserFavorite.user_id == user_id, UserFavorite.question_id == question_id
+        )
+    ).scalar_one_or_none()
+
+
+def add_favorite(session: Session, user_id: int, question_id: int) -> UserFavorite:
+    row = UserFavorite(user_id=user_id, question_id=question_id)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def remove_favorite(session: Session, user_id: int, question_id: int) -> bool:
+    """取消收藏。返回"本来有没有" —— 界面要用它区分"取消成功"与"本来就没收藏"。
+
+    ⚠️ 收藏是**用户自己的指针**，所以取消时**不带可见性条件**：题被隐藏之后，
+    用户仍然应该能把自己的那根指针清掉（否则"收藏里那一行"会永远挂着却点不进去）。
+    """
+    result = session.execute(
+        delete(UserFavorite).where(
+            UserFavorite.user_id == user_id, UserFavorite.question_id == question_id
+        )
+    )
+    session.flush()
+    return bool(result.rowcount)

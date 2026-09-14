@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}我的收藏 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>我的收藏</h1>
+  <p class="muted">共 {{ total }} 道。收藏只是你自己的一个指针 —— 它不消耗额度点，
+  也不会改变题目本身。</p>
+</section>
+
+{% if not cards %}
+<section class="card">
+  <p class="muted">还没有收藏。在<a href="/bank">题库</a>里点「收藏」就能把题留在这里。</p>
+</section>
+{% else %}
+<section class="card">
+  <table>
+    <thead>
+      <tr><th>#</th><th>题干</th><th>知识点</th><th>难度</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for c in cards %}
+      <tr>
+        <td>{{ c.id }}</td>
+        <td><a href="/bank/{{ c.id }}">{{ c.stem }}</a></td>
+        <td>{{ c.point_name or "—" }}</td>
+        <td>{{ c.difficulty }}</td>
+        <td>
+          <form method="post" action="/bank/{{ c.id }}/favorite/remove">
+            <button class="link" type="submit">取消收藏</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  {% if has_prev %}<a class="button" href="/me/favorites?page={{ page - 1 }}">上一页</a>{% endif %}
+  <span class="muted">第 {{ page }} 页</span>
+  {% if has_next %}<a class="button" href="/me/favorites?page={{ page + 1 }}">下一页</a>{% endif %}
+</section>
+{% endif %}
+
+<section class="card"><p><a class="button" href="/me">回我的</a></p></section>
+{% endblock %}

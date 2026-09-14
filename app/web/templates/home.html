@@ -35,6 +35,9 @@
   {% else %}
   <p><a class="button" href="/bank">从题库挑一道题开始</a></p>
   {% endif %}
+  {% if user %}
+  <p class="muted">收藏夹（决策 63）：<a href="/me/favorites">我的收藏</a> —— 题库里点「收藏」的题都在那儿，不耗额度。</p>
+  {% endif %}
 </section>
 
 <section class="card">
