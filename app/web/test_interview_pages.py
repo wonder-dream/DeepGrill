@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.account import repository as account_repository
+from app.account import service as account
 from app.config import Settings
 from app.db import create_db_engine, create_session_factory
 from app.db.models import Criterion, Domain, KnowledgePoint, Question, User
@@ -49,6 +50,12 @@ def _eval(accuracy=80, completeness=80, clarity=80, depth=80, review="评语"):
 def _summary(text="这场面试说明并发基础还需补。"):
     return FakeReply(data={"summary": text})
 
+
+def _left(spent: int) -> str:
+    """`/me` 上的额度读数 —— 从常量算（决策 71 标定过一次，别再写死）。"""
+    from app.account import service as account
+
+    return f"{account.DAILY_UNITS - spent} / {account.DAILY_UNITS}"
 
 @pytest.fixture
 def app(tmp_dir: Path):
@@ -186,7 +193,7 @@ def test_quota_is_charged_and_shown(app, client: TestClient) -> None:
     app.dependency_overrides[get_llm] = lambda: fake
     _login(client)
     _start_drill(client)
-    assert "19 / 20" in client.get("/me").text, "单题追问扣 1 点"
+    assert _left(1) in client.get("/me").text, "单题追问扣 1 点"
 
 
 def test_interview_mode_charges_six_and_walks_through_questions(app, client: TestClient) -> None:
@@ -224,7 +231,7 @@ def test_interview_mode_charges_six_and_walks_through_questions(app, client: Tes
     r = client.post("/interview/start", data={"mode": "interview"}, follow_redirects=False)
     assert r.status_code == 302
     location = r.headers["location"]
-    assert "14 / 20" in client.get("/me").text, "模拟面试扣 6 点"
+    assert _left(account.COST["interview"]) in client.get("/me").text, "模拟面试按 COST 扣点"
 
     # 第一题答完应当**跳到下一题**，而不是直接出报告
     r = client.post(f"{location}/answer", data={"answer_text": "a"}, follow_redirects=False)

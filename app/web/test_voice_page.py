@@ -72,6 +72,12 @@ def _eval_reply() -> FakeReply:
     )
 
 
+def _left(spent: int) -> str:
+    """额度读数 —— 从常量算（决策 71 标定过一次，别再写死）。"""
+    from app.account import service as account
+
+    return f"{account.DAILY_UNITS - spent} / {account.DAILY_UNITS}"
+
 @pytest.fixture
 def db(tmp_dir: Path) -> Path:
     path = tmp_dir / "voice.db"
@@ -340,7 +346,7 @@ def test_voice_round_does_not_charge_quota_again(app, client: TestClient, db: Pa
     app.dependency_overrides[get_stt] = StubSTT
     location = _start_drill(client)
     _post_voice(client, location)
-    assert "还剩 <strong>19 / 20</strong> 点" in client.get("/").text
+    assert f"还剩 <strong>{_left(1)}</strong> 点" in client.get("/").text
 
 
 def test_interview_row_is_untouched_by_voice(app, client: TestClient, db: Path) -> None:

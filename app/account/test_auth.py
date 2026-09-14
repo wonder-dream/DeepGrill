@@ -219,17 +219,22 @@ def test_me_requires_login(client: TestClient) -> None:
 
 
 def test_me_shows_remaining_quota(client: TestClient, db: Path) -> None:
+    from app.account import service
+
     user_id = add_user(db)
     with create_session_factory(create_db_engine(db))() as s:
-        from app.account import service
-
         service.spend_units(s, user_id, "interview")
         s.commit()
 
     client.post("/login", data={"email": "u@local", "password": "secret123"})
     r = client.get("/me")
     assert r.status_code == 200
-    assert "14 / 20" in r.text, "扣掉一场模拟面试（6 点）后应当剩 14"
+    # 数字从常量算，不写死：每日上限标定过一次（决策 71，20 → 8），
+    # 写死的话每次标定都要回来改这条断言 —— 而漏改的断言仍然是绿的
+    left = service.DAILY_UNITS - service.COST["interview"]
+    assert f"{left} / {service.DAILY_UNITS}" in r.text, (
+        f"扣掉一场模拟面试（{service.COST['interview']} 点）后应当剩 {left}"
+    )
 
 
 def test_login_page_redirects_when_already_logged_in(client: TestClient, db: Path) -> None:

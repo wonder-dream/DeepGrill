@@ -28,6 +28,12 @@ PASSWORD = "secret123"
 _HASH = hash_password(PASSWORD)
 
 
+def _quota_line(client) -> str:
+    """页面上的额度行 —— 数字从常量算（决策 71 标定过一次，别再写死）。"""
+    from app.account import service as account
+
+    return f"还剩 <strong>{account.DAILY_UNITS} / {account.DAILY_UNITS}</strong> 点"
+
 @pytest.fixture
 def db(tmp_dir: Path) -> Path:
     path = tmp_dir / "explain-page.db"
@@ -116,7 +122,7 @@ def test_generation_is_not_charged_in_quota_points(app, client: TestClient, db: 
     app.dependency_overrides[get_llm] = lambda: CountingLLM().queue_text("讲解正文")
     client.post("/bank/1/explain", follow_redirects=False)
 
-    assert "还剩 <strong>20 / 20</strong> 点" in client.get("/").text, "题库这条线不扣点"
+    assert _quota_line(client) in client.get("/").text, "题库这条线不扣点"
     with create_session_factory(create_db_engine(db))() as s:
         row = account.repository.quota_row(s, 2, account.today())
         assert row is not None and row.tokens_used == 150, "这次调用的 token 要进账本"

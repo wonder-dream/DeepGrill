@@ -24,10 +24,20 @@ from app.db.models import InviteCode, QuotaLedger, User
 from app.errors import Forbidden, InvalidInput, NotFound, QuotaExhausted
 from app.security import hash_password, new_token, token_hash, verify_password
 
-#: 每日额度点上限。MVP 先用一个能演示的值；真实系数要按成本重标定（§未决 9）。
-DAILY_UNITS = 20
+#: 每日额度点上限。**这个数是标定出来的**（决策 71 / §未决 9）：`calibrate --live`
+#: 实测一轮追问 ≈ 2.6k token、一场面试（3 题 × 3 轮 + 判分 ≈ 12 次调用）≈ 31.5k token，
+#: 而立项时的成本模型是"每人每天约 1 场面试 ≈ 0.06 元"。
+#: 20 点（= 3 场多）是那个模型的 **3 倍**；8 点 = 1 场面试 + 2 轮追问 ≈ 37k token/天/人。
+DAILY_UNITS = 8
 
 #: 各形态的扣减（决策 2 的额度点列）。`browse` 恒为 0 —— 题库永远可用。
+#:
+#: ⚠️ **6 : 1 与实测的 token 比值（12 : 1）差一倍，这是记录在案的有意保留**（决策 71）：
+#: 一场面试 ≈ 12 次调用、一轮追问 ≈ 1 次，所以按成本算一场该是 12 点。不改的理由有三条 ——
+#: ① 改它要动 `migrations/0001_initial.sql` 里 `quota_charged` 的注释（"0 / 1 / 6"），
+#: 而迁移文件是**校验和冻结**的（决策 55）：改注释＝制造一次假的漂移告警；
+#: ② 偏差的方向是"追问相对贵"，而追问本来就是便宜的那一档，绝对金额小；
+#: ③ 真正的成本阀门是每日上限，而它已经按实测标定过了（见上）。
 COST = {"interview": 6, "drill": 1, "browse": 0}
 
 #: 最便宜的一个**面试官**动作。决策 13 说的"耗尽"以它为界，而不是以 0 为界：

@@ -412,20 +412,29 @@ def live_costs(settings, *, answer: str = SAMPLE_ANSWER) -> Section:
             f"（其中推理 {drill['reasoning_tokens']}）",
             f"  一次讲解（不扣额度点）：prompt {explain['prompt_tokens']} + "
             f"completion {explain['completion_tokens']} = **{explain_tokens} token**",
-            "  一场模拟面试（6 个额度点）= 题数 × 每题的轮数：",
+            "  一场模拟面试 = 题数 × 每题的轮数：",
         ]
+        # 系数从代码里读，不在这里写死 —— 否则报告与实际扣费会各自漂
+        from app.account.service import COST, DAILY_UNITS
         from app.interview.service import DEFAULT_MAX_ROUNDS, INTERVIEW_QUESTION_COUNT
 
+        price = COST["interview"]
+        lines.append(f"  （现行系数：面试 {price} / 追问 {COST['drill']}；每日 {DAILY_UNITS} 点）")
         for count in sorted({2, 3, INTERVIEW_QUESTION_COUNT}):
             est = count * (DEFAULT_MAX_ROUNDS + 1) * round_tokens
             lines.append(
                 f"    {count} 道 × {DEFAULT_MAX_ROUNDS} 轮 ≈ {est} token"
-                f" → 每个额度点 {est // 6} token"
+                f" → 每个额度点 {est // price} token"
             )
+        ratio = INTERVIEW_QUESTION_COUNT * (DEFAULT_MAX_ROUNDS + 1)
         lines.append(
-            f"  参考比值：一场面试的 token ÷ 一轮追问的 token ≈ "
-            f"{INTERVIEW_QUESTION_COUNT * (DEFAULT_MAX_ROUNDS + 1)}"
-            f"（而额度点的比值是 {6} : {1}）"
+            f"  参考比值：一场面试的 token ÷ 一轮追问的 token ≈ {ratio}"
+            f"（而额度点的比值是 {price} : {COST['drill']}）"
+        )
+        daily = est + max(0, DAILY_UNITS - price) * round_tokens
+        lines.append(
+            f"  每日上限 {DAILY_UNITS} 点 ≈ 一场面试 + {max(0, DAILY_UNITS - price)} 轮追问"
+            f" ≈ {int(daily)} token/天/人"
         )
         return Section(
             "⑦ 单位成本（--live）→ 额度点系数",

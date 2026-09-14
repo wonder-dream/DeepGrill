@@ -75,6 +75,15 @@ def db(tmp_dir: Path) -> Path:
     return path
 
 
+def _quota_line(remaining: int) -> str:
+    """首页那一行**带 `<strong>`** 的额度显示（上限从常量算 —— 决策 71）。"""
+    return f"还剩 <strong>{remaining} / {account.DAILY_UNITS}</strong> 点"
+
+
+def _left(remaining: int) -> str:
+    """面试页与错误页那一行**不带标签**的额度显示（同一个上限，两种渲染）。"""
+    return f"还剩 {remaining} / {account.DAILY_UNITS} 点"
+
 @pytest.fixture
 def app(db: Path):
     return create_app(Settings(database_path=db))
@@ -99,7 +108,7 @@ def _spend(db: Path, units: int) -> None:
 # ---------------------------------------------------------------------------
 def test_home_shows_the_remaining_points(client: TestClient) -> None:
     body = client.get("/").text
-    assert "还剩 <strong>20 / 20</strong> 点" in body
+    assert _quota_line(account.DAILY_UNITS) in body, "一分没花时应当显示满额"
     assert "开始模拟面试（6 点）" in body
     assert "纯题库模式" not in body
 
@@ -115,19 +124,19 @@ def test_partial_quota_still_offers_the_cheap_action(client: TestClient, db: Pat
     ⚠️ 这条是"余量不为 0 就不是纯题库模式"的落点：如果实现把降级判据写成
     `remaining == 0`，这里会既没有按钮也没有解释（用户不知道发生了什么）。
     """
-    _spend(db, 17)  # 20 - 17 = 3
+    _spend(db, account.DAILY_UNITS - 3)  # 只剩 3 点：够追问、不够面试
     body = client.get("/bank/1").text
     assert "单题追问（1 点）" in body
     assert "模拟面试（6 点）" not in body, "开不起的按钮不该摆出来"
     assert "纯题库模式" not in body, "还剩 3 点不算只剩题库"
-    assert "还剩 3 / 20 点" in body
+    assert _left(3) in body
 
 
 # ---------------------------------------------------------------------------
 # 耗尽后：降级，不是墙
 # ---------------------------------------------------------------------------
 def test_home_degrades_to_library_mode(client: TestClient, db: Path) -> None:
-    _spend(db, 20)
+    _spend(db, account.DAILY_UNITS)
     body = client.get("/").text
     assert "纯题库模式" in body
     assert "题库" in body and "/bank" in body
@@ -135,7 +144,7 @@ def test_home_degrades_to_library_mode(client: TestClient, db: Path) -> None:
 
 
 def test_bank_list_says_library_mode(client: TestClient, db: Path) -> None:
-    _spend(db, 20)
+    _spend(db, account.DAILY_UNITS)
     body = client.get("/bank").text
     assert "纯题库模式" in body
     assert "说说 volatile 的作用" in body, "题目照旧能看"
@@ -143,7 +152,7 @@ def test_bank_list_says_library_mode(client: TestClient, db: Path) -> None:
 
 def test_bank_detail_still_readable_when_exhausted(client: TestClient, db: Path) -> None:
     """**决策 13 的实质**：耗尽只关掉面试官，不关掉题库。"""
-    _spend(db, 20)
+    _spend(db, account.DAILY_UNITS)
     r = client.get("/bank/1")
     assert r.status_code == 200
     body = r.text
@@ -158,13 +167,13 @@ def test_direct_start_post_explains_instead_of_walling_off(client: TestClient, d
 
     它必须**不是**泛泛的错误页：页面上要写出"题库还在"与明天恢复。
     """
-    _spend(db, 20)
+    _spend(db, account.DAILY_UNITS)
     r = client.post("/interview/start", data={"mode": "drill", "question_id": "1"})
     assert r.status_code == 400
     body = r.text
     assert "面试官今天歇了" in body
     assert "题库整个都还在" in body
-    assert "还剩 0 / 20 点" in body
+    assert _left(0) in body
     assert "/bank" in body
 
 
@@ -177,7 +186,7 @@ def test_exhausted_user_leaves_no_half_built_interview(client: TestClient, db: P
 
     from app.db.models import Interview, Session_
 
-    _spend(db, 20)
+    _spend(db, account.DAILY_UNITS)
     client.post("/interview/start", data={"mode": "drill", "question_id": "1"})
 
     with create_session_factory(create_db_engine(db))() as s:
@@ -200,7 +209,7 @@ def test_other_failures_do_not_claim_a_quota_problem(client: TestClient) -> None
 
 def test_exhausted_state_is_per_user(client: TestClient, db: Path) -> None:
     """额度是**每人每天**的 —— 一个人用完不该把别人也关了。"""
-    _spend(db, 20)
+    _spend(db, account.DAILY_UNITS)
     with create_session_factory(create_db_engine(db))() as s:
         s.add(User(id=5, email="m@local", username="m", password_hash=_HASH, role="user"))
         s.commit()

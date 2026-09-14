@@ -25,6 +25,12 @@ PASSWORD = "secret123"
 _HASH = hash_password(PASSWORD)
 
 
+def _quota_line(client) -> str:
+    """页面上的额度行 —— 数字从常量算（决策 71 标定过一次，别再写死）。"""
+    from app.account import service as account
+
+    return f"还剩 <strong>{account.DAILY_UNITS} / {account.DAILY_UNITS}</strong> 点"
+
 @pytest.fixture
 def db(tmp_dir: Path) -> Path:
     path = tmp_dir / "favpage.db"
@@ -118,7 +124,7 @@ def test_favorite_unknown_question_is_404(client: TestClient) -> None:
 def test_favorite_does_not_charge_quota(client: TestClient) -> None:
     """决策 63：收藏**不消耗额度点**。"""
     client.post("/bank/1/favorite")
-    assert "还剩 <strong>20 / 20</strong> 点" in client.get("/").text
+    assert _quota_line(client) in client.get("/").text
 
 
 # ---------------------------------------------------------------------------

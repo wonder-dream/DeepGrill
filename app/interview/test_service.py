@@ -110,14 +110,37 @@ def test_start_interview_charges_six_units(session: Session) -> None:
 
 def test_quota_exhaustion_refuses_and_leaves_no_half_interview(session: Session) -> None:
     """额度不足时**不留半场面试** —— 扣点与建会话的顺序因此不能反。"""
-    for _ in range(3):
-        service.start_interview(session, user_id=ME, question_ids=[1])  # 18 点
+    from app.account import service as account
     from app.db.models import Interview
+
+    # 用常量算"还能开几场"，不写死次数：每日上限是标定出来的（决策 71）
+    affordable = account.DAILY_UNITS // account.COST["interview"]
+    assert affordable >= 1
+    for _ in range(affordable):
+        service.start_interview(session, user_id=ME, question_ids=[1])
 
     before = len(session.query(Interview).all())
     with pytest.raises(QuotaExhausted):
         service.start_interview(session, user_id=ME, question_ids=[1])
     assert len(session.query(Interview).all()) == before, "额度不足不该留下面试行"
+
+
+def test_the_daily_ration_is_one_interview_plus_a_few_rounds(session: Session) -> None:
+    """每日上限的**标定结果**要被钉住（决策 71）：一天够 1 场面试 + 若干轮追问。
+
+    这条不是在测"数字等于几"，而是在测标定出来的**配比**：上限必须装得下一场
+    完整面试（否则产品形态里的主按钮当天点不了第二次就是荒唐的），又必须小到
+    能当成本阀门用（一场 + 几轮，而不是无限场）。
+    """
+    from app.account import service as account
+
+    interview = account.COST["interview"]
+    assert interview <= account.DAILY_UNITS, "至少得能开一场面试"
+    extra_rounds = account.DAILY_UNITS - interview
+    assert 1 <= extra_rounds <= 4, (
+        f"每日上限 {account.DAILY_UNITS} 点 = 1 场 + {extra_rounds} 轮追问，"
+        "超出这个区间就得重新标定（决策 71 的推导在 `calibrate --live` 里）"
+    )
 
 
 def test_cannot_start_on_invisible_question(session: Session) -> None:
