@@ -1,6 +1,8 @@
 # 代码按领域切分，依赖方向单向，同时需要两个领域的动作归上层
 
-> 状态：accepted ｜ 影响文档：`docs/v2数据模型.md`（models 统一放 · jobs）· `AGENTS.md` §三 · `docs/v2范围基线.md` 决策 35-39、42-43 · `CONTEXT.md`（领域 / bank / knowledge / offline）
+> 状态：accepted ｜ 影响文档：`docs/v2数据模型.md`（models 统一放 · jobs）· `AGENTS.md` §三 · `docs/v2范围基线.md` 决策 35-39、42-43 · `CONTEXT.md`（领域 / bank / knowledge / offline）· `docs/adr/0010-repository-layout-and-import-boundaries.md`
+>
+> ⚠️ **本文定「概念」，物理布局由 `0010` 定**：哪个目录存在、`web/` 与 `migrations/` 的位置、以及哪些 import 不被允许，见 `docs/adr/0010-repository-layout-and-import-boundaries.md`。规则冲突时以 `0010` 为准（它是实施层）。
 
 一级目录**按领域切**（每个领域自含其路由、服务与逻辑），而不是按技术层（`routes/` `services/` `models/`）纵切。**领域之间互不 import**；当一个动作同时需要两个领域时，把它放到**能同时依赖两者的上一层**，而不是让两个领域互相 import。
 
@@ -129,5 +131,5 @@ tests/conftest.py       共享 fixture（FakeLLM 预录响应队列 / 内存 SQL
 - **单文件体积天然受限**：一个领域一个文件，而不是所有领域一个文件。
 - **跨领域动作有一个固定去处**：放进能依赖两者的上一层（目前是 `offline`）。**这个模式会被反复用到**，不只是自修复。
 - **`offline` 的职责比"管道"重**：它是编排层，不只是跑批。写自修复时会觉得"这明明是知识层的事却放在 offline" —— **这个别扭感是边界清晰的代价，不是设计失误。**
-- **本决定没有涵盖"基础设施层的边界怎么划"**：例如模板渲染算基础设施还是 web 专属，待定。同层的许可依赖清单也待补全。
-- 本文件记录的是**结构决策**；完整的领域与文件清单在实施时补全。
+- **本决定没有涵盖"基础设施层的边界怎么划"** —— **已由 `docs/adr/0010-repository-layout-and-import-boundaries.md` 补全**：模板与静态资源归 `web/`（判据是本文那条「内容 vs 形状」），基础设施因此收窄为 `llm` · `db` · `config` · `errors` 四项；同层的许可依赖清单也在那里。
+- 本文件记录的是**结构决策**；文件清单见 `docs/adr/0010-repository-layout-and-import-boundaries.md` 的目录树。
