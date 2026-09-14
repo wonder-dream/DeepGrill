@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>AI 模拟面试平台</h1>
+  <p>面试官读完你的简历之外的东西还不在 MVP 里 —— 此刻能跑通的是"从题库抽题、逐题追问、结束给报告"这条主线。</p>
+</section>
+
+<section class="card">
+  <h2>三个入口</h2>
+  <ul>
+    <li><strong>模拟面试</strong>：抽多题 → 逐题提问 → 每题追问 → 总报告</li>
+    <li><strong>单题追问</strong>：挑一道题挖到深处</li>
+    <li><strong>题库练习</strong>：只看题与评分标准，不调 LLM、不耗额度</li>
+  </ul>
+</section>
+
+<section class="card">
+  <h2>当前状态</h2>
+  <dl>
+    <dt>库</dt><dd>{{ database_status }}</dd>
+    <dt>题库</dt><dd>{{ question_count }} 道</dd>
+    <dt>知识点</dt><dd>{{ point_count }} 个</dd>
+  </dl>
+</section>
+{% endblock %}

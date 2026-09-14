@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}出错了 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>请求无法完成</h1>
+  <p class="error">{{ message }}</p>
+  <p><a class="button" href="/">回到首页</a></p>
+</section>
+{% endblock %}
