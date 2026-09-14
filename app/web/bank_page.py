@@ -21,7 +21,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.account import service as account
-from app.bank import favorites, pages, service
+from app.bank import favorites, pages, promotion, service
 from app.db.models import User
 from app.deps import get_current_user, get_llm, get_session, rate_limit_interviewer
 from app.knowledge import explanation
@@ -133,8 +133,38 @@ def explain_question(
     return RedirectResponse(f"/bank/{question_id}?explain=ok", status_code=302)
 
 
+@router.post("/bank/{question_id}/promote")
+def promote_question(
+    request: Request,
+    question_id: int,
+    session: SessionDep,
+    user: CurrentUserDep,
+) -> object:
+    """晋升自己的私有题到公共题库（决策 9）。
+
+    **门禁失败不是错误页**：它返回 200 + 详情页 + 一条"哪一条没过"的说明 ——
+    用户可以改完再试。做成 4xx 的话，"我该怎么改"就没地方显示了。
+
+    过闸之后题会进**公共待定池**（`primary_point_id=NULL`）：挂到人审过的知识点上是
+    知识层管道的事（决策 46），而在此之前它没有考察点（页面上写着这件事）。
+    """
+    me = user
+    if me is None:
+        return RedirectResponse("/login", status_code=302)
+
+    data = service.detail(session, question_id, _viewer(user))
+    result = promotion.promote(session, question=data.question, user_id=me.id)
+    if not result.passed:
+        return _render_detail(
+            request, session, data, user,
+            notice=f"门禁没过：{result.summary()}",
+            status_code=200,
+        )
+    return RedirectResponse(f"/bank/{question_id}?promoted=ok", status_code=302)
+
+
 def _render_detail(request: Request, session: Session, data, user, *, notice, status_code: int = 200) -> object:
-    """详情页的渲染（GET 与"讲解生成失败"那条路共用，免得两处慢慢分叉）。"""
+    """详情页的渲染（GET 与两条"动作失败"的路共用，免得几处慢慢分叉）。"""
     cached_explanation = explanation.cached(session, question=data.question)
     return render(
         request,
@@ -146,6 +176,8 @@ def _render_detail(request: Request, session: Session, data, user, *, notice, st
             "is_favorited": False if user is None else favorites.is_favorited(
                 session, user_id=user.id, question_id=data.question.id
             ),
+            # 只有**自己的私有题**才有晋升按钮（决策 9 是"用户主动晋升自己的题"）
+            "is_mine": user is not None and data.question.owner_user_id == user.id,
             "explanation": cached_explanation,
             "explain_notice": notice,
         },

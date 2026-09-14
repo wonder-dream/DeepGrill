@@ -68,6 +68,25 @@
 </section>
 
 <section class="card">
+  <h2>晋升到公共题库</h2>
+  {% if request.query_params.get("promoted") == "ok" %}
+  <p class="muted">已晋升 —— 它现在在<strong>公共待定池</strong>里，等挂到人审过的知识点上
+     就能被所有人用来练习与面试。挂载完成前它没有考察点，判分只能按题干自己判断。</p>
+  {% endif %}
+  {% if not data.question.owner_user_id %}
+  <p class="muted">它已经在公共题库里了（来源：{{ data.question.origin }}）。</p>
+  {% elif is_mine %}
+  <p class="muted">这是你的私有题。晋升 = 交给公共题库（必经 <strong>自动门禁</strong>：
+     题干长度 / 题型 / 有没有考察点 / 是否与已有公共题重复）。</p>
+  <form method="post" action="/bank/{{ data.question.id }}/promote">
+    <button class="button" type="submit">晋升到公共题库</button>
+  </form>
+  {% else %}
+  <p class="muted">这是别人的私有题 —— 只有作者本人能晋升它。</p>
+  {% endif %}
+</section>
+
+<section class="card">
   <h2>开始面试</h2>
   {% if can_start and quota and quota.library_only %}
   <p class="warn">额度用完了 —— 现在是<strong>纯题库模式</strong>。这道题的题干、考察点与

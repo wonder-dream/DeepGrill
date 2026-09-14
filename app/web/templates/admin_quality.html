@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}题库质量 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>题库质量</h1>
+  <p class="muted">事后治理：检测是自动的（离线任务 <code>flag_duplicate_questions</code>），
+     处置由人做。三个动作的区别是「改不改题库」—— 结掉/忽略只动标记，藏起来会让题下架。</p>
+  {% if request.query_params.get("done") == "hidden" %}
+  <p class="muted">已藏起来：它不再出现在浏览与抽题里（数据还在，没有删除）。</p>
+  {% elif request.query_params.get("done") %}
+  <p class="muted">已标记为 {{ "已解决" if request.query_params.get("done") == "resolved" else "忽略" }}。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  {% if not flags %}
+  <p class="muted">没有待处理的质量标记。它是自动检测出来的 —— 没有就说明题库目前干净。</p>
+  {% else %}
+  <p class="muted">共 {{ flags | length }} 条待处理。</p>
+  {% for f in flags %}
+  <article>
+    <h3>#{{ f.id }} · {{ f.kind }}</h3>
+    <p><a href="/bank/{{ f.question_id }}">{{ stems.get(f.question_id, "（题不见了）") }}</a></p>
+    <p class="muted">题目 #{{ f.question_id }} —— {{ f.detail or "没有细节" }}</p>
+    <form class="inline" method="post" action="/admin/quality/{{ f.id }}/resolve">
+      <button class="button" type="submit">结掉（确实有问题）</button>
+    </form>
+    <form class="inline" method="post" action="/admin/quality/{{ f.id }}/dismiss">
+      <button class="link" type="submit">忽略（误报）</button>
+    </form>
+    <form class="inline" method="post" action="/admin/quality/{{ f.id }}/hide">
+      <button class="link" type="submit">藏起来（下架这道题）</button>
+    </form>
+  </article>
+  {% endfor %}
+  {% endif %}
+</section>
+
+<section class="card">
+  <p class="muted">只读的那一份在<a href="/admin/observability">观测页</a>（队列 / 待定池 /
+     库体积 / 质量仪表板）。这一页只做动作。</p>
+  <p><a class="button" href="/admin">回后台</a></p>
+</section>
+{% endblock %}

@@ -95,6 +95,8 @@
 | 进程内限流（决策 66）：按 IP / 按用户三档、滑动窗口 + reserve/settle、TTL 与容量回收 | `app/ratelimit.py`、`app/main.py`、`app/deps.py` |
 | 讲解按需生成 + 缓存（决策 67）：题目 id + 版本为键、不预生成、TTL 与容量回收 | `app/knowledge/explanation.py`、`migrations/0003_explanation_cache.sql` |
 | 启动期检查：拒绝占位口令（决策 58）与**半迁移**的库 | `app/db/startup.py` |
+| 晋升 + 自动门禁（决策 5/9/68）：四条确定性检查、过闸进公共待定池 | `app/bank/promotion.py` |
+| 事后治理（决策 5 + ADR-0002）：重复检测（离线任务）与三个处置动作 | `app/bank/quality.py`、`app/web/quality_page.py` |
 | 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker`） | `app/cli.py`、`app/offline/seed.py` |
 | v1 题目导入（只读连接 + 幂等 + 标签映射） | `tools/import_v1.py`、`tools/test_import_v1.py` |
 | 对照工具（文档 vs SQL 字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
@@ -103,7 +105,6 @@
 | 还没有 | 归属 |
 |---|---|
 | 语音转写的**真实供应商**（接口与占位实现已就位；`DEEPGRILL_STT_PROVIDER=none` 时明确失败并让人改用打字） | 决策 32 / ADR-0009 |
-| 晋升（私有题 → 公共题库，走内容门禁）与 `question_flags` 的冲突检测 | 决策 5、9 |
 | 知识层全量提议（分批 + 嵌入聚类）—— 现在只支持小样本单次调用 | 决策 44、46 |
 | 阈值标定的实验脚本（`docs/v1行为规格.md` §11 的每个数字） | §未决 6 |
 | 验收标准 | §未决 5 |

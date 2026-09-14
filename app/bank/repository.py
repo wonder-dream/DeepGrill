@@ -178,6 +178,18 @@ def unmounted_public(session: Session) -> list[Question]:
     )
 
 
+def unmounted_public_count(session: Session) -> int:
+    """待定池有多大。**只数不取行** —— 库里几千道题时，`len(unmounted_public())`
+    会把它们全拉进内存（AGENTS.md §3.6），而这个数字只用来显示。"""
+    return int(
+        session.execute(
+            select(func.count())
+            .select_from(Question)
+            .where(Question.owner_user_id.is_(None), Question.primary_point_id.is_(None))
+        ).scalar_one()
+    )
+
+
 def public_questions(session: Session) -> list[Question]:
     """全部**公共题**（不论挂没挂）—— 给知识层管道的提候选步骤用。"""
     return list(
@@ -187,6 +199,27 @@ def public_questions(session: Session) -> list[Question]:
         .scalars()
         .all()
     )
+
+
+def public_visible_questions(
+    session: Session, *, exclude_id: int | None = None
+) -> list[Question]:
+    """**真正在公共池里**的题（`visibility='public'`，不含 pending / hidden）。
+
+    给两类**写入方**用（都不面向某个人的浏览）：
+
+    · 晋升门禁的去重检查（"公共题库里有没有同一道题"）
+    · 事后治理的重复检测（扫一遍公共题找同知识点的重复）
+
+    与 `public_questions` 的区别是**它看的是"在不在池子里"**：待门禁（`pending`）与
+    已下架（`hidden`）的题不参与去重 —— 否则一道刚被藏起来的题会永远挡着别人晋升。
+    """
+    stmt = select(Question).where(
+        Question.owner_user_id.is_(None), Question.visibility == PUBLIC_VISIBILITY
+    )
+    if exclude_id is not None:
+        stmt = stmt.where(Question.id != exclude_id)
+    return list(session.execute(stmt.order_by(Question.id)).scalars().all())
 
 
 def owned_ids(session: Session, user_id: int) -> list[int]:

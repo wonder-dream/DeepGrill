@@ -68,7 +68,8 @@
 
 <section class="card">
   <h2>题库质量仪表板</h2>
-  <p class="muted">ADR-0002 说"矛盾记录是这套结构唯一白送的能力"—— 这一节就是它。</p>
+  <p class="muted">ADR-0002 说"矛盾记录是这套结构唯一白送的能力"—— 这一节就是它。
+     处理它们的地方在<a href="/admin/quality">题库质量</a>（这一页只读）。</p>
   {% if o.quality.open_flags %}
   <dl>
     {% for kind, n in o.quality.open_flags.items() %}<dt>{{ kind }}</dt><dd>{{ n }}</dd>{% endfor %}

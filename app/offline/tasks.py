@@ -120,6 +120,17 @@ def purge_explanations(session: Session, payload: dict[str, Any]) -> dict[str, A
     }
 
 
+def flag_duplicate_questions(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    """事后治理的**检测**：把"同知识点下题干相同"的题标出来（决策 5 + ADR-0002）。
+
+    它**只标记、不改题库** —— 自动合并会让"这道题为什么不见了"没人能解释。
+    处置由人在治理页做（`/admin/quality`）。
+    """
+    from app.bank import quality as quality_module
+
+    return quality_module.flag_duplicate_questions(session, payload)
+
+
 register(
     JobSpec(
         name="self_repair_stats",
@@ -142,5 +153,13 @@ register(
         run=purge_explanations,
         idempotent=True,
         description="回收讲解缓存（TTL 与容量上限见 knowledge.explanation）",
+    )
+)
+register(
+    JobSpec(
+        name="flag_duplicate_questions",
+        run=flag_duplicate_questions,
+        idempotent=True,
+        description="事后治理的检测：标记同知识点下的重复题（只标记，处置由人做）",
     )
 )
