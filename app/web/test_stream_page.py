@@ -65,7 +65,11 @@ def db(tmp_dir: Path) -> Path:
 
 @pytest.fixture
 def app(db: Path):
-    application = create_app(Settings(database_path=db))
+    # ⚠️ **显式钉住 `stt_provider`**：不写的话它会从开发者的 `.env` 里读 ——
+    # 而"本地把语音配上了"会让"没配供应商时明确失败"这条测试**反过来红**。
+    # 测试不该依赖跑它的人机器上有什么（实测：把 `.env` 的 STT 配成 api 那天，
+    # 这条测试立刻红了，而代码一行没错）。
+    application = create_app(Settings(database_path=db, stt_provider="none"))
     application.state.test_db = db
     return application
 

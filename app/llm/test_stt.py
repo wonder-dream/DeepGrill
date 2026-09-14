@@ -162,10 +162,20 @@ def test_the_placeholder_still_enforces_the_size_limit() -> None:
 
 
 def test_api_provider_needs_a_model_name() -> None:
-    """模型名**必须**显式给：转写模型与对话模型不通用，回落成 `deepseek-flash` 只会 404。"""
+    """模型名**必须**显式给：转写模型与对话模型不通用，回落成 `deepseek-flash` 只会 404。
+
+    ⚠️ `stt_model=""` 必须**显式传**：不传的话它会从开发者的 `.env` 里读到真实的模型名，
+    于是这条测试在"本地已经配好"的机器上就测不出任何东西了（实测踩过 —— `.env` 配好
+    转写的那天它红了，而代码一行没错）。
+    """
     with pytest.raises(STTError, match="模型名"):
         get_stt(
-            Settings(stt_provider="api", stt_api_key="k", stt_base_url="https://x/v1")
+            Settings(
+                stt_provider="api",
+                stt_model="",
+                stt_api_key="k",
+                stt_base_url="https://x/v1",
+            )
         )
 
 
