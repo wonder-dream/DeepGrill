@@ -21,7 +21,7 @@ from app.config import Settings
 from app.db import create_db_engine, create_session_factory
 from app.db.models import Criterion, Domain, KnowledgePoint, Question, User
 from app.deps import get_llm
-from app.main import create_app
+from app.main import STATIC_MAX_AGE, create_app
 from app.ratelimit import (
     Limit,
     RateLimiters,
@@ -310,6 +310,43 @@ def test_static_files_are_exempt(db: Path) -> None:
     with TestClient(app) as c:
         assert c.get("/static/app.css").status_code == 200
         assert c.get("/static/app.css").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# 静态资源的两条硬化（ADR-0008：2C2G + 境内直连美东 RTT 200-300ms）
+# ---------------------------------------------------------------------------
+def test_static_files_are_cacheable(db: Path) -> None:
+    """静态资源要能缓存 —— 否则每个页面都跨一次太平洋去取 CSS（ADR-0008）。"""
+    app = _app(db)
+    with TestClient(app) as c:
+        response = c.get("/static/app.css")
+        assert response.headers["cache-control"] == f"public, max-age={STATIC_MAX_AGE}"
+
+
+def test_html_pages_are_not_cached(db: Path) -> None:
+    """**页面本身不能跟着缓存**：它带登录态与实时数据，缓存住会串号/发旧数据。"""
+    app = _app(db)
+    with TestClient(app) as c:
+        assert "cache-control" not in c.get("/").headers
+
+
+def test_large_responses_are_gzipped(db: Path) -> None:
+    """源站自己压缩（ADR-0008 的"静态资源强缓存 + 压缩"）。
+
+    源站自己压的意义是**可移植**：Cloudflare 不可达时没有人替我们压。
+    """
+    app = _app(db)
+    with TestClient(app) as c:
+        response = c.get("/", headers={"accept-encoding": "gzip"})
+        assert response.headers.get("content-encoding") == "gzip"
+
+
+def test_tiny_responses_are_left_alone(db: Path) -> None:
+    """压缩有阈值：小响应压了反而更大（GZip 头就有 20 字节）。"""
+    app = _app(db)
+    with TestClient(app) as c:
+        response = c.get("/healthz", headers={"accept-encoding": "gzip"})
+        assert response.headers.get("content-encoding") != "gzip"
 
 
 def test_ip_limit_returns_429_with_retry_after(db: Path) -> None:

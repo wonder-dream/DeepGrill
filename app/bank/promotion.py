@@ -86,19 +86,19 @@ def normalize_stem(stem: str) -> str:
     return "".join(ch for ch in stem.strip().lower() if ch not in drop)
 
 
-def _duplicate_of(session: Session, question: Question) -> Question | None:
-    """在**公共池**里找一道题干相同的题（归一化后）。
+def _duplicate_id(session: Session, question: Question) -> int | None:
+    """在**公共池**里找一道题干相同的题（归一化后），返回它的 id。
 
-    走仓储的 `public_visible_questions`，不自己 `select(Question)` ——
-    题目查询只有那一条通道（AGENTS.md §3.5，`app/bank/test_repository.py` 有结构断言）。
+    走仓储的 `find_same_stem`（**分批 + 提前退出**），不自己 `select(Question)` ——
+    题目查询只有那一条通道（AGENTS.md §3.5，`app/bank/test_repository.py` 有结构断言），
+    而且那条路是**面向请求**的（点一次晋升就调一次），不能把整个题库读进内存（§3.6）。
     """
     normalized = normalize_stem(question.stem)
     if not normalized:
         return None
-    for other in repository.public_visible_questions(session, exclude_id=question.id):
-        if normalize_stem(other.stem) == normalized:
-            return other
-    return None
+    return repository.find_same_stem(
+        session, normalize=normalize_stem, stem=normalized, exclude_id=question.id
+    )
 
 
 def _criteria_count(session: Session, question: Question) -> int:
@@ -146,12 +146,12 @@ def run_gate(session: Session, *, question: Question, user_id: int) -> GateResul
             "这道题还没有考察点定义 —— 没有它，公共题库里的题无法被客观评判",
         )
     )
-    duplicate = _duplicate_of(session, question)
+    duplicate_id = _duplicate_id(session, question)
     result.checks.append(
         GateCheck(
             "not_duplicate",
-            duplicate is None,
-            f"公共题库里已经有同一道题了（#{duplicate.id if duplicate else '?'}）",
+            duplicate_id is None,
+            f"公共题库里已经有同一道题了（#{duplicate_id if duplicate_id else '?'}）",
         )
     )
     return result

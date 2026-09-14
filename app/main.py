@@ -13,6 +13,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from app.config import Settings
 from app.db.startup import assert_database_is_ready
@@ -76,6 +77,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.dependency_overrides[get_settings] = lambda: settings
 
     app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+
+    # ADR-0008 的两条硬要求（2C2G + 境内直连美东 RTT 200-300ms）：
+    # ① **压缩**：星角自带的 GZip 就够，不引依赖。源站自己压，于是"可移植"这条
+    #    在 CF 不可达时也成立（那时没有人替我们压）。
+    # ② **静态资源缓存**：给 /static/ 的响应加缓存头（见 `_install_static_cache`）。
+    app.add_middleware(GZipMiddleware, minimum_size=500)
+    _install_static_cache(app)
 
     app.include_router(home_page.router)
     app.include_router(bank_page.router)
@@ -148,6 +156,33 @@ def _install_rate_limit(app: FastAPI, settings: Settings) -> None:
 
 def _ratelimit_exempt(path: str) -> bool:
     return path in RATELIMIT_EXEMPT_PATHS or path.startswith(RATELIMIT_EXEMPT_PREFIXES)
+
+
+#: 静态资源的缓存时长（秒）。**它不能长**：文件名里没有内容指纹，所以部署之后
+#: 旧 CSS/JS 会继续被用 —— 一小时的折中是"省掉大部分重复请求"与"改样式不必让人
+#: 清缓存"之间。真要做强缓存（`max-age` 一年），前提是先给静态文件加内容哈希。
+STATIC_MAX_AGE = 3600
+
+
+def _install_static_cache(app: FastAPI) -> None:
+    """给 `/static/` 的响应加缓存头（ADR-0008：静态资源强缓存 + 压缩）。
+
+    用中间件而不是包装 `StaticFiles`：前者一行、且对"以后再加静态目录"自动生效。
+    ⚠️ 它**不覆盖** `Cache-Control` 已经存在的响应 —— 以后给某个带指纹的产物设
+    更长的缓存时，不必再来改这里。
+    """
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class _StaticCache(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            response = await call_next(request)
+            if request.url.path.startswith(RATELIMIT_EXEMPT_PREFIXES) and (
+                "cache-control" not in response.headers
+            ):
+                response.headers["Cache-Control"] = f"public, max-age={STATIC_MAX_AGE}"
+            return response
+
+    app.add_middleware(_StaticCache)
 
 
 def _too_many_response(request: Request, decision) -> object:

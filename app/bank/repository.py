@@ -208,11 +208,11 @@ def public_visible_questions(
 
     给两类**写入方**用（都不面向某个人的浏览）：
 
-    · 晋升门禁的去重检查（"公共题库里有没有同一道题"）
-    · 事后治理的重复检测（扫一遍公共题找同知识点的重复）
+    · 晋升门禁的去重检查（"公共题库里有没有同一道题"）—— 用 `find_same_stem`，别用这个
+    · 事后治理的重复检测（扫一遍公共题找同知识点的重复）—— 它是一次性的离线任务
 
-    与 `public_questions` 的区别是**它看的是"在不在池子里"**：待门禁（`pending`）与
-    已下架（`hidden`）的题不参与去重 —— 否则一道刚被藏起来的题会永远挡着别人晋升。
+    ⚠️ **它会一次把公共题全取回来**（几千行）。所以它只适合**离线任务**：
+    面向请求的路径要用 `find_same_stem`（只取两列 + 提前退出，见下）。
     """
     stmt = select(Question).where(
         Question.owner_user_id.is_(None), Question.visibility == PUBLIC_VISIBILITY
@@ -220,6 +220,41 @@ def public_visible_questions(
     if exclude_id is not None:
         stmt = stmt.where(Question.id != exclude_id)
     return list(session.execute(stmt.order_by(Question.id)).scalars().all())
+
+
+def find_same_stem(
+    session: Session,
+    *,
+    normalize,
+    stem: str,
+    exclude_id: int | None = None,
+) -> int | None:
+    """在公共池里找一道**归一化后题干相同**的题，返回它的 id（没有就 `None`）。
+
+    ## 它为什么只取两列、以及为什么没有"分批流式"
+
+    它挂在 `POST /bank/{id}/promote` 上（**面向请求**），而公共题有几千道。这里能做
+    的两件事是：**只取两列**（`id` + `stem`，不是整行）与**提前退出**（找到就返回）。
+    量级：三千道题 ≈ 0.2MB 的短字符串 —— 不是 §3.6 说的那种"每请求 O(N) 内存"的
+    定时炸弹（那条讲的是把全表 embedding 拉成矩阵）。
+
+    ⚠️ **不要写 `yield_per` 来"分批流式"**：SQLite 的驱动（pysqlite）本来就把结果集
+    全缓冲在客户端游标里，`yield_per` 在这里**不减少内存** —— 加上它只会让读者以为
+    内存是常数。真要省，得让 SQL 自己比：给 `questions` 加一列归一化题干（写入时
+    维护 + 索引），那时这是一次索引查询。**现在不值得**：多一列就多一条不变量
+    （每个写题干的路径都得维护它），而收益只是几千行短字符串的扫描。
+
+    为什么不在 SQL 里复现归一化：那是 Python 侧的一套规则（标点表），写两遍必漂。
+    """
+    stmt = select(Question.id, Question.stem).where(
+        Question.owner_user_id.is_(None), Question.visibility == PUBLIC_VISIBILITY
+    )
+    if exclude_id is not None:
+        stmt = stmt.where(Question.id != exclude_id)
+    for question_id, other_stem in session.execute(stmt.order_by(Question.id)):
+        if normalize(other_stem) == stem:
+            return int(question_id)
+    return None
 
 
 def owned_ids(session: Session, user_id: int) -> list[int]:

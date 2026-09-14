@@ -106,6 +106,42 @@ def test_hidden_public_question_does_not_block_promotion(session: Session) -> No
     assert promotion.run_gate(session, question=_q(session), user_id=ME).passed
 
 
+def test_the_dedup_lookup_reads_only_two_columns(session: Session) -> None:
+    """**结构断言**：去重那条查询只取 `id` + `stem`，不把整行拉回来（§3.6）。
+
+    它是"面向请求"的路径（点一次晋升调一次），而公共题有几千道。这条性质**行为上
+    看不出来**（结果一样），所以只能看 SQL —— 与那条"不许直接 `select(Question)`"的
+    AST 断言同一个思路。
+    """
+    from sqlalchemy import event
+
+    from app.bank import repository
+
+    # ⚠️ 先把题读出来**再**装监听器：否则 `_q(session)` 自己那条"取整行"的 SQL
+    # 也会被记进来，于是断言看到的是 `session.get` 的语句（实测踩过）。
+    normalized = promotion.normalize_stem(_q(session).stem)
+
+    captured: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        captured.append(statement)
+
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        repository.find_same_stem(
+            session, normalize=promotion.normalize_stem, stem=normalized
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+
+    assert len(captured) == 1, captured
+    sql = captured[0].lower()
+    assert "select questions.id, questions.stem" in sql, sql
+    assert "reference_answer" not in sql, "只该取两列，不该把整行拉回来"
+    assert "explanation" not in sql
+
+
 def test_kind_outside_the_public_set_is_refused(session: Session) -> None:
     """公共题库只收 knowledge / design（决策 20）—— 用一个绕开 CHECK 的题验。
 
