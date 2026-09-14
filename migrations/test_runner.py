@@ -69,9 +69,101 @@ def test_initial_creates_all_tables(tmp_dir: Path) -> None:
         "knowledge_point_edges", "questions", "question_points", "question_flags",
         "candidate_profiles", "interviews", "report_items", "sessions", "attempts",
         "evaluations", "question_feedback", "task_logs", "jobs", "question_point_stats",
+        "user_favorites",
     }
     assert expected <= names, f"缺少：{expected - names}"
     assert _recorded(db) == ["0001_initial.sql"]
+
+
+def _columns(db: Path, table: str) -> list[str]:
+    conn = sqlite3.connect(str(db))
+    try:
+        return [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+    finally:
+        conn.close()
+
+
+def test_criteria_has_the_shared_marker(tmp_dir: Path) -> None:
+    """**回归测试**：`criteria.shared` 必须存在。
+
+    没有它，ADR-0002 判据②（复制传播）就无法区分两种情况：
+      · 一条考察点被复制到多个知识点下 → **两个知识点该合并**
+      · 一条通用表达类考察点被多个知识点合法引用 → **不该合并**（「共用考察点」）
+
+    区分办法在 ADR-0002 里写死了（把通用表达类显式标记为共用考察点），
+    而第一版 schema 里没有这一列 —— 于是那条判据只能吃误报。
+    """
+    db = tmp_dir / "t.db"
+    migrate(db)
+    assert "shared" in _columns(db, "criteria"), "criteria 缺 shared 列（ADR-0002 判据②）"
+
+
+def test_question_point_stats_keys_on_criterion_id(tmp_dir: Path) -> None:
+    """**回归测试**：聚合表必须用 `criterion_id` 键，不能是 `criterion_index`。
+
+    `attempts.hits` 是 `criterion_id → 命中状态` 的映射（累积快照，决策 28）。
+    聚合表若按 `seq`（位置）索引，两处**无法互相映射** —— 注销用户时
+    「把 attempts.hits 累加进本表」这一步就没有可用的对照键。
+
+    此外位置键在知识点被重审、考察点被删或重排之后会**静默指向另一条考察点**；
+    而 ADR-0002 已明说知识点定义会随人审而变，所以这不是假想风险。
+    """
+    db = tmp_dir / "t.db"
+    migrate(db)
+    assert "criterion_id" in _columns(db, "question_point_stats")
+    assert "criterion_index" not in _columns(db, "question_point_stats"), (
+        "位置键会让注销聚合与 attempts.hits 对不上（决策 28）"
+    )
+
+
+def test_quota_ledger_separates_day_from_month(tmp_dir: Path) -> None:
+    """**回归测试**：`quota_ledger` 的日行与月行必须能被机械区分。
+
+    决策 23 要"每日聚合 + 月度归档行"，而两者粒度不同。第一版的设计是
+    "月度行用一个特殊 day 值，如 `2026-09`" —— 同一列里混两种格式，
+    于是"这个月已用多少"只能靠字符串形状猜。`kind` 把这件事变成显式事实。
+    """
+    db = tmp_dir / "t.db"
+    migrate(db)
+    cols = _columns(db, "quota_ledger")
+    assert "kind" in cols, "quota_ledger 缺 kind 列（日月粒度无法机械区分）"
+    assert "day" in cols
+
+
+def test_favorite_is_idempotent_by_unique_constraint(tmp_dir: Path) -> None:
+    """**回归测试**：同一人重复收藏同一道题只能有一行（决策 63）。
+
+    这条约束就是"收藏"这个动作幂等的实现方式 —— 不靠应用层先查再写
+    （那有竞态），而是让第二次 INSERT 直接撞唯一约束。
+    v1 的同一张表也是这么设计的（`docs/v1现状-20260913.md` 第 12 张表）。
+
+    断言点在**唯一约束真的挡住了第二行**：那是"约束生效"唯一不可伪装的结果
+    （与 `test_migration_statements_actually_run` 同一个理由）。
+    """
+    db = tmp_dir / "t.db"
+    migrate(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        # 外键在迁移里是开着的，但那是 runner 的连接；这里要自己再开一次
+        conn.execute("PRAGMA foreign_keys = ON")
+        uid = conn.execute("SELECT id FROM users WHERE email='owner@local'").fetchone()[0]
+        # 不建知识点：`questions.primary_point_id` 可空，正好用上那个"v1 导入容错"的余地
+        conn.execute(
+            "INSERT INTO questions (id, kind, stem, difficulty) VALUES (1, 'knowledge', 'q', 3)"
+        )
+        conn.execute("INSERT INTO user_favorites (user_id, question_id) VALUES (?, 1)", (uid,))
+        try:
+            conn.execute(
+                "INSERT INTO user_favorites (user_id, question_id) VALUES (?, 1)", (uid,)
+            )
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError("重复收藏被写进去了 —— UNIQUE 约束没生效")
+        n = conn.execute("SELECT COUNT(*) FROM user_favorites").fetchone()[0]
+        assert n == 1
+    finally:
+        conn.close()
 
 
 def test_second_run_is_idempotent(tmp_dir: Path) -> None:

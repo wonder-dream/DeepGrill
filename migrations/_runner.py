@@ -60,9 +60,15 @@ def _ensure_bookkeeping(conn: sqlite3.Connection) -> None:
 def applied(conn: sqlite3.Connection) -> dict[str, str]:
     """已记账的迁移 → checksum。
 
-    首次运行时记账表还不存在（它由 `0001_initial.sql` 自己创建），
-    此时"一条都没跑过"是**预期状态**，不是错误。这里显式捕获那一个错误码，
-    而不是吞掉所有异常 —— 后者会让"表被改名"和"首次运行"长得一样。
+    首次运行时记账表还不存在，此时"一条都没跑过"是**预期状态**，不是错误。
+    这里显式捕获那一个错误码，而不是吞掉所有异常 —— 后者会让"表被改名"和
+    "首次运行"长得一样。
+
+    ⚠️ **它不由任何迁移文件负责创建**：记账表由 `migrate()` 开头的
+    `_ensure_bookkeeping()`（`CREATE TABLE IF NOT EXISTS`）保证存在。
+    第一版写的是"由 `0001_initial.sql` 自己创建"，那在 runner 与迁移文件之间
+    留了一条**隐式契约**，测试里的合成迁移目录当场就崩了（ADR-0011 记了这次推翻）。
+    迁移文件里那段 DDL 只是 schema 的自文档，两处都幂等，谁先谁后都成立。
     """
     try:
         rows = conn.execute("SELECT filename, checksum FROM schema_migrations").fetchall()

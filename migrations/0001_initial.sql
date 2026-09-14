@@ -58,14 +58,17 @@ CREATE TABLE user_tokens (
 
 CREATE TABLE quota_ledger (
     user_id     INTEGER NOT NULL REFERENCES users(id),
+    kind        TEXT    NOT NULL DEFAULT 'day',
     day         TEXT    NOT NULL,
     units_used  INTEGER NOT NULL DEFAULT 0,
     tokens_used INTEGER NOT NULL DEFAULT 0,
     updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (user_id, day)
+    PRIMARY KEY (user_id, kind, day)
 );
 -- 每日一行，不做全量流水：用户只需要知道"今天还剩多少"，你需要知道"钱花在哪了"。
--- 月度归档行也落在本表（用一个特殊 day 值，如 '2026-09'，由代码约定）。
+-- kind: day / month —— 月度归档行与每日行**同表但不同粒度**（决策 23）。
+--   第一版只靠"用一个特殊 day 值，如 '2026-09'"来区分，于是同一列里混两种格式、
+--   而"这个月已用多少"只能靠字符串形状猜。加一列把它变成显式事实（表是空的）。
 
 -- ---------------------------------------------------------------------------
 -- 2. 知识侧（ADR-0002 的图）
@@ -116,11 +119,17 @@ CREATE TABLE criteria (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     point_id INTEGER NOT NULL REFERENCES knowledge_points(id),
     seq      INTEGER NOT NULL,
-    [text]   TEXT    NOT NULL
+    [text]   TEXT    NOT NULL,
+    shared   INTEGER NOT NULL DEFAULT 0
 );
 -- 考察点独立成表，不塞进 knowledge_points 的 JSON 字段：判断两条考察点是否
--- "不该复制"需要稳定 id 跨知识点比较。它同时是 evaluations.hits 与
+-- "不该复制"需要稳定 id 跨知识点比较。它同时是 attempts.hits 与
 -- question_point_stats 的引用对象，也是追问的路线（第 N 条未命中，下一问朝它去）。
+-- ⚠️ attempts.hits 不在 evaluations 上 —— 决策 28 把它移到了 attempts（累积快照）。
+-- shared: 通用表达类考察点（"先说结论再说理由"这类的 1 与 0），允许被多个知识点
+--   合法引用。ADR-0002 判据② 靠它区分两种情形 —— 一条考察点被复制到多个知识点下
+--   是"这两个知识点该合并"，而一条共用考察点出现在多处是"通用表达要求，不该合并"。
+--   没有这一列，判据② 只能产出误报（第一版就漏了它）。
 
 CREATE TABLE knowledge_point_edges (
     from_point_id INTEGER NOT NULL REFERENCES knowledge_points(id),
@@ -263,10 +272,13 @@ CREATE TABLE attempts (
 --   不设确认环节，两列在多数轮次里内容相同，用户顺手改过才不同。
 --   ⚠️ 不保存原始录音。
 -- answer_text 设长度上限（由业务层保证）
--- hits: 本轮对当前题**全部考察点的命中状态**（JSON: criterion_id → 命中/未命中），
+-- hits: 本轮对当前题**全部考察点的命中状态**（JSON: criterion_id → 命中状态），
 --   是**累积快照**而非增量（决策 28）。它逐轮都要产出 —— 追问本身靠它决定下一问。
 --   它必须能表达"题目问了但用户完全没答"（记为未命中），而不是只在答到时才有记录：
 --   "考了但没答"与"没考过"对候选人是两件事（0% 与空格）。
+--   ⚠️ 命中状态是**三值**：命中 / 未命中 / 未涉及（CONTEXT.md「命中状态」）。
+--   "未涉及"不是可选装饰 —— 掌握度矩阵的分母是"被考过的考察点"，靠它把
+--   本轮没问到的考察点从分母里排掉。
 
 CREATE TABLE evaluations (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -287,6 +299,20 @@ CREATE TABLE evaluations (
 -- ---------------------------------------------------------------------------
 -- 6. 治理侧
 -- ---------------------------------------------------------------------------
+CREATE TABLE user_favorites (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    question_id INTEGER NOT NULL REFERENCES questions(id),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, question_id)
+);
+-- 收藏夹（决策 63）：候选人在题库里收藏题目，是首页的一个入口。
+-- UNIQUE (user_id, question_id) 让"收藏"这个动作**天然幂等**（重复点不会出两行），
+--   与 v1 的实现一致（docs/v1现状-20260913.md 的第 12 张表）。
+-- ⚠️ 题被隐藏 / 删除后这些行会变成悬空引用：查询必须 join 到 questions 并按
+--   可见性过滤（AGENTS.md §3.5 的同一条纪律），否则收藏夹会露出不该看的题。
+-- 收藏**不消耗额度点** —— 它只是存一个指针，没有任何 LLM 调用。
+
 CREATE TABLE question_feedback (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     question_id           INTEGER NOT NULL REFERENCES questions(id),
@@ -331,17 +357,21 @@ CREATE TABLE jobs (
 -- worker_id / heartbeat_at: 原子认领与心跳；running 且心跳超时 → 放回 pending 重跑。
 
 CREATE TABLE question_point_stats (
-    question_id     INTEGER NOT NULL REFERENCES questions(id),
-    point_id        INTEGER NOT NULL REFERENCES knowledge_points(id),
-    criterion_index INTEGER NOT NULL,
-    hit_count       INTEGER NOT NULL DEFAULT 0,
-    miss_count      INTEGER NOT NULL DEFAULT 0,
-    updated_at      TEXT    NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (question_id, point_id, criterion_index)
+    question_id  INTEGER NOT NULL REFERENCES questions(id),
+    point_id     INTEGER NOT NULL REFERENCES knowledge_points(id),
+    criterion_id INTEGER NOT NULL REFERENCES criteria(id),
+    hit_count    INTEGER NOT NULL DEFAULT 0,
+    miss_count   INTEGER NOT NULL DEFAULT 0,
+    updated_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (question_id, point_id, criterion_id)
 );
 -- 聚合质量信号。无 user_id、无会话 id，只有计数。服务三件事：挂载自修复的信号、
 -- 难度标定、题库质量分析。
--- 注销用户时：先把该用户的 evaluations.hits 累加进本表，再删掉逐条记录。
+-- ⚠️ 键是 criterion_id，**不是位置**（第一版写作 criterion_index，是个缺陷）：
+--   attempts.hits 是 criterion_id → 命中状态 的映射，聚合表若按位置索引，
+--   两处无法互相映射 —— 注销时的「累加进本表」那一步就没有可用的对照键；
+--   而且考察点被删或重排之后，位置键会**静默指向另一条考察点**（决策 28）。
+-- 注销用户时：先把该用户的 attempts.hits 累加进本表，再删掉逐条记录。
 -- ⚠️ **不要称它为"匿名数据"**：当前规模（20 人以内）下，用剩余计数做减法即可
 --   反推出被删除用户答了什么。它在用户数约 50 以上后自然失效。在此之前，
 --   注销流程的合规依据是「用户要求删除」，**不是**「数据已匿名化」。
@@ -359,6 +389,14 @@ CREATE INDEX idx_interviews_user        ON interviews(user_id, status);
 CREATE INDEX idx_report_items_interview ON report_items(interview_id);
 CREATE INDEX idx_jobs_claim             ON jobs(status, heartbeat_at);
 CREATE INDEX idx_qp_edges_from          ON knowledge_point_edges(from_point_id);
+-- 反查：按知识点取题（组卷 / 覆盖检查）。没有它，question_points 只能按题查。
+CREATE INDEX idx_question_points_point  ON question_points(point_id);
+CREATE INDEX idx_criteria_point         ON criteria(point_id);
+-- 挂载自修复的信号是"这个知识点的这条考察点大家普遍答不到" —— 入口是 point_id。
+CREATE INDEX idx_qp_stats_point         ON question_point_stats(point_id);
+-- 收藏的 UNIQUE(user_id, question_id) 已覆盖"按用户列收藏"；
+-- 这条覆盖反向：题被删 / 被隐藏时要能查出谁收藏了它。
+CREATE INDEX idx_favorites_question     ON user_favorites(question_id);
 
 -- ---------------------------------------------------------------------------
 -- 8. 占位 owner 账号（满足 v1 导入与首启的需要）
