@@ -11,15 +11,16 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
 from app.db.startup import assert_database_is_ready
 from app.deps import get_settings
-from app.errors import AppError, NotFound
+from app.errors import AppError
 from app.ratelimit import (
     RateLimiters,
+    SlidingWindowLimiter,
     client_ip,
     settle_on_response,
     too_many,
@@ -121,7 +122,7 @@ def _install_rate_limit(app: FastAPI, settings: Settings) -> None:
         if not limiters.enabled or _ratelimit_exempt(request.url.path):
             return await call_next(request)
 
-        reservations: list[tuple[object, str]] = []
+        reservations: list[tuple[SlidingWindowLimiter, str]] = []
         request.scope["ratelimit"] = reservations
 
         ip_key = f"ip:{client_ip(request, trust_proxy=settings.trust_proxy_headers)}"
@@ -153,15 +154,18 @@ def _too_many_response(request: Request, decision) -> object:
     """429。HTML 路由给一页能读的东西，其余给 JSON —— 两者都带上 `Retry-After`。"""
     wait = max(1, decision.retry_after)
     accepts_html = "text/html" in (request.headers.get("accept") or "")
-    if accepts_html:
-        response = render(
+    # 两个分支返回的是不同的 Response 子类，所以标注成基类 —— 否则 mypy 会认为
+    # "一个变量在两条分支里类型不一致"（那是它对的：这里就是多态）
+    response: Response = (
+        render(
             request,
             "error.html",
             {"message": f"请求太频繁了，请等 {wait} 秒再试。"},
             status_code=429,
         )
-    else:
-        response = JSONResponse(too_many(decision), status_code=429)
+        if accepts_html
+        else JSONResponse(too_many(decision), status_code=429)
+    )
     response.headers["Retry-After"] = str(wait)
     return response
 

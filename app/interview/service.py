@@ -22,7 +22,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.bank import repository as bank_repository
-from app.db.models import Attempt, Evaluation, Interview, Question, Session_ as InterviewSession
+from app.db.models import Attempt, Evaluation, Interview, Question
+from app.db.models import Session_ as InterviewSession
 from app.errors import InvalidInput, NotFound
 from app.interview import rules
 from app.interview.rules import HitSnapshot
@@ -298,8 +299,11 @@ def _parse_round(data: object, criteria) -> tuple[dict[int, str], bool]:
     for item in payload.get("hits") or []:
         if not isinstance(item, dict):
             continue
+        raw_id = item.get("criterion_id")
+        if raw_id is None:
+            continue
         try:
-            cid = int(item.get("criterion_id"))
+            cid = int(raw_id)
         except (TypeError, ValueError):
             continue
         status = str(item.get("status") or "")
@@ -334,7 +338,7 @@ def evaluate_session(session: Session, *, ts: InterviewSession, llm) -> Evaluati
     snapshot = current_snapshot(session, ts.id)
     mode = _input_mode(session, ts.id)
 
-    scores = {dim: 0 for dim in rules.DIMENSIONS}
+    scores = dict.fromkeys(rules.DIMENSIONS, 0)
     review = "判分失败，这道题没有得分记录。"
     status = "failed"
     try:

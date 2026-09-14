@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -23,8 +24,10 @@ from app.db.models import (
     Interview,
     KnowledgePoint,
     Question,
-    Session_ as InterviewSession,
     User,
+)
+from app.db.models import (
+    Session_ as InterviewSession,
 )
 from app.interview import rules
 from app.knowledge import service
@@ -35,7 +38,7 @@ OTHER = 77
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "knowledge.db"
     migrate(db)
     engine = create_db_engine(db)

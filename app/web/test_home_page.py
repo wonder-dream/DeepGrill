@@ -37,8 +37,10 @@ from app.db.models import (
     Interview,
     KnowledgePoint,
     Question,
-    Session_ as InterviewSession,
     User,
+)
+from app.db.models import (
+    Session_ as InterviewSession,
 )
 from app.interview import rules
 from app.main import create_app

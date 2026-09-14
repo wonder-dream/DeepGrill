@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -22,13 +23,14 @@ from sqlalchemy.orm import Session
 from app.db import create_db_engine, create_session_factory
 from app.db.models import Domain, KnowledgePoint, Question
 from app.llm.embeddings import FakeEmbeddings
-from app.offline import embedding_store, knowledge_pipeline as kp
+from app.offline import embedding_store
+from app.offline import knowledge_pipeline as kp
 from migrations._runner import migrate
 from tests.fakes import FakeLLM, FakeReply
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "pipeline.db"
     migrate(db)
     with create_session_factory(create_db_engine(db))() as s:
@@ -329,6 +331,7 @@ def test_question_vectors_include_criteria_and_are_cached(session: Session) -> N
     from app.bank import repository
 
     question = session.get(Question, 1)
+    assert question is not None
     criteria = repository.criteria_of_question(session, question)
     text = embedding_store.question_text(question, criteria)
     ref = str(question.id)

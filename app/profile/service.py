@@ -40,10 +40,12 @@ from app.db.models import (
     QuestionPointStat,
     QuotaLedger,
     ReportItem,
-    Session_ as InterviewSession,
     User,
     UserFavorite,
     UserToken,
+)
+from app.db.models import (
+    Session_ as InterviewSession,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,7 +101,10 @@ def fold_hits_into_stats(session: Session, user_id: int) -> int:
     ).all()
 
     # criterion_id → point_id（考察点归属知识点）
-    criterion_point = dict(session.execute(select(Criterion.id, Criterion.point_id)).all())
+    criterion_point: dict[int, int] = {
+        int(cid): int(pid)
+        for cid, pid in session.execute(select(Criterion.id, Criterion.point_id)).all()
+    }
 
     touched = 0
     for raw, question_id in rows:
@@ -267,17 +272,16 @@ def delete_account(session: Session, user_id: int) -> DeletionReport:
     # ① 线 1 → 线 2（必须在删任何东西之前）
     report.stats_rows_touched = fold_hits_into_stats(session, user_id)
 
-    interview_ids = [
-        i for i in session.execute(select(Interview.id).where(Interview.user_id == user_id)).scalars()
-    ]
+    interview_ids = list(
+        session.execute(select(Interview.id).where(Interview.user_id == user_id)).scalars()
+    )
     session_ids: list[int] = []
     if interview_ids:
-        session_ids = [
-            s
-            for s in session.execute(
+        session_ids = list(
+            session.execute(
                 select(InterviewSession.id).where(InterviewSession.interview_id.in_(interview_ids))
             ).scalars()
-        ]
+        )
 
     # ② 断外部引用：`invite_codes` 自引用 users（不清就撞外键）；
     #    `question_feedback` 只置空 user_id —— 反馈是内容质量信号，不随谁报的而变。

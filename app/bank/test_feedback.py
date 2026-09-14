@@ -7,13 +7,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.bank import feedback, repository as bank_repository
+from app.bank import feedback
+from app.bank import repository as bank_repository
 from app.db import create_db_engine, create_session_factory
 from app.db.models import Question, QuestionFeedback, User
 from app.errors import InvalidInput, NotFound
@@ -24,7 +26,7 @@ OTHER = 3
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "feedback.db"
     migrate(db)
     engine = create_db_engine(db)

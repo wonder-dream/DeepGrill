@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from app.config import Settings
 from app.db import create_db_engine, create_session_factory
-from app.db.models import Criterion, KnowledgePoint, Question
+from app.db.models import Criterion, Question
 from app.offline.seed import QUESTIONS, SEED, seed
 from migrations._runner import migrate
 

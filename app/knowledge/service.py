@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -39,6 +40,8 @@ from app.db.models import (
     Criterion,
     Interview,
     KnowledgePoint,
+)
+from app.db.models import (
     Session_ as InterviewSession,
 )
 from app.interview import rules
@@ -116,9 +119,10 @@ def mastery_matrix(
     if not points:
         return MasteryMatrix()
 
-    criterion_point = dict(
-        session.execute(select(Criterion.id, Criterion.point_id)).all()
-    )
+    criterion_point: dict[int, int] = {
+        int(cid): int(pid)
+        for cid, pid in session.execute(select(Criterion.id, Criterion.point_id)).all()
+    }
 
     covered: dict[int, set[int]] = {}
     hits: dict[int, set[int]] = {}
@@ -150,7 +154,7 @@ def mastery_matrix(
 
 def _hit_blobs_for_user(
     session: Session, user_id: int, *, exclude_interview_ids: set[int] | None = None
-) -> list[object]:
+) -> list[Any]:
     """该用户全部轮次的 `hits` 列值（**JsonText 已反序列化，所以是 dict**）。
 
     v1 的 `review_tags` 是把全表拉回 Python 做 `Counter`（快照 §6-P5 点名的

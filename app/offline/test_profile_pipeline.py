@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -73,7 +74,7 @@ QUESTIONS = {
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "pipeline.db"
     migrate(db)
     engine = create_db_engine(db)

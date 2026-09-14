@@ -161,7 +161,7 @@ def test_orm_writes_and_reads_a_row(db_session) -> None:
 
     got = db_session.one("users", user.id)
     assert got is not None
-    assert got.email == "a@b.c"  # type: ignore[attr-defined]
+    assert got.email == "a@b.c"
 
 
 def test_json_columns_round_trip_chinese_without_escaping(db_session) -> None:
@@ -183,7 +183,7 @@ def test_json_columns_round_trip_chinese_without_escaping(db_session) -> None:
     # ① 走映射读回来是 dict（不是字符串）
     got = db_session.one("interviews", interview.id)
     assert got is not None
-    assert got.plan == plan  # type: ignore[attr-defined]
+    assert got.plan == plan
 
     # ② 库里存的是明文 —— 用 LIKE 证明"SQL 文本匹配"这条路真的通
     raw = db_session.execute(

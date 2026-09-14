@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
@@ -102,10 +103,17 @@ def _client(handler, **kw) -> APIEmbeddings:
 
 
 def _body(vectors: list[list[float]], *, indexes: list[int] | None = None) -> dict:
-    """构造返回体。`indexes` 用来测"顺序被打乱"与"缺了一条"两种情况。"""
+    """构造返回体。`indexes` 用来测"顺序被打乱"与"缺了一条"两种情况。
+
+    ⚠️ `zip` 这里**故意不加 `strict=`**：其中一个用例就是要造出"少了一条向量"的
+    畸形返回体（`indexes` 比 `vectors` 短），严格模式会在**测试自己**这里先炸。
+    """
     idx = indexes if indexes is not None else list(range(len(vectors)))
     return {
-        "data": [{"index": i, "embedding": v} for i, v in zip(idx, vectors)],
+        "data": [
+            {"index": i, "embedding": v}
+            for i, v in zip(idx, vectors)  # noqa: B905  （见上面的说明）
+        ],
         "usage": {"prompt_tokens": 12},
     }
 
@@ -182,7 +190,7 @@ def test_api_requires_a_key() -> None:
 # 缓存层
 # ---------------------------------------------------------------------------
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "embed.db"
     migrate(db)
     with create_session_factory(create_db_engine(db))() as s:
@@ -254,6 +262,7 @@ def test_question_text_includes_criteria(session: Session) -> None:
     from app.bank import repository
 
     question = session.get(Question, 1)
+    assert question is not None
     criteria = repository.criteria_of_question(session, question)
     text = embedding_store.question_text(question, criteria)
     assert "说说 volatile" in text and "可见性" in text
@@ -299,4 +308,6 @@ def test_purge_is_registered_as_an_offline_task(session: Session) -> None:
     from app.offline import jobs, tasks  # noqa: F401
 
     assert "purge_embeddings" in jobs.TASKS
-    assert "嵌入缓存" in jobs.TASKS["purge_embeddings"].run(session, {})["message"]
+    outcome = jobs.TASKS["purge_embeddings"].run(session, {})
+    assert outcome is not None
+    assert "嵌入缓存" in outcome["message"]

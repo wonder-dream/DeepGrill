@@ -119,7 +119,9 @@ def explain_question(
     data = service.detail(session, question_id, _viewer(user))
     before = llm_usage.snapshot(llm)
     try:
-        result = explanation.explain(session, question=data.question, llm=llm)
+        # 生成完就跳回详情页（那一页会从缓存里读出来显示），所以这里不要返回值 ——
+        # 留一个没人用的 `result` 变量只会让人以为后面还会用到它。
+        explanation.explain(session, question=data.question, llm=llm)
     except LLMError as e:
         llm_usage.record(session, me.id, llm, before)
         logger.warning("题目 %s 的讲解没生成出来：%s", question_id, e)

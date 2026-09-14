@@ -89,9 +89,11 @@ def check_drift(conn: sqlite3.Connection) -> list[str]:
     recorded = applied(conn)
     drifted: list[str] = []
     for path in _migration_files():
-        if path.name in recorded:
-            if _sha256(path.read_text(encoding="utf-8")) != recorded[path.name]:
-                drifted.append(path.name)
+        if (
+            path.name in recorded
+            and _sha256(path.read_text(encoding="utf-8")) != recorded[path.name]
+        ):
+            drifted.append(path.name)
     return drifted
 
 

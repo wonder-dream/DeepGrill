@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,7 @@ OTHER = 3
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "bank.db"
     migrate(db)
     engine = create_db_engine(db)

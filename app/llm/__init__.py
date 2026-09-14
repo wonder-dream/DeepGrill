@@ -513,10 +513,11 @@ class LLMClient:
         """
         usage_seen = False
         for line in response.iter_lines():
+            # httpx 的 `iter_lines()` 给的是 **str**（它自己按响应编码解过），
+            # 所以这里不需要再判 bytes —— 那一段永远走不到，而 mypy 会正确地
+            # 把它标成 unreachable（一条"看起来在防御"的死代码）。
             if not line:
                 continue
-            if isinstance(line, bytes):  # httpx 可能给 bytes
-                line = line.decode("utf-8", errors="replace")
             if not line.startswith("data:"):
                 continue
             data = line[len("data:"):].strip()

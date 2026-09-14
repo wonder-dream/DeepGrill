@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,7 @@ from tests.fakes import FakeLLM, FakeReply
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "kp.db"
     migrate(db)
     engine = create_db_engine(db)
@@ -208,6 +209,7 @@ def test_mount_does_not_overwrite_existing_mounts(session: Session) -> None:
     session.add(KnowledgePoint(id=8, domain_id=1, name="线程池参数", status="confirmed"))
     session.commit()
     q = session.get(Question, 1)
+    assert q is not None
     q.primary_point_id = 8
     session.commit()
 

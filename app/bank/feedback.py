@@ -138,7 +138,7 @@ def counts(session: Session) -> dict[str, int]:
     rows = session.execute(
         select(QuestionFeedback.status, func.count()).group_by(QuestionFeedback.status)
     ).all()
-    out = {k: 0 for k in ("open", "resolved", "dismissed")}
+    out = dict.fromkeys(("open", "resolved", "dismissed"), 0)
     for status, n in rows:
         out[str(status)] = int(n)
     return out

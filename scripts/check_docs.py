@@ -89,7 +89,7 @@ def main(verbose: bool = False) -> int:
         # 只在【状态声明那一行】里判断，不要全文搜 —— 第一版写成 any(h in t)，
         # 而状态行原文是「会过期（…替代）｜ 被什么替代：…」，本身含「替代」二字，
         # 于是这条规则永远通过，等于空转（变异测试抓出来的）。
-        status = next((l for l in t.split("\n") if l.startswith(STATUS_PREFIX)), "")
+        status = next((line for line in t.split("\n") if line.startswith(STATUS_PREFIX)), "")
         if "会过期" in status:
             check(
                 any(h in status for h in SUPERSEDED_HINT),
@@ -176,7 +176,7 @@ def main(verbose: bool = False) -> int:
     # --- 规则 11：正文里引用的「决策 N」必须真的在台账里 ------------------
     # 对应失败：引用过「决策 13」，而台账只有 17-53 —— 悬空指针。
     if baseline.exists():
-        ledger = {n for n in re.findall(r"^\|\s*(\d+)\s*\|", read(baseline), re.M)}
+        ledger = set(re.findall(r"^\|\s*(\d+)\s*\|", read(baseline), re.M))
         for p in [ROOT / n for n in ("README.md", "AGENTS.md", "CONTEXT.md")] + sorted(
             DOCS.rglob("*.md")
         ):

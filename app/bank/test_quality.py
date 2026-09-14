@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,7 @@ from migrations._runner import migrate
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "quality.db"
     migrate(db)
     with create_session_factory(create_db_engine(db))() as s:
@@ -107,6 +108,7 @@ def test_detection_is_registered_as_an_offline_task(session: Session) -> None:
     assert "flag_duplicate_questions" in jobs.TASKS
     assert jobs.TASKS["flag_duplicate_questions"].idempotent is True
     outcome = jobs.TASKS["flag_duplicate_questions"].run(session, {})
+    assert outcome is not None
     assert "重复题" in outcome["message"]
 
 

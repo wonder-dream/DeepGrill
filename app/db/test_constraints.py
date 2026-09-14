@@ -11,10 +11,11 @@
 
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-import sqlite3
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,14 +28,16 @@ from app.db.models import (
     Job,
     KnowledgePoint,
     Question,
-    Session_ as InterviewSession,
     User,
+)
+from app.db.models import (
+    Session_ as InterviewSession,
 )
 from migrations._runner import migrate
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "checks.db"
     migrate(db)
     engine = create_db_engine(db)

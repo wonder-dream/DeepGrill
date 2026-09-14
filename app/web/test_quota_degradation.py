@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
 
 from app.account import repository as account_repository
 from app.account import service as account

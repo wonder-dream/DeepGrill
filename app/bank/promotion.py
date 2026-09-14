@@ -31,7 +31,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.bank import repository
@@ -44,7 +43,9 @@ STEM_MIN = 10
 STEM_MAX = 500
 
 #: 可以进公共题库的题型（决策 20：公共题库只保留 knowledge / design 两类）。
-PUBLIC_KINDS = ("knowledge", "design")
+#: 标注成 `tuple[str, ...]` 而不是让它推断成 `tuple[str, str]`：测试会临时把它改小，
+#: 以验证"这条判据真的在跑"（那是合法用法，而定长元组类型会拒绝它）。
+PUBLIC_KINDS: tuple[str, ...] = ("knowledge", "design")
 
 
 @dataclass(frozen=True)

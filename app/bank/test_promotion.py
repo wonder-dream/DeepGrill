@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,7 @@ OTHER = 3
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "promo.db"
     migrate(db)
     with create_session_factory(create_db_engine(db))() as s:
@@ -55,7 +56,9 @@ def session(tmp_dir: Path) -> Session:
 
 
 def _q(session: Session, qid: int = 1) -> Question:
-    return session.get(Question, qid)
+    question = session.get(Question, qid)
+    assert question is not None, f"夹具里应当有题目 {qid}"
+    return question
 
 
 def _check(result: promotion.GateResult, name: str) -> promotion.GateCheck:
@@ -109,7 +112,8 @@ def test_kind_outside_the_public_set_is_refused(session: Session) -> None:
     （DB 的 CHECK 已经保证 `kind` 只能是那两个值，所以这里直接改门禁的白名单，
     验的是"判据本身在跑"，而不是"库能不能存住非法值"。）
     """
-    original = promotion.PUBLIC_KINDS
+    original: tuple[str, ...] = promotion.PUBLIC_KINDS
+    # 单元素元组要写成 `(x,)` —— 少了那个逗号它就是个字符串，而 `in` 仍然能跑（于是测试静默地没测到东西）
     promotion.PUBLIC_KINDS = ("knowledge",)
     try:
         result = promotion.run_gate(session, question=_q(session), user_id=ME)

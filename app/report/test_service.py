@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -26,9 +27,9 @@ from app.db.models import (
     Question,
     User,
 )
-from app.interview import rules, service as interview_service
-from app.report import service
+from app.interview import service as interview_service
 from app.llm import LLMCallError
+from app.report import service
 from migrations._runner import migrate
 from tests.fakes import FakeLLM, FakeReply, round_reply
 
@@ -36,7 +37,7 @@ ME = 2
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "report.db"
     migrate(db)
     engine = create_db_engine(db)

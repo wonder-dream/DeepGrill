@@ -1,9 +1,9 @@
 #!/bin/sh
-# 提交前自动校验文档一致性。
+# 提交前自动校验：文档一致性 + lint + 类型检查。
 #
-# 为什么必须有这个 hook：AGENTS.md 第 5 条写着"提交前跑校验"，但
-# **一条必须靠自己记得跑的检查等于没有** —— 这正是本项目反复吃过的亏
-# （v1 的 471 个测试写完却从未在根目录跑起来）。所以把它挂到 git 上。
+# 为什么必须有这个 hook：AGENTS.md 第 5 条写着"提交前跑校验"，决策 38 写着
+# "**类型检查与 lint 提交前自动跑**"，但**一条必须靠自己记得跑的检查等于没有** ——
+# 这正是本项目反复吃过的亏（v1 的 471 个测试写完却从未在根目录跑起来）。
 #
 # 安装：git config core.hooksPath .githooks
 # 跳过（不推荐）：git commit --no-verify
@@ -35,6 +35,43 @@ if ! "$PY" scripts/check_docs.py; then
     echo "提交被拦下：文档不一致。修好后重跑：python scripts/check_docs.py" >&2
     echo "（确实要跳过：git commit --no-verify，但请先想清楚为什么）" >&2
     exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# lint 与类型检查（决策 38）。
+#
+# ⚠️ **工具不在就跳过，但要说出来**：本机开发环境不一定装了 dev extra，
+# 而"装不上就提交不了"会让人用 --no-verify（那比没有检查更糟 —— 它连文档校验
+# 一起跳过）。所以这里只跳过 lint，并明确提示怎么装。
+#
+# 只查**暂存的 python 文件**：改文档时没必要跑一遍全库类型检查（它要十几秒）。
+# 但传给 ruff/mypy 的是暂存文件列表 —— 没暂存任何 .py 时整段跳过。
+# ---------------------------------------------------------------------------
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.py$' || true)
+
+if [ -n "$STAGED_PY" ]; then
+    if "$PY" -m ruff --version >/dev/null 2>&1; then
+        echo "pre-commit: ruff（lint）…"
+        # shellcheck disable=SC2086  # 需要按行拆成多个参数
+        if ! "$PY" -m ruff check $STAGED_PY; then
+            echo "" >&2
+            echo "提交被拦下：lint 没过。自动能修的先跑：python -m ruff check --fix ." >&2
+            exit 1
+        fi
+    else
+        echo "pre-commit: 没装 ruff，跳过 lint（python -m pip install -e '.[dev]'）" >&2
+    fi
+
+    if "$PY" -m mypy --version >/dev/null 2>&1; then
+        echo "pre-commit: mypy（类型检查）…"
+        if ! "$PY" -m mypy; then
+            echo "" >&2
+            echo "提交被拦下：类型检查没过。配置与两条被关掉的错误码的理由见 pyproject.toml。" >&2
+            exit 1
+        fi
+    else
+        echo "pre-commit: 没装 mypy，跳过类型检查（python -m pip install -e '.[dev]'）" >&2
+    fi
 fi
 
 # 只在校验器或文档本身有改动时，才跑自检（它们比较慢）

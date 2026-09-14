@@ -12,12 +12,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.account import repository as account_repository
 from app.db import create_db_engine, create_session_factory
 from app.db.models import (
     Attempt,
@@ -31,13 +33,14 @@ from app.db.models import (
     Question,
     QuestionFeedback,
     QuestionPointStat,
-    Session_ as InterviewSession,
     User,
     UserFavorite,
     UserToken,
 )
+from app.db.models import (
+    Session_ as InterviewSession,
+)
 from app.interview import rules
-from app.account import repository as account_repository
 from app.profile import service
 from migrations._runner import migrate
 
@@ -46,7 +49,7 @@ OTHER = 3
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "profile.db"
     migrate(db)
     engine = create_db_engine(db)

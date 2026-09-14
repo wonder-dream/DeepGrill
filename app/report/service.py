@@ -25,11 +25,14 @@ from app.db.models import (
     KnowledgePoint,
     Question,
     ReportItem,
+)
+from app.db.models import (
     Session_ as InterviewSession,
 )
-from app.interview import rules, service as interview_service
-from app.knowledge import service as knowledge_service
 from app.errors import NotFound
+from app.interview import rules
+from app.interview import service as interview_service
+from app.knowledge import service as knowledge_service
 from app.llm import LLMError, prompts
 
 logger = logging.getLogger(__name__)

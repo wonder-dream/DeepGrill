@@ -33,6 +33,7 @@ import logging
 import math
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -140,7 +141,7 @@ def normalize_name(name: str) -> str:
     return s
 
 
-def propose_points(questions: list[Question], *, llm) -> ProposalResult:
+def propose_points(questions: Sequence[Question], *, llm) -> ProposalResult:
     """① 从一批题里提候选知识点。
 
     ⚠️ **题量少时才这么用**：一次调用提完所有候选。全量期（三千道题）必须分批 +
@@ -400,7 +401,9 @@ class MountResult:
     details: list[dict[str, Any]] = field(default_factory=list)
 
 
-def mount_questions(session: Session, *, questions: list[Question], llm, batch_size: int = 20) -> MountResult:
+def mount_questions(
+    session: Session, *, questions: Sequence[Question], llm, batch_size: int = 20
+) -> MountResult:
     """把题挂到**已确认的**知识点上。
 
     挂不上的题**不自动新建知识点**（决策 46）—— 它们进"待定池"（这里用返回值表达，
@@ -444,8 +447,11 @@ def mount_questions(session: Session, *, questions: list[Question], llm, batch_s
         for item in assignments:
             if not isinstance(item, dict):
                 continue
+            raw_id = item.get("question_id")
+            if raw_id is None:
+                continue
             try:
-                qid = int(item.get("question_id"))
+                qid = int(raw_id)
             except (TypeError, ValueError):
                 continue
             point_id = item.get("point_id")
@@ -514,7 +520,9 @@ PROPOSE_BATCH = 40
 CLUSTER_THRESHOLD = 0.86
 
 
-def batch_questions(questions: list[Question], *, size: int = PROPOSE_BATCH) -> list[list[Question]]:
+def batch_questions(
+    questions: Sequence[Question], *, size: int = PROPOSE_BATCH
+) -> list[list[Question]]:
     """切批。**按 id 排序再切** —— 顺序稳定，重跑时批次划分一致（便于对比两次结果）。"""
     ordered = sorted(questions, key=lambda q: q.id)
     return [ordered[i : i + size] for i in range(0, len(ordered), size)]
@@ -578,7 +586,8 @@ class BatchProposal:
 
 
 def propose_batched(
-    session: Session, *, questions: list[Question], llm, batch_size: int = PROPOSE_BATCH
+    session: Session, *, questions: Sequence[Question], llm,
+    batch_size: int = PROPOSE_BATCH,
 ) -> BatchProposal:
     """① 分批提候选。**某一批失败不终止整轮** —— 记下来，继续跑（§3.1）。
 

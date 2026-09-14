@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -76,13 +77,13 @@ def _client(app, email: str) -> TestClient:
 
 
 @pytest.fixture
-def owner_client(app) -> TestClient:
+def owner_client(app) -> Iterator[TestClient]:
     with _client(app, "owner@local") as c:
         yield c
 
 
 @pytest.fixture
-def user_client(app) -> TestClient:
+def user_client(app) -> Iterator[TestClient]:
     with _client(app, "me@local") as c:
         yield c
 

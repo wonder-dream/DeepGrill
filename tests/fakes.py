@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,7 +26,7 @@ _KIND_MARKERS = (
 )
 
 
-def _kind_of(messages: list[dict[str, str]]) -> str:
+def _kind_of(messages: Sequence[dict[str, str]]) -> str:
     text = " ".join(m.get("content", "") for m in messages)
     for kind, marker in _KIND_MARKERS:
         if marker in text:
@@ -184,8 +185,7 @@ class FakeLLM:
         )
         text = reply.text or ""
         self.streamed.append(text)
-        for piece in stream_chunks(text):
-            yield piece
+        yield from stream_chunks(text)
 
     def chat_json(
         self, messages: list[dict[str, str]], **kwargs: Any

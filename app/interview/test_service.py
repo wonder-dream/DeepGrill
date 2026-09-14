@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -41,7 +42,7 @@ OTHER = 77
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "interview.db"
     migrate(db)
     engine = create_db_engine(db)
@@ -335,7 +336,8 @@ def test_model_missing_criteria_or_bad_ids_is_tolerated_but_logged(
 # ---------------------------------------------------------------------------
 def test_get_session_row_rejects_other_users_session(session: Session) -> None:
     """`sessions` 自己没有 user_id，归属靠 `interviews` join —— 少了它，改 URL 就能答别人的题。"""
-    from app.db.models import Interview, Session_ as InterviewSession
+    from app.db.models import Interview
+    from app.db.models import Session_ as InterviewSession
 
     session.add(
         Interview(id=500, user_id=OTHER, mode="drill", status="active", quota_charged=1)

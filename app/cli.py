@@ -60,7 +60,7 @@ def cmd_propose(settings: Settings, domain: str, *, batched: bool = False) -> in
 
     from app.bank import repository as bank_repository
     from app.config import Settings as _Settings
-    from app.deps import get_llm, get_embeddings
+    from app.deps import get_embeddings, get_llm
     from app.offline import knowledge_pipeline as kp
     from app.web.admin_page import PROPOSAL_PATH
 
@@ -192,7 +192,6 @@ def cmd_worker(settings: Settings, once: bool) -> int:
 
 def cmd_status(settings: Settings) -> int:
     """看一眼库里的规模 —— 排查"页面为什么是空的"时第一条该跑的命令。"""
-    from sqlalchemy import select
 
     engine = create_db_engine(settings.resolved_database_path())
     with create_session_factory(engine)() as session:
@@ -239,8 +238,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_mount(settings)
     if args.command == "worker":
         return cmd_worker(settings, args.once)
+    # `parser.error` 自己会 `SystemExit(2)` —— 后面那句 `return 2` 永远走不到
+    # （mypy 的 `warn_unreachable` 会（正确地）指出来）
     parser.error(f"未知命令：{args.command}")
-    return 2
 
 
 if __name__ == "__main__":

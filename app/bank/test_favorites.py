@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,7 @@ from migrations._runner import migrate
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "fav.db"
     migrate(db)
     with create_session_factory(create_db_engine(db))() as s:

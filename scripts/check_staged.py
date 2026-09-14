@@ -53,7 +53,7 @@ STATUS_PREFIX = "> 状态："
 
 def status_line(text: str) -> str:
     """取文档头部那一行状态声明 —— 它是「这条决策还算不算数」的唯一标记。"""
-    return next((l for l in text.split("\n") if l.startswith(STATUS_PREFIX)), "")
+    return next((line for line in text.split("\n") if line.startswith(STATUS_PREFIX)), "")
 
 
 def _norm(path: str) -> str:

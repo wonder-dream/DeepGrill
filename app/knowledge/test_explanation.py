@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -20,13 +21,13 @@ from sqlalchemy.orm import Session
 from app.db import create_db_engine, create_session_factory
 from app.db.models import Criterion, Domain, Explanation, KnowledgePoint, Question
 from app.knowledge import explanation
-from app.llm import LLMCallError
+from app.llm import LLMCallError, LLMError
 from migrations._runner import migrate
 from tests.fakes import FakeLLM, FakeReply
 
 
 @pytest.fixture
-def session(tmp_dir: Path) -> Session:
+def session(tmp_dir: Path) -> Iterator[Session]:
     db = tmp_dir / "explain.db"
     migrate(db)
     with create_session_factory(create_db_engine(db))() as s:
@@ -41,7 +42,9 @@ def session(tmp_dir: Path) -> Session:
 
 
 def _question(session: Session) -> Question:
-    return session.get(Question, 1)
+    question = session.get(Question, 1)
+    assert question is not None, "夹具里应当有题目 1"
+    return question
 
 
 def _rows(session: Session) -> list[Explanation]:
@@ -123,7 +126,8 @@ def test_model_failure_raises_and_writes_nothing(session: Session) -> None:
 def test_empty_model_output_is_treated_as_a_failure(session: Session) -> None:
     """空输出**必须算失败**：一旦落库，它就是一个所有人都会读到的"可信的坏数据"。"""
     llm = FakeLLM().queue_text("   ")
-    with pytest.raises(Exception):  # LLMError
+    # 抓 `LLMError` 而不是 `Exception`：抓宽了会让「别处也抛异常」这条 bug 溜过
+    with pytest.raises(LLMError):
         explanation.explain(session, question=_question(session), llm=llm)
     assert _rows(session) == []
 
@@ -149,7 +153,9 @@ def test_purge_removes_only_rows_past_the_ttl(session: Session) -> None:
     session.add(Question(id=2, kind="knowledge", stem="另一道题", difficulty=3,
                          origin="seed", visibility="public"))
     session.flush()
-    explanation.explain(session, question=session.get(Question, 2),
+    second = session.get(Question, 2)
+    assert second is not None
+    explanation.explain(session, question=second,
                         llm=FakeLLM().queue_text("另一条的讲解"))
 
     report = explanation.purge(session, ttl_days=180)
@@ -166,7 +172,9 @@ def test_purge_enforces_the_capacity_cap(session: Session) -> None:
                                  origin="seed", visibility="public"))
     session.flush()
     for qid in range(1, 5):
-        explanation.explain(session, question=session.get(Question, qid),
+        row = session.get(Question, qid)
+        assert row is not None
+        explanation.explain(session, question=row,
                             llm=FakeLLM().queue_text(f"讲解 {qid}"))
         _rows(session)[-1].created_at = f"2026-01-0{qid} 00:00:00"
     session.flush()
@@ -194,4 +202,5 @@ def test_purge_is_registered_as_an_offline_task(session: Session) -> None:
     assert "purge_explanations" in jobs.TASKS
     assert jobs.TASKS["purge_explanations"].idempotent is True
     result = jobs.TASKS["purge_explanations"].run(session, {})
+    assert result is not None
     assert "讲解缓存" in result["message"]

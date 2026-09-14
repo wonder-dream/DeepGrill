@@ -23,7 +23,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
-    # ruff / mypy 在立「提交前自动跑类型检查与 lint」时再加（决策 38）
+    # 决策 38：**类型检查与 lint 提交前自动跑** —— "规则写在文档里靠自觉 = 不会发生"。
+    # 版本钉住下界：它们的行为会随版本变（新增规则会突然让一批代码变红），
+    # 所以升级是一次显式的动作，不是拉一次依赖就发生的事。
+    "ruff>=0.15",
+    "mypy>=1.13",
 ]
 
 [build-system]
@@ -76,3 +80,70 @@ markers = [
     "slow: 需要真实文件库或较长时间（并发 / WAL 类）",
     "llm: 需要真实调用 LLM（默认不跑）",
 ]
+
+# ---------------------------------------------------------------------------
+# ruff（决策 38：lint 提交前自动跑）
+#
+# 只开 **bug 类**规则（F/E/W + 少量 B/A）：风格交给 formatter 之外的约定，
+# 而"未使用的引用""重定义""宽泛的 except"这些是**真会出错的**。
+# 一条满屏风格噪音的规则比没有规则更糟 —— 它会被无视，连真问题一起放过。
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+# tools/ 是一次性脚本、data/ 是运行期产物：都不参与 lint（README 与 INDEX 写过它们的性质）
+extend-exclude = ["data", ".venv", ".uv-cache"]
+
+[tool.ruff.lint]
+# E/W = pycodestyle 的错误与警告，F = pyflakes，I = import 排序，UP = 语法升级，
+# B = bugbear（真 bug 类），C4 = 推导式简化，SIM = 可读性
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    # E501（行太长）交给 line-length 判断即可，但中文注释里"行长"不等于"列宽"，
+    # 而拆中文句子只会让它更难读 —— 所以不把它当错误（formatter 管这件事）。
+    "E501",
+    # SIM108（用三元表达式）与 SIM105（用 contextlib.suppress）会让"分支里有注释"
+    # 的代码更难读 —— 这个项目里注释是主要产物，不为此牺牲可读性。
+    "SIM108",
+    "SIM105",
+    # B008：**FastAPI 的 `Depends(...)` 写在默认值里就是它的官方写法**
+    # （`def route(x: int = Form(), s: Session = Depends(get_session))`）。
+    # bugbear 这条规则是为"默认值被求值一次"的坑写的，而 FastAPI 正是靠这一点工作。
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试与一次性脚本允许"导入只为副作用"（prompts/tasks 的注册、noqa F401）
+"**/test_*.py" = ["B011"]
+"tools/*" = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+
+# ---------------------------------------------------------------------------
+# mypy（决策 38）
+#
+# ⚠️ **两个被关掉的错误码是"映射方式"的直接后果，不是偷懒**：
+# `app/db/models.py` 用的是 SQLAlchemy 的**命令式映射**（`class User(_Row): pass`
+# + 表定义在别处），于是 mypy 看不到任何列：`question.stem` 全被报成
+# `attr-defined`，而"读一个可能为 None 的列"接着报成 `union-attr`（108 条）。
+#
+# 关掉它们换来的是**其余 46 条真错**被修完（fixture 的生成器标注、`X | None` 没窄化、
+# 签名与调用不一致…），而不是"990 条错误没人看"。列的真伪由另一条机器检查守着：
+# `app/db/test_models.py` 把模型与迁移 SQL **逐列对账**。
+#
+# 想恢复这两条检查，前提是先把模型改成 declarative + `Mapped[...]` 标注 ——
+# 那是一笔独立的、要单独评估的改动（列的定义会变成两处，现在只有迁移一处）。
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.13"
+files = ["app", "migrations", "tests"]
+# 依赖没有类型标注时不要报错（sqlalchemy 的 stub 覆盖不全）
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true
+strict_equality = true
+# 见上面的说明：命令式映射的代价
+disable_error_code = ["attr-defined", "union-attr"]
+# 测试里的 fixture 常常是"故意少一个参数"的替身，`check_untyped_defs` 打开后
+# 它们会被逐个体检 —— 那些地方的错不值得修，所以只查"有标注"的函数体。
+check_untyped_defs = false

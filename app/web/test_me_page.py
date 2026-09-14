@@ -17,7 +17,6 @@ from sqlalchemy import select
 from app.config import Settings
 from app.db import create_db_engine, create_session_factory
 from app.db.models import Interview, User
-from app.deps import SESSION_COOKIE
 from app.main import create_app
 from app.security import hash_password
 from migrations._runner import migrate
