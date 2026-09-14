@@ -31,6 +31,17 @@ SEED_PASSWORD = "deepgrill-demo"
 #: 种子里那张可用的邀请码。演示时用它注册一个新账号。
 SEED_INVITE = "DEEPGRILL-DEMO"
 
+#: **题库冷启动顺序**（决策 72 / §未决 10）：先铺哪个领域，以及 `status` 按什么顺序报。
+#:
+#: 依据是**待定池里各领域的题量**（3007 道 v1 导入题按关键词命中实测，命中率 93%）：
+#: RAG 检索 46% / 系统设计 39% / Java 并发 8%。而上面这份手写演示种子是从
+#: Java 并发开始的 —— **种子顺序与实际语料分布恰好相反**。
+#:
+#: 顺序的含义要说清：它管的是**人该先动哪个领域**（确认知识点 → 挂载待定池 → 人审），
+#: 不管 `generate` 那种自动补题 —— 那个按"缺得最多"排序，是另一条判据（决策 4/5）。
+#: 先铺题量足的领域的理由很实际：待定池里的题**立刻有地方挂**，生成题也有料可参照。
+COLD_START: tuple[str, ...] = ("RAG 检索", "系统设计", "Java 并发")
+
 
 def repository_invite(session: Session, code: str) -> InviteCode | None:
     """取一张邀请码 —— 走账号域的仓储，不自己 select（表的所有权在 `account`）。"""
@@ -187,3 +198,42 @@ def seed(session: Session) -> dict[str, int]:
     session.commit()
     logger.info("种子数据：%s", created)
     return created
+
+
+def cold_start_report(session: Session) -> list[str]:
+    """按**冷启动顺序**列出每个领域的现状（`status` 用它回答"下一步铺哪个领域"）。
+
+    它只读，且只数不取行 —— 待定池里有三千道题，`status` 不该为了打印几行字把
+    整表拉进内存（AGENTS §3.6）。
+    """
+    domains = list(session.execute(select(Domain).order_by(Domain.id)).scalars())
+    ranked = sorted(
+        domains,
+        key=lambda d: (
+            COLD_START.index(d.name) if d.name in COLD_START else len(COLD_START),
+            d.name,
+        ),
+    )
+    points_by_domain: dict[int, list[KnowledgePoint]] = {}
+    for point in session.execute(select(KnowledgePoint)).scalars():
+        points_by_domain.setdefault(point.domain_id, []).append(point)
+    all_points = [p for group in points_by_domain.values() for p in group]
+    counts = repository.point_question_counts(session, [p.id for p in all_points])
+
+    lines: list[str] = []
+    for rank, domain in enumerate(ranked, start=1):
+        points = points_by_domain.get(domain.id, [])
+        confirmed = len([p for p in points if p.status == "confirmed"])
+        questions = 0
+        for p in points:
+            questions += counts.get(p.id, 0)
+        order = f"{rank}." if domain.name in COLD_START else "  (不在冷启动顺序里)"
+        lines.append(
+            f"  {order} {domain.name} —— 知识点 {len(points)}（已确认 {confirmed}）、"
+            f"公共题 {questions} 道"
+        )
+    lines.append(
+        f"  待定池（还没挂到任何知识点上）："
+        f"{repository.unmounted_public_count(session)} 道"
+    )
+    return lines

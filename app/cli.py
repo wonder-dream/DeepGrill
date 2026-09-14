@@ -312,6 +312,11 @@ def cmd_status(settings: Settings) -> int:
         ):
             n = len(session.execute(select(model)).scalars().all())
             print(f"{label}: {n}")
+        from app.offline import seed as seed_module
+
+        print("冷启动顺序（决策 72）：")
+        for line in seed_module.cold_start_report(session):
+            print(line)
     return 0
 
 
