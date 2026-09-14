@@ -1,0 +1,14 @@
+[Unit]
+Description=DeepGrill 备份定时器（每天一次）
+
+[Timer]
+# 凌晨低峰。`Persistent=true` 是**必须的**：机器重启/休眠错过的那些次会在开机后补跑，
+# 而"错过一次就静默跳过"正是"备份看起来一直在跑、其实三天没跑"的成因。
+OnCalendar=*-*-* 04:20:00
+Persistent=true
+# 补跑时如果已经落后很多次，只补一次就够（不要连着跑十份快照）
+AccuracySec=1h
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

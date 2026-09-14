@@ -103,6 +103,7 @@
 | 阈值标定报告（决策 70 / §未决 6）：§11 每个数字的样本分布 + `--live` 单位成本，**只读不改常量** | `app/offline/calibration.py` |
 | lint 与类型检查（决策 38）：`ruff` + `mypy`，进 dev extra 与 pre-commit 钩子 | `pyproject.toml`、`.githooks/pre-commit` |
 | 备份与**恢复验证**（ADR-0008）：`VACUUM INTO` 快照 + gzip + 清单 + 当场自验 | `app/backup.py`、`app/cli.py` |
+| **部署产物**（决策 73）：server / worker / 备份 / 增量维护四个 systemd 单元 + 两个定时器 + 部署步骤 | `deploy/`（`tests/test_deploy_units.py` 把单元与 CLI 的一致性钉住） |
 | 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker` / `backup` / `generate` / `calibrate`） | `app/cli.py`、`app/offline/seed.py` |
 | v1 题目导入（只读连接 + 幂等 + 标签映射） | `tools/import_v1.py`、`tools/test_import_v1.py` |
 | 对照工具（文档 vs SQL 字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
@@ -113,11 +114,9 @@
 | 语音转写的**真实供应商**（接口与占位实现已就位；`DEEPGRILL_STT_PROVIDER=none` 时明确失败并让人改用打字） | 决策 32 / ADR-0009 |
 | **嵌入的真实供应商**（接口 / 占位实现 / 缓存都就位；DeepSeek 不提供 embeddings，见 `.env.example`）—— 配好之前**全量装配跑不了** | ADR-0008 |
 | **全量装配本身还没跑**：库里 3007 道导入题仍在待定池（真跑：配嵌入 → `propose --batched` → 人审 → `mount`） | 决策 44/46 |
-| 知识层的**增量维护**（每天新词 / 新题自动进管道）—— 生成题与挂载现在都有命令，
-  但"每天自动跑"要靠 cron（`app.cli generate --enqueue` + `worker`） | 决策 46 |
-| 阈值标定的实验脚本（`docs/v1行为规格.md` §11 的每个数字，含装配的批大小与聚类阈值） | §未决 6 |
-| 验收标准 | §未决 5 |
-| **备份的异地那一跳与定时**：代码只做「快照 + 清单 + 当场自验 + 保留策略」，上传对象存储与 cron 是部署侧的事（ADR-0008 明说频率与保留策略待定） | ADR-0008 |
+| 知识层的**增量维护**只剩"机器上装没装"这一步 —— 定时器已在 `deploy/deepgrill-maintenance.{service,timer}`（`generate --enqueue` + `worker --once`），装上即生效 | 决策 46 / 73 |
+| **备份的异地那一跳**：仓库做「快照 + 清单 + 当场自验 + 保留策略」与**定时**（`deploy/deepgrill-backup.timer`），上传对象存储仍留在部署侧一行 `ExecStartPost`（ADR-0008 明说频率与保留策略待定） | ADR-0008 / 决策 73 |
+| 验收标准**逐条对应的检查**还没跑过一遍（标准本身见 §未决 5 的收口） | §未决 5 |
 
 > **已经还掉的三笔债**（原先在这张表里）：枚举列的 `CHECK` 约束（决策 57）已进
 > `migrations/0001_initial.sql`；**启动拒绝占位口令**（决策 58）已进

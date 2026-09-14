@@ -1,0 +1,23 @@
+[Unit]
+Description=DeepGrill 知识层增量维护（投一条生成任务 + 跑空队列一次）
+Documentation=https://github.com/your-org/deepgrill#deploy
+
+[Service]
+Type=oneshot
+User=deepgrill
+Group=deepgrill
+WorkingDirectory=/srv/deepgrill
+EnvironmentFile=/srv/deepgrill/.env
+# 决策 46 的"每天新词 / 新题自动进管道"。两步：
+#   ① `generate --enqueue` 只**投递**离线任务（不调模型）—— 它有幂等标记，
+#      同一天重复投不会重复生成
+#   ② `worker --once` 把队列跑空就退出 —— 常驻的那个 worker 也吃得到这条任务，
+#      这一句是防止"常驻 worker 已经不在了"时任务永远躺着
+ExecStart=/srv/deepgrill/.venv/bin/python -m app.cli generate --enqueue
+ExecStart=/srv/deepgrill/.venv/bin/python -m app.cli worker --once
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/deepgrill/data

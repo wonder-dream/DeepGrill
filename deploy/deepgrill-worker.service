@@ -1,0 +1,29 @@
+[Unit]
+Description=DeepGrill 离线 worker（jobs 表；简历解析 / 知识层 / 生成题 / 治理）
+Documentation=https://github.com/your-org/deepgrill#deploy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=deepgrill
+Group=deepgrill
+WorkingDirectory=/srv/deepgrill
+EnvironmentFile=/srv/deepgrill/.env
+# 常驻消费 jobs 表。**只允许一个实例**：认领是原子的（UPDATE ... WHERE status='pending'），
+# 但两个 worker 一起吃同一批 LLM 额度只会更快烧钱，而它并不更快（SQLite 单写者）。
+ExecStart=/srv/deepgrill/.venv/bin/python -m app.cli worker
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+# 一轮任务可能是一次长 LLM 调用；给它收尾的时间，别把在途的那道题撕了
+TimeoutStopSec=120
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/deepgrill/data
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=DeepGrill 知识层增量维护定时器（每天一次）
+
+[Timer]
+# 生成题是**离线**调用（决策 8），放在凌晨；`Persistent=true` 的理由同备份定时器。
+OnCalendar=*-*-* 03:40:00
+Persistent=true
+AccuracySec=1h
+RandomizedDelaySec=20m
+
+[Install]
+WantedBy=timers.target

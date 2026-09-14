@@ -1,0 +1,36 @@
+[Unit]
+Description=DeepGrill 面试服务（uvicorn）
+Documentation=https://github.com/your-org/deepgrill#deploy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=deepgrill
+Group=deepgrill
+WorkingDirectory=/srv/deepgrill
+# 配置与密钥都在这个文件里（600，属主 deepgrill）。仓里的 `.env.example` 是模板 ——
+# 密钥**不进 git**。
+EnvironmentFile=/srv/deepgrill/.env
+# 单机 2C2G：一个 worker 就够。多开只会让 SQLite 的写锁互相排队（ADR-0008）。
+ExecStart=/srv/deepgrill/.venv/bin/python -m uvicorn app.main:app \
+    --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers
+Restart=always
+RestartSec=3
+# 优雅退出：uvicorn 收到 SIGTERM 会等待在途请求结束
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# 它只监听回环 —— TLS 与对外暴露由 Cloudflare + 反代负责（ADR-0008：
+# TLS 是上线前置条件，源站保持可移植）。
+# 加固：它不需要写自己的代码目录，只需要写 data/
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/deepgrill/data
+# 注意：**启动命令里没有迁移**。迁移是显式的一步（ADR-0008 / 决策 55）——
+# 启动时自动迁移会把"回滚一次发布"变成"回滚一次数据"。
+
+[Install]
+WantedBy=multi-user.target
