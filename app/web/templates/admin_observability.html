@@ -67,6 +67,28 @@
 </section>
 
 <section class="card">
+  <h2>备份（ADR-0008）</h2>
+  {% if backup.never %}
+  <p class="warn"><strong>从来没备份过。</strong>数据库与机器同生共死 —— 这是当前最大的单点风险。
+     跑一次：<code>python -m app.cli backup</code>（它做完会当场验证能不能恢复）。</p>
+  {% else %}
+  <dl>
+    <dt>最近一次</dt><dd>{{ backup.created_at }}
+      {% if backup.age_hours is not none %}（{{ backup.age_hours | round(1) }} 小时前）{% endif %}</dd>
+    <dt>大小</dt><dd>{{ human_bytes(backup.size_bytes) }}</dd>
+    <dt>可恢复</dt><dd>{% if backup.verified %}已验证{% else %}<span class="error">未通过验证</span>{% endif %}</dd>
+  </dl>
+  {% if backup.failed %}
+  <p class="warn">最近一次备份<strong>失败</strong>了 —— 检查 cron 与备份目录的可写性。</p>
+  {% elif backup.stale %}
+  <p class="warn">已经超过 48 小时没有成功备份 —— 至少漏了一次。</p>
+  {% endif %}
+  <p class="muted">异地那一跳交给部署侧（rclone / aws-cli + cron）：这一层不引云 SDK，
+     所以"备份"不会因为某家的 API key 过期而停摆。</p>
+  {% endif %}
+</section>
+
+<section class="card">
   <h2>题库质量仪表板</h2>
   <p class="muted">ADR-0002 说"矛盾记录是这套结构唯一白送的能力"—— 这一节就是它。
      处理它们的地方在<a href="/admin/quality">题库质量</a>（这一页只读）。</p>

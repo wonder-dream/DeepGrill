@@ -65,5 +65,7 @@ def observability_page(
             "rate_limit": observability.rate_limit_summary(
                 getattr(request.app.state, "ratelimiters", None)
             ),
+            # 备份状态也**不在库里**（它在 task_logs 里，是报告）—— 单独折一份
+            "backup": observability.backup_summary(session),
         },
     )

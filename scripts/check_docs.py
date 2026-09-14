@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -407,12 +408,23 @@ def main(verbose: bool = False) -> int:
     app_dir = ROOT / "app"
     if app_dir.is_dir():
         for p in sorted(app_dir.rglob("*.py")):
-            for i, line in enumerate(read(p).split("\n"), 1):
-                if "json.dumps(" not in line or "ensure_ascii" in line:
+            try:
+                tree = ast.parse(read(p))
+            except SyntaxError:
+                continue  # 语法错由 py_compile / 测试去管，不是这条规则的职责
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not (isinstance(func, ast.Attribute) and func.attr == "dumps"):
+                    continue
+                if not (isinstance(func.value, ast.Name) and func.value.id == "json"):
+                    continue
+                if any(kw.arg == "ensure_ascii" for kw in node.keywords):
                     continue
                 check(
                     False,
-                    f"{p.relative_to(ROOT)}:{i} 的 json.dumps 没有 ensure_ascii=False "
+                    f"{p.relative_to(ROOT)}:{node.lineno} 的 json.dumps 没有 ensure_ascii=False "
                     f"—— 中文会存成 \\uXXXX，之后对这个 JSON 列的 SQL 文本匹配"
                     f"**静默失效**（docs/v1行为规格.md §8.7）",
                 )

@@ -100,7 +100,8 @@
 | 嵌入（ADR-0008）：接口 + 占位实现 + OpenAI 兼容客户端 + 缓存表（`0004`） | `app/llm/embeddings.py`、`app/offline/embedding_store.py` |
 | 全量装配管道（决策 44/46）：分批提候选 → 嵌入粗筛聚类 → 逐簇 LLM 归并（`propose --batched`） | `app/offline/knowledge_pipeline.py` |
 | lint 与类型检查（决策 38）：`ruff` + `mypy`，进 dev extra 与 pre-commit 钩子 | `pyproject.toml`、`.githooks/pre-commit` |
-| 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker`） | `app/cli.py`、`app/offline/seed.py` |
+| 备份与**恢复验证**（ADR-0008）：`VACUUM INTO` 快照 + gzip + 清单 + 当场自验 | `app/backup.py`、`app/cli.py` |
+| 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker` / `backup`） | `app/cli.py`、`app/offline/seed.py` |
 | v1 题目导入（只读连接 + 幂等 + 标签映射） | `tools/import_v1.py`、`tools/test_import_v1.py` |
 | 对照工具（文档 vs SQL 字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
 | 依赖与 pytest 配置（收集范围已配死） | `pyproject.toml` |
@@ -113,6 +114,7 @@
 | 知识层的**增量维护**（每天新题自动进管道）—— 现在只有显式命令 | 决策 46 |
 | 阈值标定的实验脚本（`docs/v1行为规格.md` §11 的每个数字，含装配的批大小与聚类阈值） | §未决 6 |
 | 验收标准 | §未决 5 |
+| **备份的异地那一跳与定时**：代码只做「快照 + 清单 + 当场自验 + 保留策略」，上传对象存储与 cron 是部署侧的事（ADR-0008 明说频率与保留策略待定） | ADR-0008 |
 
 > **已经还掉的三笔债**（原先在这张表里）：枚举列的 `CHECK` 约束（决策 57）已进
 > `migrations/0001_initial.sql`；**启动拒绝占位口令**（决策 58）已进

@@ -98,6 +98,37 @@ class TaskReport:
 
 
 @dataclass
+class BackupSummary:
+    """最近一次备份（ADR-0008：备份**必须验证能恢复**）。
+
+    "最近一次有多旧"与"它能不能恢复"是同一个问题的两半：一份**两周前**的备份
+    即使当时验证通过，也救不了这两周的数据。
+
+    ⚠️ 没有备份记录时**不等于没问题** —— 那是"从来没备份过"，页面上要说得不一样。
+    """
+
+    created_at: str = ""
+    age_hours: float | None = None
+    size_bytes: int = 0
+    verified: bool = False
+    failed: bool = False
+
+    #: 多久算"太久没备份"。一天一次是 ADR-0008 那句"定时"的默认读法，所以超过
+    #: 48 小时就是"至少漏了一次"（留一倍余量，免得一次失败就当成故障）。
+    stale_after_hours: float = 48.0
+
+    @property
+    def never(self) -> bool:
+        return not self.created_at
+
+    @property
+    def stale(self) -> bool:
+        if self.never or self.age_hours is None:
+            return False
+        return self.age_hours > self.stale_after_hours
+
+
+@dataclass
 class RateLimitSummary:
     """进程内限流的现状（决策 66）。
 
@@ -124,10 +155,31 @@ class Observability:
     db_bytes: int
     db_wal_bytes: int
     rate_limit: RateLimitSummary = field(default_factory=RateLimitSummary)
+    backup: BackupSummary = field(default_factory=BackupSummary)
 
     @property
     def db_total_bytes(self) -> int:
         return self.db_bytes + self.db_wal_bytes
+
+
+def backup_summary(session: Session) -> BackupSummary:
+    """最近一次备份的状态（ADR-0008）。
+
+    "最近一次有多旧"与"它能不能恢复"是同一个问题的两半：一份**两周前**的备份
+    即使当时验证通过，现在也救不了这两周的数据。
+    """
+    from app import backup as backup_module
+
+    row = backup_module.latest(session)
+    if row is None or not isinstance(row.result, dict):
+        return BackupSummary()
+    return BackupSummary(
+        created_at=str(row.result.get("created_at") or ""),
+        age_hours=backup_module.age_hours(row),
+        size_bytes=int(row.result.get("size_bytes") or 0),
+        verified=bool(row.result.get("verified")),
+        failed=str(row.result.get("status") or "") == "failed",
+    )
 
 
 def rate_limit_summary(limiters: object | None) -> RateLimitSummary:

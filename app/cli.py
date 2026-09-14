@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -160,6 +161,53 @@ def cmd_mount(settings: Settings) -> int:
     return 0
 
 
+def cmd_backup(settings: Settings, dest: str, keep: int) -> int:
+    """做一份备份并**当场验证它能不能恢复**（ADR-0008）。
+
+    退出码就是答案：0 = 这份备份现在能恢复；非 0 = 不能（cron 因此会报警）。
+    异地那一跳交给部署侧的 rclone/aws-cli —— 这一层不引云 SDK。
+    """
+    from app.backup import backup, record
+    from app.config import REPO_ROOT
+
+    db_path = settings.resolved_database_path()
+    dest_dir = Path(dest) if dest else REPO_ROOT / "data" / "backups"
+    result = backup(db_path, dest_dir, keep=keep)
+
+    engine = create_db_engine(db_path)
+    with create_session_factory(engine)() as session:
+        # 写报告本身要能失败得下去：库都打不开的时候，备份的意义是"别的机器上还有一份"
+        try:
+            record(session, result)
+            session.commit()
+        except Exception as e:  # noqa: BLE001
+            print(f"（这次备份的报告没写进库：{e}）", file=sys.stderr)
+
+    if result.archive is not None:
+        print(f"备份：{result.archive}（{result.manifest.size_bytes if result.manifest else 0} 字节）")
+    for name, passed, why in result.report.checks:
+        print(f"  [{'ok  ' if passed else 'FAIL'}] {name}：{why}")
+    if result.pruned:
+        print(f"按保留策略删掉 {len(result.pruned)} 个文件")
+    if not result.ok:
+        print(result.error or result.report.summary(), file=sys.stderr)
+        return 1
+    print("这份备份已验证可恢复")
+    return 0
+
+
+def cmd_verify_backup(path: str) -> int:
+    """只做恢复验证（演练用）：`python -m app.cli verify-backup <文件>`。"""
+    from app.backup import verify
+
+    target = Path(path)
+    report = verify(target)
+    for name, passed, why in report.checks:
+        print(f"  [{'ok  ' if passed else 'FAIL'}] {name}：{why}")
+    print(report.summary())
+    return 0 if report.ok else 1
+
+
 def cmd_worker(settings: Settings, once: bool) -> int:
     """跑离线 worker。`--once` 跑空队列就退出（排查用；不常驻）。
 
@@ -224,6 +272,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mount", help="把题挂到已确认的知识点上（挂不上进待定池）")
     worker = sub.add_parser("worker", help="跑离线 worker（jobs 表；Ctrl-C 退出）")
     worker.add_argument("--once", action="store_true", help="跑空队列就退出（排查用）")
+    backup = sub.add_parser("backup", help="做一份备份并当场验证可恢复（ADR-0008）")
+    backup.add_argument("--dest", default="", help="备份目录（默认 data/backups）")
+    backup.add_argument("--keep", type=int, default=14, help="保留最近几份（默认 14）")
+    verify = sub.add_parser("verify-backup", help="只做恢复验证（演练用）")
+    verify.add_argument("path", help="备份文件（.db.gz）")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -238,6 +291,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_mount(settings)
     if args.command == "worker":
         return cmd_worker(settings, args.once)
+    if args.command == "backup":
+        return cmd_backup(settings, args.dest, args.keep)
+    if args.command == "verify-backup":
+        return cmd_verify_backup(args.path)
     # `parser.error` 自己会 `SystemExit(2)` —— 后面那句 `return 2` 永远走不到
     # （mypy 的 `warn_unreachable` 会（正确地）指出来）
     parser.error(f"未知命令：{args.command}")
