@@ -248,14 +248,15 @@ def test_summary_failure_falls_back_and_says_so(session: Session) -> None:
 
 
 def test_summary_must_not_invent_names(session: Session) -> None:
-    """ADR-0003 的硬约束：总结里不许出现数据里没有的东西 —— **而且是强制的**。
+    """ADR-0003 的硬约束**已被修订成"标注不拦"** —— 这条测试记录新行为。
 
-    > 总结提到的每个知识点名，都必须能在 ② 或 ④ 的结果里找到。
-    > **这条可程序化检查**（跑一次字符串匹配即可）。
+    > 修订理由（真调模型之后）：把它实现成准入检查时它**四次误报**，每次都在丢
+    > 正确输出（汉字片段、标题行、考察点正文里的 `synchronized`、四维分维度名）。
+    > 根因是"总结里的每个词是否在数据里"这件事**词法匹配做不到** —— 总结的本质
+    > 就是改写与归纳。详见 `service.summary_names_are_grounded` 的 docstring。
 
-    所以这里断言的不是"我们能发现它编了"，而是**系统真的把它拦下来了**：
-    编造的总结必须被丢弃、降级为确定性文案，并标明来源。这是 v2 里少数可以写
-    确定性测试的 LLM 相关环节。
+    所以现在：**模型写的总结一律保留**（它读起来明显优于降级文案），
+    疑似数据外的名词只记进 `ungrounded_terms` 供页面标注。
     """
     llm = FakeLLM().queue(
         _round_reply([(1, "命中"), (2, "未命中"), (3, "未命中")]),
@@ -265,8 +266,33 @@ def test_summary_must_not_invent_names(session: Session) -> None:
     interview = _play(session, hits=None, llm=llm)
     report = service.finish_interview(session, interview=interview, llm=llm)
 
-    assert report.summary_source == "fallback", "编造的总结必须被拦下"
-    assert "Kubernetes" not in report.summary
+    assert report.summary_source == "llm", "现在不再因 grounding 而降级"
+    assert "Kubernetes" in report.summary, "总结要保留（它仍是给用户看的文案）"
+    assert "Kubernetes" in report.ungrounded_terms, "但必须被标出来"
+    # 落库 + 读回来都要带着这个信号（否则页面上标不出来）
+    assert service.get_report(session, interview).ungrounded_terms == report.ungrounded_terms
+
+
+def test_fallback_summary_is_assembled_from_data(session: Session) -> None:
+    """模型失败时的兜底文案：**由数据组装、且比原来那句更有信息量**。
+
+    本项目对比过三条路线（组装式 / 受限生成 / 自由生成）之后，选的兜底形态是
+    组装式 —— 它从不编造、零 token、完全可复现，而"模型失败"恰恰是最不该再冒险
+    的时刻。这条测试钉住它的**内容形状**（而不是只断言"非空串"）。
+    """
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "未命中"), (3, "未命中")]),
+        _eval_reply(accuracy=90, completeness=80, clarity=70, depth=40),
+        FakeReply(error=LLMCallError("总结服务挂了")),
+    )
+    interview = _play(session, hits=None, llm=llm)
+    report = service.finish_interview(session, interview=interview, llm=llm)
+
+    assert report.summary_source == "fallback"
+    # 组装式会点出"最低的那一维"（这里 depth 40），而不是只报一个总分
+    assert "depth" in report.summary
+    assert "40" in report.summary
+    assert "volatile" in report.summary
 
 
 def test_grounding_accepts_terms_from_the_criteria_text(session: Session) -> None:

@@ -92,6 +92,8 @@ class Report:
     top_problems: list[str]
     summary: str = ""
     summary_source: str = "llm"  # llm / fallback
+    #: grounding 没通过时，疑似数据外的名词。**它不导致降级** —— 只在页面上标注。
+    ungrounded_terms: list[str] = field(default_factory=list)
 
     def to_body(self) -> dict:
         """落库的形状。
@@ -112,6 +114,9 @@ class Report:
             ],
             "prerequisite_gaps": self.prerequisite_gaps,
             "top_problems": self.top_problems,
+            # grounding 的信号也要落库 —— 否则"打开报告"这条读路径看不到它，
+            # 页面就没法标注（实测：只在生成路径算过，读回来就丢了）。
+            "ungrounded_terms": self.ungrounded_terms,
         }
 
 
@@ -309,13 +314,16 @@ def _summarize(report: Report, llm) -> tuple[str, str]:
     if isinstance(data, dict):
         text = str(data.get("summary") or data.get("text") or "").strip()
     if not text:
-        logger.warning("总结为空，降级为确定性文案")
+        logger.warning("总结为空，改用组装式文案")
         return _fallback_summary(report), "fallback"
+
     if not summary_names_are_grounded(text, report):
-        # ADR-0003 的硬约束：总结里不许出现数据里没有的东西。
-        # **降级而不是重试**：重试同一个模型往往还是编，而报告不能因此打不开。
-        logger.warning("总结里出现了数据里没有的知识点名，降级为确定性文案：%r", text[:80])
-        return _fallback_summary(report), "fallback"
+        # ⚠️ **不拦，只记**（这条在真调之后被改成信号，理由见 `summary_names_are_grounded`
+        # 的 docstring：它四次误报、且明知查不出中文编造）。
+        # 页面据此标注一句"这段总结里有数据外的说法，仅供参考"。
+        suspect = sorted(set(_candidate_names(text)) - _known_names(report))
+        logger.warning("总结里可能有数据外的名词（**已保留**，仅标注）：%s", suspect)
+        report.ungrounded_terms = suspect
     return text, "llm"
 
 
@@ -391,10 +399,31 @@ def _candidate_names(text: str) -> set[str]:
 
 
 def summary_names_are_grounded(text: str, report: Report) -> bool:
-    """总结里提到的（拉丁）名字是否都能在数据里找到 —— 可程序化检查，ADR-0003。
+    """总结里提到的（拉丁）名字是否都能在数据里找到。
 
-    覆盖不了中文编造（见 `_candidate_names` 的局限说明），但它覆盖的正是
-    "幻觉引入不存在的技术名词"这一类 —— 也就是 ADR-0003 真正担心的那件事。
+    ⚠️ **它是信号，不是闸门** —— 这一点是**真调之后改的**（见本文件头的说明）。
+
+    ADR-0003 把这条写成了硬约束（"总结里不许出现数据里没有的东西"）并要求
+    "可程序化检查"。实现成准入检查之后，它连续**四次误报**，每次都在丢掉正确输出：
+
+    | 误报 | 被误判的东西其实是 |
+    |---|---|
+    | 汉字 2-4 字片段 | 正常句子本身（「这场面试说明…」的每个片段） |
+    | 标题类文本 | 规则本该跳过的东西 |
+    | `synchronized` | **考察点正文里的**技术名词 |
+    | `accuracy` / `depth` 等 | **报告自己的**四维分维度名 |
+
+    四次都指向同一件事：**"总结里的每个词是否在数据里"这件事，词法匹配做不到**
+    —— 它要求模型逐字复述，而"总结"这项任务的本质就是改写与归纳。放宽到子串/相似度
+    只是把误报换成漏检，阈值没有正确取值。
+
+    所以现在它只**标注**（页面提示"这段总结里有数据外的说法"），不阻断。
+    真正该由程序守的那条（ADR-0003 的原始担心）是**结论性断言与数据矛盾**
+    （"评语说没答到内存屏障，总结却写并发基础扎实"）—— 那需要按断言类别做比对，
+    不在这条词法检查的能力范围内，属后续工作。
+
+    覆盖不了中文编造（见 `_candidate_names` ），但**这个能力缺口是否还值得补**
+    要等上面那条结构性检查做出来再判断。
     """
     known = _known_names(report)
     for name in _candidate_names(text):
@@ -427,18 +456,51 @@ def _facts_block(report: Report) -> str:
 
 
 def _fallback_summary(report: Report) -> str:
-    """降级文案。它**只由已落库的数据拼**，所以永远与报告正文一致。"""
-    if report.total_score is None:
-        return "这场面试没有产生判定数据，无法给出总结。"
-    worst = report.changes[0].point_name if report.changes else None
-    parts = [f"本场平均总分 {report.total_score}。"]
-    if worst:
-        parts.append(f"变化最大的是「{worst}」。")
-    if report.prerequisite_gaps:
-        parts.append("建议先补：" + "、".join(report.prerequisite_gaps) + "。")
+    """模型那次没成功时用的文案 —— **由已落库的数据组装出来**，所以永远与报告
+    正文一致、完全可复现、零 token。
+
+    它不是"随便一句兜底"：`_assemble_summary` 是本项目对比过三条路线之后选的
+    兜底形态（组装式、受限生成、自由生成），理由是它**从不编造**（数字与措辞
+    都直接来自数据）且零成本 —— 而"模型失败"恰恰是最不该再冒险的时刻。
+    """
+    return _assemble_summary(report)
+
+
+def _assemble_summary(report: Report) -> str:
+    """**不调模型**，把已算出的结论按固定句式拼成一段。
+
+    句式刻意保持"结论 + 数据"的形状（"X 是最低的一项"），因为：
+    · 每个分句都能追溯到 `report` 里的一个字段 —— 于是它**不可能编造**
+    · 它读起来像体检报告，而 ADR-0003 明确要的就是这个调子
+      （"宁可像体检报告，不要像散文"）
+    """
+    parts: list[str] = []
+    if report.total_score is not None:
+        parts.append(f"本场平均总分 {report.total_score}。")
+
+    scored = [i for i in report.items if i.status == "ok" and i.scores]
+    if scored:
+        worst_item = min(scored, key=lambda i: min(i.scores.values()))
+        dim = min(worst_item.scores, key=lambda k: worst_item.scores[k])
+        parts.append(
+            f"第 {worst_item.seq} 题（{worst_item.point_name}）的 "
+            f"{dim} 是 {worst_item.scores[dim]} 分，最低的一项。"
+        )
+
+    moved = [c for c in report.changes if c.hit_delta > 0]
+    if moved:
+        c = moved[0]
+        parts.append(
+            f"「{c.point_name}」的掌握度从 {c.before_hit}/{c.before_covered} "
+            f"走到 {c.after_hit}/{c.after_covered}。"
+        )
+
     if report.top_problems:
         parts.append("最需要补的是 " + report.top_problems[0] + "。")
-    return "".join(parts)
+    if report.prerequisite_gaps:
+        parts.append("建议先补：" + "、".join(report.prerequisite_gaps) + "。")
+
+    return "".join(parts) or "这场面试没有产生判定数据，无法给出总结。"
 
 
 def _average_total(items: list[ItemReport]) -> int | None:
@@ -491,6 +553,7 @@ def get_report(session: Session, interview: Interview) -> Report:
         top_problems=list(body.get("top_problems", [])),
         summary=interview.report_summary or "",
         summary_source="stored",
+        ungrounded_terms=list(body.get("ungrounded_terms", [])),
     )
 
 

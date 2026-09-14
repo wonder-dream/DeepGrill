@@ -12,6 +12,12 @@
   {% if report.summary_source == "fallback" %}
   <p class="muted">（这段总结由已落库的数据拼出 —— 模型那次没生成成功。）</p>
   {% endif %}
+  {% if report.ungrounded_terms %}
+  {# 标注它、而不是把它删掉：这条检查会误报（真调时误报过四次），
+     所以它是提示，不是结论。#}
+  <p class="warn">（这段总结里出现了数据中没有的说法：
+    {{ report.ungrounded_terms | join("、") }} —— 请以逐题回顾为准。）</p>
+  {% endif %}
   {% endif %}
 </section>
 
