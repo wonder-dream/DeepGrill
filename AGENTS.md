@@ -118,7 +118,7 @@ v1 的 `_migrate_users_email` 会在启动时 `DELETE` 六张子表 + `DROP TABL
 
 ---
 
-## 六、开发环境（这台机器上的四条坑，每条都实测撞过）
+## 六、开发环境（这台机器上的五条坑，每条都实测撞过）
 
 1. **git 元数据在父仓库。** `DeepGrill-next` 是 `D:\document\InterviewAssistant` 的 **worktree**，所以写操作默认被拒（`index.lock: Permission denied`）。要提交就得绕开索引：
    ```
@@ -130,4 +130,6 @@ v1 的 `_migrate_users_email` 会在启动时 `DELETE` 六张子表 + `DROP TABL
 
 3. **某些目录路径一旦撞过权限错误就永久不可用**，删掉重建也一样被拒。实测废掉的有 `.pytest-tmp`、`.tmp/pytest`。**解法是换个名字**，不是排查 ACL。`tools/_probe_sandbox.py` 可以复现。
 
-4. **`uv` 的缓存要指到工作区内**（用户级缓存目录不可写）：`$env:UV_CACHE_DIR="<仓库>/.uv-cache"`。虚拟环境是仓库根的 `.venv`，与 v1 的 `.venv` 隔离。
+4. **不要用 `tempfile.mkdtemp()`。** 它在 Windows 上把新目录建成「仅属主可访问」的权限，而那个权限对**创建它的进程自己**也生效 —— 脚本紧接着往里写文件就是 `PermissionError`，错误信息还看起来像"沙箱拒绝"，完全指错方向（实测在这里烧掉了一轮工具调用）。用 `Path.mkdir()`，它用默认权限。
+
+5. **`uv` 的缓存要指到工作区内**（用户级缓存目录不可写）：`$env:UV_CACHE_DIR="<仓库>/.uv-cache"`。虚拟环境是仓库根的 `.venv`，与 v1 的 `.venv` 隔离。

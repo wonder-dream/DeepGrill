@@ -164,16 +164,34 @@ def _apply_file(conn: sqlite3.Connection, path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     conn.execute("BEGIN")
     try:
+        # 外键必须在**执行迁移语句的那一刻**真的开着。
+        #
+        # ⚠️ `PRAGMA foreign_keys` 在事务内是空操作 —— 所以它由 `migrate()` 在
+        # BEGIN 之前设好，这里只**断言**它没有失效。断言放在这个位置是因为
+        # 这是唯一要紧的时刻。
+        #
+        # 这一处曾经被一次错误的编辑吃掉（`for stmt in ...` 循环整行消失），
+        # 结果是**迁移文件里的 SQL 一条都不执行** —— 而记账表照建（runner 自己
+        # 保证）、记账也照写，所以失败的表现只有"表没被建出来"。
+        # 突变测试（把循环删掉）会让 6 条测试变红，其中
+        # `test_migration_statements_actually_run` 是专门为这件事写的。
+        if not conn.execute("PRAGMA foreign_keys").fetchone()[0]:
+            raise RuntimeError(
+                "PRAGMA foreign_keys 未生效，拒绝在失去外键保护的情况下执行迁移"
+            )
         for stmt in _split_statements(text):
             conn.execute(stmt)
+        # 记账必须在**同一个事务**里。它原先在这个 try 之外 —— 于是它一旦失败，
+        # 事务不回滚，而抛出的消息还会说「已回滚整个文件、没有记账」。
+        # **消息在撒谎**，而这是最坏的一种错：出问题时给了一条错误的线索。
+        conn.execute(
+            "INSERT INTO schema_migrations (filename, checksum, applied_at) "
+            "VALUES (?, ?, datetime('now'))",
+            (path.name, _sha256(text)),
+        )
     except Exception:
         conn.execute("ROLLBACK")
         raise
-    conn.execute(
-        "INSERT INTO schema_migrations (filename, checksum, applied_at) "
-        "VALUES (?, ?, datetime('now'))",
-        (path.name, _sha256(text)),
-    )
     conn.execute("COMMIT")
 
 
@@ -186,7 +204,15 @@ def migrate(db_path: Path | str) -> int:
     # 不让 sqlite3 的隐式事务管理掺进来。
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     try:
+        # `PRAGMA foreign_keys` 是**连接级**设置，必须在任何写操作之前设。
+        #
+        # ⚠️ 这里曾经写着一条**没核实的说法**：「`CREATE TABLE IF NOT EXISTS` 会开启
+        # 事务，从而让这条 PRAGMA 失效」。两次突变测试都不支持它 —— 把那行挪到建表
+        # 之后，测试照样全绿。所以那个说法是错的，已删；真正要紧的断言在
+        # `_apply_file` 里（执行迁移语句的那一刻），它才测得到"外键真的开着"。
         conn.execute("PRAGMA foreign_keys = ON")
+        if not conn.execute("PRAGMA foreign_keys").fetchone()[0]:
+            raise MigrationError("PRAGMA foreign_keys 没能生效 —— 迁移会失去外键保护")
 
         # 记账表由 runner 自己保证存在，而不是依赖"某个迁移文件会创建它"。
         #
@@ -228,7 +254,9 @@ def migrate(db_path: Path | str) -> int:
 
 def status(db_path: Path | str) -> None:
     """只报告状态，不改库（`--check`）。"""
-    conn = sqlite3.connect(str(db_path))
+    # 与 migrate 用同一套连接参数。原先这里漏了 isolation_level=None —— 读路径
+    # 不写东西所以没出过事，但两处参数不一致本身就是下一次事故的种子。
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
     try:
         recorded = applied(conn)
         drifted = check_drift(conn)

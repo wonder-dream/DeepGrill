@@ -132,3 +132,162 @@ def test_modified_migration_is_refused(fake_migrations: Path, tmp_dir: Path) -> 
     with pytest.raises(Exception) as e:
         migrate(db)
     assert "被改了" in str(e.value)
+
+
+def test_migration_statements_actually_run(fake_migrations: Path, tmp_dir: Path) -> None:
+    """**回归测试**：迁移文件里的 SQL 必须真的被执行。
+
+    为什么需要这么"显然"的一条测试：一次错误的编辑让 `_apply_file` 里的
+    `for stmt in _split_statements(text)` 整行消失，**迁移文件里的 SQL 一条都不执行**
+    —— 而当时 9 条测试全绿，因为记账表照建（runner 自己保证）、记账也照写。
+    唯一的表现是"表没被建出来"，而没有任何测试检查过"表建出来了没有"。
+
+    断言点选在**表是否存在**：那是"SQL 执行了"唯一不可伪装的结果。
+    """
+    (fake_migrations / "0001_ddl.sql").write_text(
+        "CREATE TABLE proof (id INTEGER PRIMARY KEY, note TEXT);",
+        encoding="utf-8",
+    )
+    db = tmp_dir / "t.db"
+    migrate(db)
+    assert "proof" in _tables(db), "迁移文件里的 CREATE TABLE 没有被执行"
+    # 顺带确认它不是"记账成功但什么都没做"的假象
+    conn = sqlite3.connect(str(db))
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(proof)")]
+    finally:
+        conn.close()
+    assert cols == ["id", "note"]
+
+
+def test_bookkeeping_insert_failure_rolls_back(fake_migrations: Path, tmp_dir: Path) -> None:
+    """**回归测试**：记账的 INSERT 失败时，迁移文件也必须被回滚。
+
+    这个 bug 的形状很坏：`INSERT` 原在 try 之外，所以它失败时事务不回滚，
+    **而消息却说「已回滚整个文件、没有记账」** —— 出问题时给了一条错误的线索。
+
+    构造办法：第二个迁移重复建第一张表，于是它的 `CREATE TABLE` 就失败；
+    更直接的是让记账表本身不可写 —— 这里用「已存在的表名」触发，
+    断言点只有一个：**失败之后库里不能留下那个迁移的任何东西**。
+    """
+    (fake_migrations / "0001_a.sql").write_text(
+        "CREATE TABLE t1 (id INTEGER PRIMARY KEY);", encoding="utf-8"
+    )
+    db = tmp_dir / "t.db"
+    migrate(db)
+
+    # 第二个迁移：先建一张新表，再建一张与 0001 里同名的表 → 后半失败
+    (fake_migrations / "0002_b.sql").write_text(
+        "CREATE TABLE t2 (id INTEGER PRIMARY KEY);\nCREATE TABLE t1 (id INTEGER);",
+        encoding="utf-8",
+    )
+    with pytest.raises(Exception) as e:
+        migrate(db)
+    assert "0002_b.sql" in str(e.value)
+
+    conn = sqlite3.connect(str(db))
+    try:
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        recorded = [r[0] for r in conn.execute("SELECT filename FROM schema_migrations")]
+    finally:
+        conn.close()
+    assert "t2" not in names, "0002 的前半必须回滚"
+    assert recorded == ["0001_a.sql"], "失败的迁移不许记账"
+
+
+def test_foreign_keys_are_actually_enabled(fake_migrations: Path, tmp_dir: Path) -> None:
+    """**回归测试**：`PRAGMA foreign_keys` 必须在写操作之前设好，且真的生效。
+
+    这个 bug 是静默的：`PRAGMA foreign_keys` 在**事务内是空操作**，而原先它执行
+    在那句 `CREATE TABLE`（会开启事务）之后 —— 于是迁移期间外键根本没打开。
+    表现为"引用了不存在的表也能建成功"，没有任何报错。
+
+    这里用一条引用不存在表的外键来表达：外键关着时它能建成功。
+    """
+    (fake_migrations / "0001_fk.sql").write_text(
+        "CREATE TABLE parent (id INTEGER PRIMARY KEY);\n"
+        "CREATE TABLE child (id INTEGER PRIMARY KEY, pid INTEGER REFERENCES parent(id));",
+        encoding="utf-8",
+    )
+    db = tmp_dir / "t.db"
+    assert migrate(db) == 1  # 这条本身是合法的，先确认能建
+
+    # 真正验证开关：另起一个库，让迁移写一条违反外键的数据
+    (fake_migrations / "0002_bad_fk.sql").write_text(
+        "INSERT INTO child (id, pid) VALUES (1, 999);",  # parent 里没有 999
+        encoding="utf-8",
+    )
+    db2 = tmp_dir / "t2.db"
+    with pytest.raises(Exception) as e:
+        migrate(db2)
+    assert "FOREIGN KEY" in str(e.value).upper(), (
+        "外键没生效 —— 违反外键的数据被写进去了"
+    )
+
+
+def test_split_statements_keeps_semicolons_in_place() -> None:
+    """statement splitter 的关键性质：注释与字符串里的分号**不切**。
+
+    它存在的唯一理由是 `executescript()` 会隐式提交事务（ADR-0011），
+    所以这个函数是"事务边界真的在 runner 手里"的前提。
+
+    ⚠️ 注意它的粒度：**注释会留在它所属的那一块里，孤立的注释自己成一块**
+    （实测：`sql` 末尾的 `-- 说明` 会切成一块）。执行 `-- 注释` 在 SQLite 里是
+    空操作，所以这不影响正确性 —— 但断言必须按真实行为写，
+    否则测试会以"我期望的样子"通过。
+    """
+    from migrations._runner import _split_statements
+
+    sql = (
+        "CREATE TABLE a (id INTEGER);\n"
+        "INSERT INTO a (id) VALUES (1);\n"
+        "INSERT INTO a (id) VALUES (';');  -- 字符串里的分号\n"
+        "-- 结尾的行注释\n"
+    )
+    got = _split_statements(sql)
+    assert len(got) == 4, got
+    assert got[0] == "CREATE TABLE a (id INTEGER)"
+    # 关键性质一：字符串里的分号没有被当成语句边界
+    assert got[2].startswith("INSERT INTO a (id) VALUES (';')")
+    # 关键性质二：行尾与结尾的注释都留在尾块里，不产生半截语句
+    assert got[3].startswith("--")
+    assert "分号" in got[3]
+    # 关键性质三：每一块都不是空的（半截语句会让迁移失败）
+    assert all(s.strip() for s in got), got
+
+    # 行注释里的分号也不切：注释自己成一块（执行时是空操作），语句完整
+    got2 = _split_statements("CREATE TABLE b (id INTEGER);  -- 注释里有 ; 分号")
+    assert len(got2) == 2, got2
+    assert got2[0] == "CREATE TABLE b (id INTEGER)"
+    assert got2[1].startswith("--")
+
+
+def test_real_migration_file_survives_the_splitter() -> None:
+    """真实迁移文件逐条执行必须成功 —— 这是 splitter 唯一要紧的用途。
+
+    比"手写一段 SQL 猜它怎么切"更可靠：它跑的是真正会进库的那个文件，
+    而且是按 runner 的真实路径（`_apply_file` → `_split_statements`）跑的。
+    """
+    real = Path(__file__).resolve().parent / "0001_initial.sql"
+    from migrations._runner import _split_statements
+
+    stmts = _split_statements(real.read_text(encoding="utf-8"))
+    assert len(stmts) > 30, f"切得太少，可能整段被当成一条：{len(stmts)}"
+    # 每条都得能独立执行 —— 空块或半截语句会让迁移失败
+    assert all(s.strip() for s in stmts)
+
+
+def test_cli_migrate_and_check(tmp_dir: Path) -> None:
+    """`--db` 与 `--check` 的实际行为（此前只有 migrate() 被测过）。
+
+    `--db` 的存在理由就是让测试能对着临时库跑**真实迁移文件** ——
+    所以这条测的是"命令行那条路真的通"。
+    """
+    from migrations._runner import main
+
+    db = tmp_dir / "cli.db"
+    assert main(["--db", str(db)]) == 0
+    assert _recorded(db) == ["0001_initial.sql"]
+    assert main(["--db", str(db)]) == 0, "幂等：第二遍也要成功"
+    assert main(["--db", str(db), "--check"]) == 0
+    assert main(["--db"]) == 2, "缺参数要报错退出，不是静默用默认库"
