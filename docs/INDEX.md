@@ -97,6 +97,8 @@
 | 启动期检查：拒绝占位口令（决策 58）与**半迁移**的库 | `app/db/startup.py` |
 | 晋升 + 自动门禁（决策 5/9/68）：四条确定性检查、过闸进公共待定池 | `app/bank/promotion.py` |
 | 事后治理（决策 5 + ADR-0002）：重复检测（离线任务）与三个处置动作 | `app/bank/quality.py`、`app/web/quality_page.py` |
+| 嵌入（ADR-0008）：接口 + 占位实现 + OpenAI 兼容客户端 + 缓存表（`0004`） | `app/llm/embeddings.py`、`app/offline/embedding_store.py` |
+| 全量装配管道（决策 44/46）：分批提候选 → 嵌入粗筛聚类 → 逐簇 LLM 归并（`propose --batched`） | `app/offline/knowledge_pipeline.py` |
 | 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker`） | `app/cli.py`、`app/offline/seed.py` |
 | v1 题目导入（只读连接 + 幂等 + 标签映射） | `tools/import_v1.py`、`tools/test_import_v1.py` |
 | 对照工具（文档 vs SQL 字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
@@ -105,8 +107,10 @@
 | 还没有 | 归属 |
 |---|---|
 | 语音转写的**真实供应商**（接口与占位实现已就位；`DEEPGRILL_STT_PROVIDER=none` 时明确失败并让人改用打字） | 决策 32 / ADR-0009 |
-| 知识层全量提议（分批 + 嵌入聚类）—— 现在只支持小样本单次调用 | 决策 44、46 |
-| 阈值标定的实验脚本（`docs/v1行为规格.md` §11 的每个数字） | §未决 6 |
+| **嵌入的真实供应商**（接口 / 占位实现 / 缓存都就位；DeepSeek 不提供 embeddings，见 `.env.example`）—— 配好之前**全量装配跑不了** | ADR-0008 |
+| **全量装配本身还没跑**：库里 3007 道导入题仍在待定池（真跑：配嵌入 → `propose --batched` → 人审 → `mount`） | 决策 44/46 |
+| 知识层的**增量维护**（每天新题自动进管道）—— 现在只有显式命令 | 决策 46 |
+| 阈值标定的实验脚本（`docs/v1行为规格.md` §11 的每个数字，含装配的批大小与聚类阈值） | §未决 6 |
 | 验收标准 | §未决 5 |
 | ruff / mypy 与它们的提交前检查 | 决策 38（未实施） |
 

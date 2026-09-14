@@ -24,6 +24,12 @@ from app.db import create_db_engine, create_session_factory, make_session_depend
 from app.db.models import User
 from app.errors import Forbidden, TooManyRequests
 from app.llm import LLMCallError, LLMClient
+from app.llm.embeddings import (
+    APIEmbeddings,
+    Embeddings,
+    FakeEmbeddings,
+    NoProviderEmbeddings,
+)
 from app.llm.stt import FakeSTT, NoProviderSTT, SpeechToText
 
 
@@ -130,6 +136,23 @@ def get_stt(settings: Settings = Depends(get_settings)) -> SpeechToText:
     if settings.stt_provider == "fake":
         return FakeSTT()
     return NoProviderSTT()
+
+
+def get_embeddings(settings: Settings = Depends(get_settings)) -> Embeddings:
+    """嵌入（ADR-0008：**走 API，不跑本地模型**）。同样"没配就明确失败"。
+
+    它不挂在 HTTP 请求上（聚类是离线管道的事），但装配管道需要一个统一的构造点 ——
+    与 `get_llm` / `get_stt` 保持一致：接真实供应商时只改这一处。
+    """
+    if settings.embedding_provider == "api":
+        return APIEmbeddings(
+            api_key=settings.embedding_api_key or settings.llm_api_key,
+            base_url=settings.embedding_base_url or settings.llm_base_url,
+            model=settings.embedding_model,
+        )
+    if settings.embedding_provider == "fake":
+        return FakeEmbeddings()
+    return NoProviderEmbeddings()
 
 
 def rate_limit_interviewer(

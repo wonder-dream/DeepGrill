@@ -49,12 +49,18 @@ def cmd_seed(settings: Settings) -> int:
     return 0
 
 
-def cmd_propose(settings: Settings, domain: str) -> int:
-    """跑知识层管道的第一步：提候选知识点 → 落成提案文件（供人审）。"""
+def cmd_propose(settings: Settings, domain: str, *, batched: bool = False) -> int:
+    """跑知识层管道的第一步：提候选知识点 → 落成提案文件（供人审）。
+
+    `--batched` 是**全量装配**那条路（决策 44）：分批提候选 → 嵌入粗筛聚类 →
+    逐簇让 LLM 判断归并。它需要嵌入（`DEEPGRILL_EMBEDDING_PROVIDER`），
+    因为"分批必然跨批重复"，而去重只能靠向量粗筛。
+    """
     import json
 
     from app.bank import repository as bank_repository
-    from app.llm import LLMClient
+    from app.config import Settings as _Settings
+    from app.deps import get_llm, get_embeddings
     from app.offline import knowledge_pipeline as kp
     from app.web.admin_page import PROPOSAL_PATH
 
@@ -73,13 +79,35 @@ def cmd_propose(settings: Settings, domain: str) -> int:
         print("提候选要调模型 —— 先配 DEEPGRILL_LLM_API_KEY", file=sys.stderr)
         return 2
 
-    client = LLMClient(
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
-        model=settings.model_interviewer,
-    )
+    # 依赖工厂需要 Settings 对象；这里直接调它们（与 web 端同一批构造点）
+    deps_settings = _Settings()
+    client = get_llm(deps_settings)
     try:
-        result = kp.propose_points(questions, llm=client)
+        if not batched:
+            result = kp.propose_points(questions, llm=client)
+        else:
+            embeddings = get_embeddings(deps_settings)
+            with create_session_factory(engine)() as session:
+                proposal = kp.propose_batched(session, questions=questions, llm=client)
+                print(f"分批 {proposal.batches} 批，候选 {len(proposal.candidates)} 条")
+                for note in proposal.notes:
+                    print(f"  [注意] {note}", file=sys.stderr)
+                clusters, embed_report = kp.cluster_candidates(
+                    session, candidates=proposal.candidates, embeddings=embeddings
+                )
+                print(
+                    f"嵌入：新算 {embed_report['embedded']} 条、复用缓存 "
+                    f"{embed_report['reused']} 条 → 聚成 {len(clusters)} 簇"
+                )
+                merged, judgement = kp.juddge_clusters(session, clusters=clusters, llm=client)
+                print(
+                    f"逐簇判断：合并 {judgement.merged} 簇、保持 {judgement.kept} 簇、"
+                    f"失败 {judgement.failed} 簇"
+                )
+                for note in judgement.notes:
+                    print(f"  [注意] {note}", file=sys.stderr)
+                result = kp.ProposalResult(candidates=merged)
+                session.commit()
     finally:
         client.close()
 
@@ -189,6 +217,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="打印库里的规模")
     propose = sub.add_parser("propose", help="提候选知识点 → 提案文件（供 /admin/review 审）")
     propose.add_argument("--domain", default="未命名领域", help="这批知识点属于哪个领域")
+    propose.add_argument(
+        "--batched",
+        action="store_true",
+        help="全量装配那条路：分批提 + 嵌入聚类 + 逐簇判断（需要嵌入供应商）",
+    )
     sub.add_parser("mount", help="把题挂到已确认的知识点上（挂不上进待定池）")
     worker = sub.add_parser("worker", help="跑离线 worker（jobs 表；Ctrl-C 退出）")
     worker.add_argument("--once", action="store_true", help="跑空队列就退出（排查用）")
@@ -201,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         return cmd_status(settings)
     if args.command == "propose":
-        return cmd_propose(settings, args.domain)
+        return cmd_propose(settings, args.domain, batched=args.batched)
     if args.command == "mount":
         return cmd_mount(settings)
     if args.command == "worker":

@@ -43,6 +43,7 @@ __all__ = [
     "CandidateProfile",
     "Criterion",
     "Domain",
+    "Embedding",
     "Evaluation",
     "Explanation",
     "Interview",
@@ -375,6 +376,20 @@ explanation_cache = Table(
     Column("created_at", String, nullable=False, server_default=_NOW),
 )
 
+embeddings = Table(
+    "embeddings",
+    metadata,
+    Column("kind", String, primary_key=True),      # question / candidate
+    Column("ref_id", String, primary_key=True),    # 题目 id 或文本哈希
+    Column("model", String, nullable=False),
+    #: 被嵌入的那段文本的哈希 —— 文本改了它就对不上，于是自动重算
+    Column("source_hash", String, nullable=False),
+    Column("dim", Integer, nullable=False),
+    #: base64 的 float32 字节（JSON 数组在 1536 维下是它的五倍大）
+    Column("vector", Text, nullable=False),
+    Column("created_at", String, nullable=False, server_default=_NOW),
+)
+
 
 class _Row:
     """让映射出来的类能 `Row(**kwargs)` 构造，也能 `repr` 出主键。
@@ -489,6 +504,12 @@ class Explanation(_Row):
     pass
 
 
+class Embedding(_Row):
+    """嵌入缓存（`migrations/0004_embeddings.sql` / ADR-0008）。"""
+
+    pass
+
+
 class QuestionFeedback(_Row):
     pass
 
@@ -535,6 +556,7 @@ CLASS_BY_TABLE: dict[Table, type[_Row]] = {
     jobs: Job,
     question_point_stats: QuestionPointStat,
     explanation_cache: Explanation,
+    embeddings: Embedding,
 }
 
 for _table, _cls in CLASS_BY_TABLE.items():

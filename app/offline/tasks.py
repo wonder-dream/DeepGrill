@@ -131,6 +131,22 @@ def flag_duplicate_questions(session: Session, payload: dict[str, Any]) -> dict[
     return quality_module.flag_duplicate_questions(session, payload)
 
 
+def purge_embeddings(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    """回收**嵌入缓存**（ADR-0008 + AGENTS.md §3.2）。
+
+    它在库里的体量比讲解缓存大一个量级（每行 ~6KB 的向量），所以更需要回收者：
+    TTL 清长期没用到的，容量上限兜底。`purge()` 幂等，可被队列重跑。
+    """
+    from app.offline import embedding_store
+
+    report = embedding_store.purge(session)
+    return {
+        "message": f"嵌入缓存：{report}",
+        "by_age": report.by_age,
+        "by_capacity": report.by_capacity,
+    }
+
+
 register(
     JobSpec(
         name="self_repair_stats",
@@ -161,5 +177,13 @@ register(
         run=flag_duplicate_questions,
         idempotent=True,
         description="事后治理的检测：标记同知识点下的重复题（只标记，处置由人做）",
+    )
+)
+register(
+    JobSpec(
+        name="purge_embeddings",
+        run=purge_embeddings,
+        idempotent=True,
+        description="回收嵌入缓存（TTL 与容量上限见 offline.embedding_store）",
     )
 )

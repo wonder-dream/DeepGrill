@@ -67,6 +67,19 @@ class Settings(BaseSettings):
     #: 接真实供应商时在这里加一个值 —— 模型名同样按用途命名（决策 50）。
     stt_provider: str = "none"
 
+    #: 嵌入的供应商（ADR-0008：**嵌入走 API**，不跑本地模型）。
+    #:
+    #: `"none"`（默认）= 没接。**DeepSeek 不提供 embeddings**（调 `/v1/embeddings`
+    #: 直接 404），所以"用哪一家"是一个还没定的决策 —— 没配就明确失败，
+    #: 而不是拿一段假向量糊过去（那会让聚类看起来跑通了）。
+    #: `"fake"` = 确定性的词袋哈希向量：让整条装配管道（分批 → 聚类 → 逐簇判断）
+    #: 在没有供应商时也能被真的走一遍，而且结果可复现。**它不是语义嵌入**。
+    #: `"api"` = OpenAI 兼容的 `/embeddings`（下面三项要配齐）。
+    embedding_provider: str = "none"
+    embedding_model: str = ""
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
+
     # Cookie 的 Secure 属性。默认关（http 本机开发）；线上必须开 ——
     # 上线检查项，不是默认值。
     session_cookie_secure: bool = False
