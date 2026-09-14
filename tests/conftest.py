@@ -35,14 +35,20 @@ _counter = itertools.count()
 def tmp_dir() -> Iterator[Path]:
     """给一个空的可写目录，测试结束删掉。
 
-    比 `tmp_path` 多做的一件事：**失败时保留现场**（`-x` 或 `--keep-tmp` 时），
+    比 `tmp_path` 多做的一件事：**失败时保留现场**（`DEEPGRILL_KEEP_TMP=1` 时），
     因为"迁移跑到一半失败"这类问题只有看到现场才有用。
+
+    ⚠️ `exist_ok=True` 不是随手加的：**本环境下清理不可靠** ——
+    `shutil.rmtree` 会把权限出问题的目录留在磁盘上（AGENTS.md §六 第 3 条记的
+    同一类现象），于是下一次同名目录已经存在，`mkdir()` 直接 `FileExistsError`。
+    实测撞过一次（`t9596-0`）：失败现场看起来像"测试框架坏了"，真因是上一条
+    测试的残留。所以：**名字撞了就清掉重用，清不掉也照样用**。
     """
     _TMP_ROOT.mkdir(parents=True, exist_ok=True)
     d = _TMP_ROOT / f"t{os.getpid()}-{next(_counter)}"
     if d.exists():
         shutil.rmtree(d, ignore_errors=True)
-    d.mkdir(parents=True)
+    d.mkdir(parents=True, exist_ok=True)
     try:
         yield d
     finally:

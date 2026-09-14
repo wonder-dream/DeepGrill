@@ -41,12 +41,17 @@ def tmp_dir() -> Iterator[Path]:
 
     留了 `DEEPGRILL_KEEP_TMP=1` 这个开关：排查"迁移跑到一半失败"这类问题时，
     现场比日志有用。
+
+    ⚠️ `exist_ok=True` 不是随手加的：**本环境下清理不可靠** ——`shutil.rmtree`
+    会把权限出问题的目录留在磁盘上（AGENTS.md §六 第 3 条记的同一类现象），
+    于是下一次同名目录已经存在，`mkdir()` 直接 `FileExistsError`。实测撞过一次，
+    失败现场看起来像"测试框架坏了"，真因是上一条测试的残留。
     """
     _TMP_ROOT.mkdir(parents=True, exist_ok=True)
     d = _TMP_ROOT / f"t{os.getpid()}-{next(_counter)}"
     if d.exists():
         shutil.rmtree(d, ignore_errors=True)
-    d.mkdir(parents=True)
+    d.mkdir(parents=True, exist_ok=True)
     try:
         yield d
     finally:
