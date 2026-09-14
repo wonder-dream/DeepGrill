@@ -100,9 +100,10 @@
 | 嵌入（ADR-0008）：接口 + 占位实现 + OpenAI 兼容客户端 + 缓存表（`0004`） | `app/llm/embeddings.py`、`app/offline/embedding_store.py` |
 | 全量装配管道（决策 44/46）：分批提候选 → 嵌入粗筛聚类 → 逐簇 LLM 归并（`propose --batched`） | `app/offline/knowledge_pipeline.py` |
 | 生成题这条内容来源（决策 4/5）：按缺题的已确认知识点补公共题，过门禁才插入（`app.cli generate`） | `app/offline/generation.py`、`prompts/offline/generate_public_questions.md` |
+| 阈值标定报告（决策 70 / §未决 6）：§11 每个数字的样本分布 + `--live` 单位成本，**只读不改常量** | `app/offline/calibration.py` |
 | lint 与类型检查（决策 38）：`ruff` + `mypy`，进 dev extra 与 pre-commit 钩子 | `pyproject.toml`、`.githooks/pre-commit` |
 | 备份与**恢复验证**（ADR-0008）：`VACUUM INTO` 快照 + gzip + 清单 + 当场自验 | `app/backup.py`、`app/cli.py` |
-| 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker` / `backup` / `generate`） | `app/cli.py`、`app/offline/seed.py` |
+| 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker` / `backup` / `generate` / `calibrate`） | `app/cli.py`、`app/offline/seed.py` |
 | v1 题目导入（只读连接 + 幂等 + 标签映射） | `tools/import_v1.py`、`tools/test_import_v1.py` |
 | 对照工具（文档 vs SQL 字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
 | 依赖与 pytest 配置（收集范围已配死） | `pyproject.toml` |

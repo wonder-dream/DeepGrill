@@ -283,6 +283,22 @@ def point_question_counts(session: Session, point_ids: list[int]) -> dict[int, i
     return {int(pid): int(n) for pid, n in rows}
 
 
+def difficulty_counts(session: Session) -> dict[int, int]:
+    """公共题按难度 1-5 的计数（一次查询，不取行）。
+
+    给两个读者用：观测页的难度分布，以及 `offline.calibration` 的阈值标定
+    （§未决 6 里"难度 1-5 的分布"那条 —— v1 的实测结论是**中间堆积、两端稀疏**）。
+    它和 `point_question_counts` 一样只数不取 —— 标定工具会在大库上跑，不该为了
+    一张直方图把整表拉进内存（AGENTS §3.6）。
+    """
+    rows = session.execute(
+        select(Question.difficulty, func.count())
+        .where(Question.owner_user_id.is_(None))
+        .group_by(Question.difficulty)
+    ).all()
+    return {int(level): int(n) for level, n in rows}
+
+
 def owned_ids(session: Session, user_id: int) -> list[int]:
     """这位用户**自己**的题 id 清单（**不带可见性条件**）。
 

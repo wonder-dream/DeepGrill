@@ -315,6 +315,24 @@ def cmd_status(settings: Settings) -> int:
     return 0
 
 
+def cmd_calibrate(settings: Settings, live: bool) -> int:
+    """打印阈值标定报告（§未决 6）。
+
+    **只读**：它不改任何常量（理由写在 `app/offline/calibration.py` 的模块文档里）。
+    `--live` 会在**库的副本**上真调两次模型测单位成本 —— 真实库一个字节都不动。
+    """
+    from app.offline import calibration
+
+    db = settings.resolved_database_path()
+    engine = create_db_engine(db)
+    with create_session_factory(engine)() as session:
+        _ensure_migrated(session)
+        extra = [calibration.live_costs(settings)] if live else []
+        report = calibration.collect(session, db=str(db), extra=extra)
+    print(report.render())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli", description="DeepGrill 运维命令")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -343,6 +361,12 @@ def main(argv: list[str] | None = None) -> int:
     generate.add_argument(
         "--enqueue", action="store_true", help="只投一条离线任务（由 worker 跑，适合 cron）"
     )
+    calibrate = sub.add_parser(
+        "calibrate", help="阈值标定报告（§未决 6；只读，不改常量）"
+    )
+    calibrate.add_argument(
+        "--live", action="store_true", help="额外真调两次模型测单位成本（在库的副本上跑）"
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -363,6 +387,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_verify_backup(args.path)
     if args.command == "generate":
         return cmd_generate(settings, args.point, args.count, args.enqueue)
+    if args.command == "calibrate":
+        return cmd_calibrate(settings, args.live)
     # `parser.error` 自己会 `SystemExit(2)` —— 后面那句 `return 2` 永远走不到
     # （mypy 的 `warn_unreachable` 会（正确地）指出来）
     parser.error(f"未知命令：{args.command}")
