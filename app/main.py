@@ -16,8 +16,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
 from app.deps import get_settings
-from app.errors import AppError
-from app.web import home_page
+from app.errors import AppError, NotFound
+from app.web import bank_page, home_page
 from app.web.templating import WEB_DIR, render
 
 
@@ -43,6 +43,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
 
     app.include_router(home_page.router)
+    app.include_router(bank_page.router)
 
     _install_error_handlers(app)
 
@@ -55,13 +56,16 @@ def _install_error_handlers(app: FastAPI) -> None:
     ⚠️ 这里不是"吞异常"：`AppError` 是**预期内**的失败，越出它的一律交给
     FastAPI 的默认 500（真实栈进日志）。AGENTS.md §3.1 要的是"降级必须同时
     产出用户可见状态与可查询记录" —— 前者在这里，后者在日志/`task_logs`。
+
+    **状态码由异常自己带**（`AppError` 继承 `HTTPException`），处理器只渲染页面 ——
+    第一版让处理器挑状态码，结果领域层的 `NotFound` 返回了 200，测试当场抓到。
     """
 
     @app.exception_handler(AppError)
     def _app_error(request: Request, exc: AppError) -> object:
         # 用公开的 render()，不碰 templating 的内部环境 —— 一旦有人把"错误页"
         # 做成需要自己拼 HTML 的东西，XSS 纪律（ADR-0004）就从这里破口。
-        return render(request, "error.html", {"message": exc.user_message})
+        return render(request, "error.html", {"message": exc.message})
 
     @app.exception_handler(404)
     def _not_found(request: Request, exc: object) -> JSONResponse:

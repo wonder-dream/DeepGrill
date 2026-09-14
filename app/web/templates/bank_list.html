@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}题库 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>题库</h1>
+  <p class="muted">共 {{ data.total }} 道{% if data.kind %}（kind={{ data.kind }}）{% endif %}。浏览不消耗额度点。</p>
+</section>
+
+{% if not data.cards %}
+<section class="card">
+  <p>题库是空的。跑 <code>python -m app.cli seed</code> 灌一份演示数据。</p>
+</section>
+{% else %}
+<section class="card">
+  <table>
+    <thead>
+      <tr><th>#</th><th>题干</th><th>知识点</th><th>难度</th><th>来源</th></tr>
+    </thead>
+    <tbody>
+      {% for c in data.cards %}
+      <tr>
+        <td>{{ c.id }}</td>
+        <td><a href="/bank/{{ c.id }}">{{ c.stem }}</a></td>
+        <td>{{ c.point_name or "—" }}</td>
+        <td>{{ c.difficulty }}</td>
+        <td>{% if c.is_private %}私有{% else %}公共{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  {% if data.has_prev %}<a class="button" href="/bank?page={{ data.page - 1 }}">上一页</a>{% endif %}
+  <span class="muted">第 {{ data.page }} 页</span>
+  {% if data.has_next %}<a class="button" href="/bank?page={{ data.page + 1 }}">下一页</a>{% endif %}
+</section>
+{% endif %}
+{% endblock %}

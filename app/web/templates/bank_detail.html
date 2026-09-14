@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ data.question.stem }} · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>{{ data.question.stem }}</h1>
+  <dl>
+    <dt>知识点</dt><dd>{{ data.point_name or "—" }}</dd>
+    <dt>题型</dt><dd>{{ data.question.kind }}</dd>
+    <dt>难度</dt><dd>{{ data.question.difficulty }}</dd>
+    <dt>来源</dt><dd>{% if data.question.owner_user_id %}私有{% else %}公共{% endif %}</dd>
+  </dl>
+</section>
+
+<section class="card">
+  <h2>这道题考什么</h2>
+  {% if data.criteria %}
+  <ol>
+    {% for c in data.criteria %}<li>{{ c }}</li>{% endfor %}
+  </ol>
+  {% else %}
+  <p class="warn">这道题还没有考察点定义 —— 判分需要它，先补知识点定义再用来面试。</p>
+  {% endif %}
+</section>
+
+{% if data.question.reference_answer %}
+<section class="card">
+  <h2>参考答案</h2>
+  <p>{{ data.question.reference_answer }}</p>
+</section>
+{% endif %}
+
+<section class="card">
+  <p><a class="button" href="/bank">回题库</a></p>
+</section>
+{% endblock %}
