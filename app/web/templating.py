@@ -44,11 +44,19 @@ def render(
     （base.html），而"每个调用点都记得传 user"正是会漏的那类事 —— 漏了的页面
     导航栏会静默显示成"未登录"。取不到（没接账号域、或匿名）就是 None。
 
+    默认值来自 `request.state.user`（由 `deps.get_current_user` 挂上）。第一版
+    只写了 `{"user": None}` 并靠页面自己传，于是**首页漏传了** —— 已登录用户看到
+    的仍是"登录"链接，而且页面上没有任何东西会报错。页面显式传的 `user` 仍然优先
+    （有些页面拿到的是"必须是 owner"的那个对象，与 `request.state` 里那个是同一个）。
+
     `status_code` 必须能透传：错误页配 200 是**静默的错**（缓存、爬虫、前端分支
     全都会判断错），而它不会有人肉眼发现。实测踩过两次 —— 领域层的 `NotFound`
     与 `Forbidden` 都曾渲染出 200 的错误页。
     """
-    ctx: dict[str, Any] = {"user": None, **(context or {})}
+    ctx: dict[str, Any] = {
+        "user": getattr(request.state, "user", None),
+        **(context or {}),
+    }
     return HTMLResponse(
         _env.get_template(name).render(request=request, **ctx), status_code=status_code
     )

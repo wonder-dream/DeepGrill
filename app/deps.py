@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -48,6 +49,26 @@ def get_session(engine: Engine = Depends(get_engine)) -> Iterator[Session]:
 SESSION_COOKIE = "dg_session"
 
 
+@dataclass(frozen=True)
+class CurrentUser:
+    """导航栏与页面默认值要用的那几项 —— **一份在会话关闭后仍然读得到的快照**。
+
+    为什么不能直接把 ORM 的 `User` 挂到 `request.state` 上：请求失败时依赖的
+    `finally` 会先 `rollback()` + `close()`，而 **rollback 会让该会话里所有对象
+    的已加载属性失效**（`expire_on_commit=False` 管不了 rollback）。异常处理器
+    随后拿 `request.state.user` 渲染错误页 —— 那一刻读 `user.username` 就是
+    `DetachedInstanceError`，错误页自己 500。实测正是这样炸的。
+
+    所以这里是**值的拷贝**，不是"另一个用户模型"：它由 `get_current_user` 唯一
+    产生，只服务模板的默认值；页面自己的业务判断仍然用依赖返回的那个 `User`。
+    """
+
+    id: int
+    username: str
+    role: str
+    email: str
+
+
 def get_current_user(
     request: Request, session: Session = Depends(get_session)
 ) -> User | None:
@@ -60,11 +81,20 @@ def get_current_user(
     为什么住在这里而不是 `account/service.py`：它要读 **cookie**（HTTP 那一层的事），
     而领域层不知道 cookie 是什么。领域只提供 `service.user_from_token(session, 明文)`
     —— 依赖注入这一层负责把 cookie 里的东西递进去。
+
+    ⚠️ 它**顺手把 `CurrentUser` 快照挂到 `request.state.user`**，让 `render()`
+    有个安全的默认值。原来只靠"每个页面记得把 `user` 传进 context"——实测漏了一个
+    （首页），于是首页主按钮对**已登录用户**也一直显示成未登录，而且不报错。
+    FastAPI 对同一请求里的同一个依赖只解析一次，所以这不会多查一次库。
     """
     token = request.cookies.get(SESSION_COOKIE)
-    if not token:
-        return None
-    return account_service.user_from_token(session, token)
+    user = account_service.user_from_token(session, token) if token else None
+    request.state.user = (
+        CurrentUser(id=user.id, username=user.username, role=user.role, email=user.email)
+        if user is not None
+        else None
+    )
+    return user
 
 
 def require_user(user: User | None = Depends(get_current_user)) -> User:
