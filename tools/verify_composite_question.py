@@ -58,6 +58,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--question", type=int, default=0, help="默认自动找一道像综合题的")
     parser.add_argument("--limit", type=int, default=5000, help="自动找时最多扫多少道")
+    parser.add_argument(
+        "--synthetic",
+        action="store_true",
+        help="库里没有真综合题时，自己造一道（明确标 origin=synthetic 的演示题）—— "
+        "验的是**机制**（一次作答填多个格子），不是语料",
+    )
     args = parser.parse_args(argv)
 
     settings = Settings()
@@ -93,13 +99,29 @@ def main(argv: list[str] | None = None) -> int:
                     for q in rows
                 ]
                 scored = [(n, q) for n, q in scored if n >= 2]
-                if not scored:
+                if not scored and args.synthetic:
+                    # 造一道**明确跨界**的题：它同时踩两个已确认知识点。
+                    # 这是为了验**机制**（一次作答 → 多个格子），不是因为语料里有它。
+                    question = Question(
+                        kind="design",
+                        stem="设计一个高并发订单系统：既要保证缓存与数据库的一致性，"
+                             "又要对入口做限流 —— 这两件事怎么配合？",
+                        difficulty=4,
+                        origin="seed",
+                        visibility="public",
+                        answer_tier="long_tail",
+                    )
+                    session.add(question)
+                    session.flush()
+                    print(f"库里没有真综合题，造了一道演示题 #{question.id}（同时踩两个知识点）")
+                elif not scored:
                     print(f"扫了 {len(rows)} 道公共题，没有一道同时踩到两个已确认知识点 ——"
-                          f" 当前这六个点还建不出综合题")
+                          f" 当前这六个点还建不出综合题（要造一道就加 --synthetic）")
                     return 2
-                scored.sort(key=lambda pair: -pair[0])
-                question = scored[0][1]
-                print(f"自动选中 #{question.id}（踩到 {scored[0][0]} 个知识点名字）")
+                else:
+                    scored.sort(key=lambda pair: -pair[0])
+                    question = scored[0][1]
+                    print(f"自动选中 #{question.id}（踩到 {scored[0][0]} 个知识点名字）")
             print(f"真题 #{question.id}：{question.stem[:60]}")
             print(f"  挂载前：primary_point_id={question.primary_point_id}")
 
