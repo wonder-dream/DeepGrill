@@ -95,12 +95,17 @@ CREATE TABLE role_points (
 
 CREATE TABLE knowledge_points (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_id      INTEGER NOT NULL REFERENCES domains(id),
     name           TEXT    NOT NULL,
     status         TEXT    NOT NULL DEFAULT 'draft',
     origin         TEXT    NOT NULL DEFAULT 'proposed',
     exclusions     TEXT,
     question_count INTEGER NOT NULL DEFAULT 0
 );
+-- domain_id: 属于哪个知识领域 —— **「知识领域 → 知识点」这层关系在库里的唯一表达**。
+--   第一版漏了这一列（手抄 24 张表时漏掉的一行），后果是 domains 没有任何表指向它，
+--   三层结构在库里只剩两层，查不出"某领域下有哪些知识点"。
+--   它是 tools/_compare_schema.py 抓出来的 —— 那份对照脚本因此留在仓库里。
 -- status: draft / confirmed —— **人审过才是 confirmed**
 -- origin: proposed（LLM 提议）/ manual（人写）
 -- exclusions: 不考察什么（防挂载漂移）
@@ -347,6 +352,7 @@ CREATE TABLE question_point_stats (
 CREATE INDEX idx_questions_visibility   ON questions(visibility);
 CREATE INDEX idx_questions_owner        ON questions(owner_user_id);
 CREATE INDEX idx_questions_primary_pt   ON questions(primary_point_id);
+CREATE INDEX idx_kp_domain              ON knowledge_points(domain_id);
 CREATE INDEX idx_attempts_session       ON attempts(session_id);
 CREATE INDEX idx_sessions_interview     ON sessions(interview_id);
 CREATE INDEX idx_interviews_user        ON interviews(user_id, status);

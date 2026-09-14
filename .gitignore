@@ -22,3 +22,12 @@ pytest-cache-files-*/
 # 题目的权威来源是 v1 的 data/interview.db（只读），v2 的库由
 # `python -m migrations.run` 生成，因此不需要进库。
 data/
+
+# 编辑器
+.idea/
+.vscode/
+
+# 审阅期的生成物：`tools/_compare_schema.py` 的输出。
+# 它是**某一次审阅的快照**，schema 一变就过期 —— 所以不进库，
+# 需要时重跑那条命令即可（工具的局限写在它自己的输出里）。
+docs_compare.md
