@@ -51,7 +51,15 @@ class LLMParseError(LLMError):
 
     与 `LLMCallError` 分开的理由：调用失败可以原样重试，而"模型答了但答的不像
     JSON"重试同一个 prompt 往往还是不像 —— 两者的补救不同（行为规格 §1.8）。
+
+    `raw` 是**模型实际说了什么**。§1.8 否决的是"原样重发同一个 prompt"，而
+    **把这段坏输出贴回去、要求它只输出 json** 是另一回事 —— 那需要这段原文，
+    所以它随异常一起带出来（`chat_json` 用它做一次修复重发）。
     """
+
+    def __init__(self, message: str, *, raw: str = "") -> None:
+        super().__init__(message)
+        self.raw = raw
 
 
 @dataclass
@@ -427,17 +435,50 @@ class LLMClient:
 
         try:
             return loads_tolerant(reply.text)
-        except LLMParseError:
+        except LLMParseError as e:
             if reply.finish_reason == "length":
                 raise LLMCallError(
                     f"输出被 max_tokens 截断、JSON 不完整（completion_tokens="
                     f"{reply.completion_tokens}）—— 这不是模型答错，是预算不够"
                 ) from None
-            raise
+            # 带上模型**实际说了什么**：`chat_json` 的修复重发要用它。不带的话
+            # 就只能原样重发同一个 prompt —— 而那正是 §1.8 否决的那种补救。
+            raise LLMParseError(str(e), raw=reply.text) from None
 
     def chat_json(self, messages: Sequence[dict[str, str]], **kwargs: Any) -> tuple[Any, LLMReply]:
-        """`chat(json_mode=True)` 的便利形式，返回 `(data, reply)`。"""
-        reply = self.chat(messages, json_mode=True, **kwargs)
+        """`chat(json_mode=True)` 的便利形式，返回 `(data, reply)`。
+
+        ## 解析失败时做**一次修复重发**
+
+        真跑踩到过：`json_mode=True` 也拦不住模型偶尔吐出不合法 JSON（实测在
+        「简历 → 私有题集」那条链上，同一个输入第一次坏、第二次好）。而这条链的
+        用户是**等在页面上的**，一次抖动就变成"出题没成功，稍后重试"。
+
+        三种补救里选了第二种（行为规格 §1.8 只否决了第一种）：
+
+        ① ~~原样重发同一个 prompt~~ —— §1.8 已否决：答得不像 JSON 的，重发往往
+           还是不像，只是多花一次钱
+        ② **把那段坏输出贴回去，要求它只输出 json**（换的是 prompt，不是重发）
+        ③ 降级（上面那两条都失败时才走）
+
+        `max_tokens` 截断**不走这条路**（那时 `finish_reason == "length"`，抛的是
+        `LLMCallError`）：预算不够是调用方该调大的事，重发只会再截断一次。
+        """
+        try:
+            reply = self.chat(messages, json_mode=True, **kwargs)
+        except LLMParseError as first:
+            if not first.raw:
+                raise
+            from app.llm.prompts import load
+
+            instruction = load("llm/json_repair.md").render(error=str(first))
+            repaired = [
+                *messages,
+                {"role": "assistant", "content": first.raw},
+                {"role": "user", "content": instruction},
+            ]
+            logger.warning("JSON 解析失败，做一次修复重发：%s", first)
+            reply = self.chat(repaired, json_mode=True, **kwargs)
         return reply.data, reply
 
     # -- 流式 --------------------------------------------------------------

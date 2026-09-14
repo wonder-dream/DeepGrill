@@ -81,7 +81,7 @@
 | 迁移执行器（按文件事务 / 逐语句执行 / 校验和漂移检测） | `migrations/_runner.py`、`migrations/test_runner.py` |
 | 组装根、配置、引擎与会话、启动期校验、错误页 | `app/main.py`、`app/config.py`、`app/db/`、`app/errors.py`、`app/deps.py` |
 | 全部表的映射 + 与迁移逐列对账 | `app/db/models.py`、`app/db/test_models.py` |
-| LLM 客户端（重试纪律 / JSON 容错 / token 记账）+ prompt 从文件读 | `app/llm/`、`prompts/` |
+| LLM 客户端（重试纪律 / **JSON 容错：解析失败做一次修复重发**（决策 78）/ token 记账）+ prompt 从文件读 | `app/llm/`、`prompts/` |
 | 领域：账号 / 题库 / 面试 / 报告 / 知识（掌握度）/ 画像与注销 | `app/account/`、`app/bank/`、`app/interview/`、`app/report/`、`app/knowledge/`、`app/profile/` |
 | 额度与降级（决策 13）：单一额度点、耗尽后纯题库模式、token 第二道安全网 | `app/account/service.py`、`app/account/repository.py` |
 | 离线队列与 worker（原子认领 / 心跳回退 / 幂等 / TTL 回收 / 任务报告） | `app/offline/`（`jobs` · `worker` · `tasks` 三个模块） |

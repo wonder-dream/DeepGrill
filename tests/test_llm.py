@@ -6,6 +6,7 @@ v1 用真实调试换来的结论，v2 不重测，但要**有测试守着**，�
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -397,3 +398,66 @@ def test_rendered_prompt_keeps_literal_json_braces() -> None:
 
     p = Prompt(name="x.md", text='返回 {"命中": true} 这样的 JSON，题干：{{stem}}')
     assert '{"命中": true}' in p.render(stem="s")
+
+
+# ---------------------------------------------------------------------------
+# JSON 解析失败后的**修复重发**（§1.8 只否决了"原样重发"，这是第三条路）
+# ---------------------------------------------------------------------------
+def _bad_then_good(good: str):
+    """第一次吐不合法 JSON，之后给好的 —— 返回 `(handler, 记录下来的请求体)`。"""
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.read()))
+        if len(bodies) == 1:
+            return httpx.Response(200, json=_ok_body('{"a": 1 "b": 2}'))
+        return httpx.Response(200, json=_ok_body(good))
+
+    return handler, bodies
+
+
+def test_json_parse_failure_triggers_one_repair_retry() -> None:
+    """**真跑踩到过**：`json_mode=True` 也拦不住模型偶尔吐出不合法 JSON。
+
+    实测在「简历 → 私有题集」那条链上，同一个输入第一次坏、第二次好 —— 而那条链的
+    用户是等在页面上的，一次抖动就变成"出题没成功，稍后重试"。
+    """
+    handler, bodies = _bad_then_good('{"a": 1}')
+    with _client(handler) as c:
+        data, _ = c.chat_json([{"role": "user", "content": "给我 json"}])
+
+    assert data == {"a": 1}
+    assert len(bodies) == 2, "应当且只应当重发一次"
+    # 重发**不是原样重发**：坏输出被当作 assistant 消息贴回去，后面跟一句修复要求
+    repair = bodies[1]["messages"]
+    assert repair[1]["role"] == "assistant" and repair[1]["content"] == '{"a": 1 "b": 2}'
+    assert repair[2]["role"] == "user" and "json" in repair[2]["content"]
+    assert repair[2]["content"] != bodies[0]["messages"][0]["content"]
+
+
+def test_a_second_bad_json_still_fails() -> None:
+    """修复只做一次：**系统性**的格式问题重发三次也只是三倍花钱，那该改 prompt。"""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json=_ok_body('{"a": 1 "b": 2}'))
+
+    with _client(handler) as c, pytest.raises(LLMParseError) as e:
+        c.chat_json([{"role": "user", "content": "给我 json"}])
+    assert calls["n"] == 2
+    assert e.value.raw == '{"a": 1 "b": 2}', "异常要带上模型实际说了什么"
+
+
+def test_an_empty_answer_is_not_repaired() -> None:
+    """空内容不是"JSON 坏了"，而是"还没轮到它答"（推理吃满了预算）——
+    把空字符串贴回去修不出任何东西，那种情况该做的是调大 `max_tokens`。"""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json=_ok_body(""))
+
+    with _client(handler) as c, pytest.raises(LLMCallError):
+        c.chat_json([{"role": "user", "content": "给我 json"}])
+    assert calls["n"] == 1, "空内容不该触发修复重发"
