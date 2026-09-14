@@ -12,11 +12,16 @@
   {% if report.summary_source == "fallback" %}
   <p class="muted">（这段总结由已落库的数据拼出 —— 模型那次没生成成功。）</p>
   {% endif %}
-  {% if report.ungrounded_terms %}
-  {# 标注它、而不是把它删掉：这条检查会误报（真调时误报过四次），
+  {% if report.signals.any %}
+  {# 标注它、而不是把它删掉：这套检查对自由文本做启发式判断，实测误报过四次，
      所以它是提示，不是结论。#}
-  <p class="warn">（这段总结里出现了数据中没有的说法：
-    {{ report.ungrounded_terms | join("、") }} —— 请以逐题回顾为准。）</p>
+  <p class="warn">
+    （这段总结有需要核对的地方：
+    {%- for c in report.signals.contradictions %}与数据不一致 —— {{ c }}；{% endfor %}
+    {%- if report.signals.unknown_numbers %}出现了数据里没有的数字 {{ report.signals.unknown_numbers | join("、") }}；{% endif %}
+    {%- if report.signals.ungrounded_terms %}出现了数据外的名词 {{ report.signals.ungrounded_terms | join("、") }}；{% endif %}
+    请以逐题回顾为准。）
+  </p>
   {% endif %}
   {% endif %}
 </section>

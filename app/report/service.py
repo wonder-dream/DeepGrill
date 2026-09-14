@@ -36,6 +36,29 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class SummarySignals:
+    """总结的可疑之处。**它不阻断任何事情** —— 页面据此标注一句。
+
+    为什么不拦：这套检查是对**自由文本**做的启发式判断，实测误报过四次（见
+    `summary_names_are_grounded`）。把误报的东西删掉，代价是丢掉正确输出；
+    标出来让人自己判断，代价只是多一句话。
+
+    （定义在 `Report` 之前，因为它要做 `Report` 的字段默认值。）
+    """
+
+    #: 数据里找不到的拉丁技术名词（如凭空出现的 Kubernetes）
+    ungrounded_terms: list[str] = field(default_factory=list)
+    #: 与数据**矛盾**的说法（如数据里 depth 最低、总结却说 accuracy 是短板）
+    contradictions: list[str] = field(default_factory=list)
+    #: 数字核查：数据里没有、也算不出来的数字
+    unknown_numbers: list[str] = field(default_factory=list)
+
+    @property
+    def any(self) -> bool:
+        return bool(self.ungrounded_terms or self.contradictions or self.unknown_numbers)
+
+
+@dataclass
 class ItemReport:
     """③ 逐题回顾的一行。"""
 
@@ -92,8 +115,8 @@ class Report:
     top_problems: list[str]
     summary: str = ""
     summary_source: str = "llm"  # llm / fallback
-    #: grounding 没通过时，疑似数据外的名词。**它不导致降级** —— 只在页面上标注。
-    ungrounded_terms: list[str] = field(default_factory=list)
+    #: 总结的可疑之处（**只标注，不阻断** —— 见 `SummarySignals`）
+    signals: SummarySignals = field(default_factory=SummarySignals)
 
     def to_body(self) -> dict:
         """落库的形状。
@@ -114,9 +137,9 @@ class Report:
             ],
             "prerequisite_gaps": self.prerequisite_gaps,
             "top_problems": self.top_problems,
-            # grounding 的信号也要落库 —— 否则"打开报告"这条读路径看不到它，
-            # 页面就没法标注（实测：只在生成路径算过，读回来就丢了）。
-            "ungrounded_terms": self.ungrounded_terms,
+            # 信号也要落库 —— 否则"打开报告"这条读路径看不到它，页面就没法标注
+            # （实测：原先只在生成路径算过，读回来就丢了）。
+            "signals": asdict(self.signals),
         }
 
 
@@ -317,14 +340,130 @@ def _summarize(report: Report, llm) -> tuple[str, str]:
         logger.warning("总结为空，改用组装式文案")
         return _fallback_summary(report), "fallback"
 
-    if not summary_names_are_grounded(text, report):
-        # ⚠️ **不拦，只记**（这条在真调之后被改成信号，理由见 `summary_names_are_grounded`
-        # 的 docstring：它四次误报、且明知查不出中文编造）。
-        # 页面据此标注一句"这段总结里有数据外的说法，仅供参考"。
-        suspect = sorted(set(_candidate_names(text)) - _known_names(report))
-        logger.warning("总结里可能有数据外的名词（**已保留**，仅标注）：%s", suspect)
-        report.ungrounded_terms = suspect
+    # ⚠️ **全部只记、不拦**（理由见 `summary_names_are_grounded` 与 `check_summary`
+    # 的 docstring：这套检查对自由文本做启发式判断，实测误报过四次）。
+    # 页面据此标注一句"以逐题回顾为准"。
+    report.signals = check_summary(text, report)
+    report.signals.ungrounded_terms = sorted(
+        set(_candidate_names(text)) - _known_names(report)
+    )
+    if report.signals.any:
+        logger.warning(
+            "总结有可疑之处（**已保留**，仅标注）：矛盾=%s 未知数字=%s 数据外名词=%s",
+            report.signals.contradictions,
+            report.signals.unknown_numbers,
+            report.signals.ungrounded_terms,
+        )
     return text, "llm"
+
+
+#: 四维分在数据里的中文说法（报告自己的维度名是英文，总结可能用中文）。两套都要认。
+#: （`SummarySignals` 定义在文件上方、`Report` 之前 —— 它要做 `Report` 的字段默认值。）
+DIMENSION_ALIASES: dict[str, tuple[str, ...]] = {
+    "accuracy": ("accuracy", "准确性", "准确度", "准确"),
+    "completeness": ("completeness", "完整度", "完整性", "完整"),
+    "clarity": ("clarity", "表达", "清晰度", "清晰"),
+    "depth": ("depth", "深度"),
+}
+
+#: 「最弱」的措辞。总结说"X 是短板"时用它判定这句话在断言什么。
+WEAK_MARKERS = ("最低", "最弱", "短板", "拖后腿", "拖了后腿", "最差", "欠缺最多的")
+
+
+def _numbers(text: str) -> list[str]:
+    return re.findall(r"\d+(?:\.\d+)?", text)
+
+
+def _allowed_numbers(report: Report) -> set[str]:
+    """报告自己的数字 —— 总结引用它们**一定**不算编造。
+
+    包括：总分、四维分、掌握度的命中/被考（两半都要）、以及这些数之间的减法
+    （"掌握度 +2"这种是数据的函数）。
+    """
+    allowed: set[str] = set()
+    if report.total_score is not None:
+        allowed.add(str(report.total_score))
+    for item in report.items:
+        allowed.add(str(item.seq))
+        allowed.add(str(item.total_score))
+        for value in item.scores.values():
+            allowed.add(str(value))
+    for change in report.changes:
+        for value in (
+            change.before_covered, change.before_hit,
+            change.after_covered, change.after_hit,
+            abs(change.covered_delta), abs(change.hit_delta),
+        ):
+            allowed.add(str(value))
+    allowed.add("0")  # "0/0"、"0 条" 这类零值随处可见，且它本身不构成编造
+    return allowed
+
+
+def _asserted_weak_dimension(text: str) -> str | None:
+    """总结在断言"哪一维最弱"吗？是就返回那一维。
+
+    判定方式：句子里同时出现**维度别名**与**最弱措辞**。窄且可判定 ——
+    只认"同一句里两者都有"，不做跨句推断（跨句推断会开始猜）。
+    """
+    for sentence in re.split(r"[。；;\n]", text):
+        marked = any(marker in sentence for marker in WEAK_MARKERS)
+        if not marked:
+            continue
+        hits = [
+            dim for dim, aliases in DIMENSION_ALIASES.items()
+            if any(alias in sentence for alias in aliases)
+        ]
+        # 只认"恰好提到一维"的句子：提了两维的句子（"虽然 accuracy 稳，但 depth 弱"）
+        # 无法靠词法判断它到底在断言哪一维，宁可不判（避免误报）。
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
+def _weakest_dimension(report: Report) -> str | None:
+    """数据里真正最弱的那一维（各题四维分的平均最低者）。
+
+    只统计判分成功的题：判分失败时四维全是 0，把它们算进来会让"最弱维度"永远是
+    失败那一题的某一维（那是记账问题，不是候选人的表现）。
+    """
+    scored = [i for i in report.items if i.status == "ok" and i.scores]
+    if not scored:
+        return None
+    avg = {
+        dim: sum(i.scores.get(dim, 0) for i in scored) / len(scored)
+        for dim in rules.DIMENSIONS
+    }
+    return min(avg, key=lambda d: (avg[d], d))
+
+
+def check_summary(text: str, report: Report) -> SummarySignals:
+    """对总结做**可程序化验证**的检查，返回可疑之处。
+
+    两条断言（都是 ADR-0003 想要的"别与数据矛盾"）：
+
+    ① **数字必须来自数据**（含其函数）。数字是**闭集词汇**，所以这一条能做得精确
+       —— 这也是它比"名词是否在数据里"可靠得多的原因：名词是开放集。
+    ② **"哪一维最弱"必须与 `evaluations.scores` 一致** —— 这正是 ADR-0003 举的例子
+       （"评语说没答到内存屏障，总结却写并发基础扎实"）在报告层面的形态。
+
+    ⚠️ 它**只返回信号**，不阻断。中文编造的名词、跨句的语义矛盾都不在能力范围内
+    —— 那些要靠更强的判据（或模型裁判），属后续工作。
+    """
+    signals = SummarySignals()
+
+    # ① 数字
+    allowed = _allowed_numbers(report)
+    signals.unknown_numbers = sorted({n for n in _numbers(text) if n not in allowed})
+
+    # ② 最弱维度
+    asserted = _asserted_weak_dimension(text)
+    actual = _weakest_dimension(report)
+    if asserted and actual and asserted != actual:
+        signals.contradictions.append(
+            f"总结说「{asserted}」最弱，但数据里最低的是「{actual}」"
+        )
+
+    return signals
 
 
 def _known_names(report: Report) -> set[str]:
@@ -553,7 +692,18 @@ def get_report(session: Session, interview: Interview) -> Report:
         top_problems=list(body.get("top_problems", [])),
         summary=interview.report_summary or "",
         summary_source="stored",
-        ungrounded_terms=list(body.get("ungrounded_terms", [])),
+        signals=_signals_from_body(body.get("signals")),
+    )
+
+
+def _signals_from_body(raw: object) -> SummarySignals:
+    """把落库的信号读回来。旧报告没有这个字段 → 全是空（不影响渲染）。"""
+    if not isinstance(raw, dict):
+        return SummarySignals()
+    return SummarySignals(
+        ungrounded_terms=list(raw.get("ungrounded_terms") or []),
+        contradictions=list(raw.get("contradictions") or []),
+        unknown_numbers=list(raw.get("unknown_numbers") or []),
     )
 
 

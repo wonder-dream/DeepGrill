@@ -140,6 +140,109 @@ def test_empty_choices_is_a_call_error() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 推理型模型的两种静默失败（真调之后才发现的）
+# ---------------------------------------------------------------------------
+def _body(content: str, *, finish: str = "stop", reasoning: str = "", reasoning_tokens: int = 0):
+    return {
+        "model": "m",
+        "choices": [{"message": {"role": "assistant", "content": content,
+                                "reasoning_content": reasoning}, "finish_reason": finish}],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "completion_tokens_details": {"reasoning_tokens": reasoning_tokens},
+        },
+    }
+
+
+def test_truncated_json_is_reported_as_a_budget_problem_not_a_parse_problem() -> None:
+    """**关键区分**：`finish_reason=length` 时的解析失败是**预算不够**，不是模型答错。
+
+    实测确认：这个模型会先输出 `reasoning_content`，而**推理也吃 `max_tokens`**
+    （467 个完成 token 里 394 个是推理）。预算太小就会截断出半个 JSON。
+    若不区分，调用方只看到"解析失败"，会得出"模型不行"的错误结论 ——
+    而真正的处置是调大 max_tokens。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_body('{"hits": [{"criterion_id": 1,', finish="length"))
+
+    with _client(handler) as c, pytest.raises(LLMCallError) as e:
+        c.chat_json([{"role": "user", "content": "hi"}])
+    assert "截断" in str(e.value)
+    assert "预算" in str(e.value)
+
+
+def test_truncated_but_parseable_output_is_still_accepted() -> None:
+    """截断但**恰好收尾**的输出照常接受 —— 答案本来就完整，不该因为 finish_reason 报错。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_body('{"ok": true}', finish="length"))
+
+    with _client(handler) as c:
+        data, _ = c.chat_json([{"role": "user", "content": "hi"}])
+    assert data == {"ok": True}
+
+
+def test_empty_content_with_reasoning_is_a_budget_problem() -> None:
+    """内容全空、token 全花在推理上 → 不是"模型没答"，是"还没轮到它答"。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json=_body("", finish="length", reasoning="想了很多但没写出来", reasoning_tokens=40)
+        )
+
+    with _client(handler) as c, pytest.raises(LLMCallError) as e:
+        c.chat_json([{"role": "user", "content": "hi"}])
+    assert "推理" in str(e.value)
+    assert "max_tokens" in str(e.value)
+
+
+def test_plain_empty_content_is_also_an_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_body(""))
+
+    with _client(handler) as c, pytest.raises(LLMCallError):
+        c.chat_json([{"role": "user", "content": "hi"}])
+
+
+def test_finish_reason_and_reasoning_are_exposed() -> None:
+    """这两个字段必须能被调用方看到 —— 否则上面那些区分无从判断。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_body('{"a": 1}', reasoning="想了想", reasoning_tokens=5))
+
+    with _client(handler) as c:
+        reply = c.chat([{"role": "user", "content": "hi"}], json_mode=True)
+    assert reply.finish_reason == "stop"
+    assert reply.reasoning_text == "想了想"
+    assert reply.reasoning_tokens == 5
+
+
+def test_usage_is_accumulated_across_calls() -> None:
+    """**决策 14 的第二道安全网**：客户端累计用量，调用处取差值记账。
+
+    为什么是累计而不是"最近一次"：一次 HTTP 请求里可能调用多次模型
+    （判定 + 判分 + 总结），"最近一次"只能记到最后一次 —— 实测就这么漏了两次。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_body('{"a": 1}'))
+
+    with _client(handler) as c:
+        c.chat([{"role": "user", "content": "hi"}])
+        first = dict(c.usage_total)
+        c.chat([{"role": "user", "content": "hi"}])
+        second = dict(c.usage_total)
+
+    assert first["calls"] == 1
+    assert second["calls"] == 2
+    assert second["prompt_tokens"] == first["prompt_tokens"] * 2
+    assert second["completion_tokens"] == first["completion_tokens"] * 2
+    assert second["reasoning_tokens"] == first["reasoning_tokens"] * 2
+
+
+# ---------------------------------------------------------------------------
 # JSON 容错（§1.6 / §1.7 / §1.8）
 # ---------------------------------------------------------------------------
 def test_trailing_commas_are_tolerated() -> None:

@@ -176,6 +176,15 @@ class LLMReply:
     model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    #: 服务端给的结束原因。**必须留着它**：`"length"` 表示输出被 `max_tokens`
+    #: 截断 —— 那会让 JSON 不完整，而"不完整的 JSON"如果被当成"模型没答好"，
+    #: 表现出来的是一次静默降级，看不出真因（实测确认这个模型会先"想"再答，
+    #: 推理也吃 max_tokens 配额）。
+    finish_reason: str = ""
+    #: 推理型模型先输出的思考内容（不进 content）。它占的 token 已计入
+    #: `completion_tokens`，而且**推理本身也吃 `max_tokens`**。
+    reasoning_text: str = ""
+    reasoning_tokens: int = 0
 
 
 class LLMClient:
@@ -200,6 +209,15 @@ class LLMClient:
             raise LLMError("缺少 LLM api_key（设置 DEEPGRILL_LLM_API_KEY）")
         self.model = model
         self._max_retries = max_retries
+        #: 这个客户端**累计**用了多少 token。调用处（HTTP 请求边界）读它并把差值
+        #: 记进额度账本 —— 决策 14 要"能回答钱花在哪"，而一次请求里可能发生多次
+        #: 调用（判定 + 判分 + 总结），逐处手记必然漏。
+        self.usage_total: dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "reasoning_tokens": 0,
+            "calls": 0,
+        }
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             timeout=timeout,
@@ -246,19 +264,71 @@ class LLMClient:
 
         body = self._post_with_retry("/chat/completions", payload)
         try:
-            text = body["choices"][0]["message"]["content"] or ""
+            choice = body["choices"][0]
+            message = choice["message"]
         except (KeyError, IndexError, TypeError) as e:
             # v1 的"choices[0] 空列表裸 IndexError"就是这一处 —— 那时它是未修的债
             raise LLMCallError(f"返回体形状不符合预期：{body!r:.200}") from e
 
+        text = message.get("content") or ""
+        reasoning = message.get("reasoning_content") or ""
         usage = body.get("usage") or {}
-        return LLMReply(
+        details = usage.get("completion_tokens_details") or {}
+        finish_reason = str(choice.get("finish_reason") or "")
+
+        # 决策 14 的第二道安全网：把这次调用的真实用量累计到客户端上。
+        # 调用处（HTTP 请求边界）读差值记账 —— 一次请求里可能发生多次调用
+        # （判定 + 判分 + 总结），逐处手记必然漏（实测就漏了后两次）。
+        self.usage_total["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
+        self.usage_total["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+        self.usage_total["reasoning_tokens"] += int(details.get("reasoning_tokens") or 0)
+        self.usage_total["calls"] += 1
+
+        reply = LLMReply(
             text=text,
-            data=loads_tolerant(text) if json_mode else None,
             model=body.get("model", payload["model"]),
             prompt_tokens=int(usage.get("prompt_tokens") or 0),
             completion_tokens=int(usage.get("completion_tokens") or 0),
+            finish_reason=finish_reason,
+            reasoning_text=reasoning,
+            reasoning_tokens=int(details.get("reasoning_tokens") or 0),
         )
+        if json_mode:
+            reply.data = self._parse_json_reply(reply)
+        return reply
+
+    def _parse_json_reply(self, reply: LLMReply) -> Any:
+        """解析 `json_mode` 的输出，并**先把两种"看起来很安静"的失败挑出来**。
+
+        实测发现的两种（表面上都像"模型答得不好"，真因却在请求侧）：
+
+        ① **被 `max_tokens` 截断**：输出是半个 JSON，解析必然失败。若不区分，调用方
+           只看到"解析失败"，会以为模型不行 —— 而其实是预算不够。
+           注意：截断但**恰好能解析**时照常返回，不报错（答案本来就完整）。
+        ② **内容全空、token 全花在推理上**：这个模型先输出 `reasoning_content`，
+           而**推理也吃 `max_tokens`**（实测：467 个完成 token 里 394 个是推理）。
+           预算太小时会出现 `content=""` 而 `reasoning_tokens>0` —— 那不是"模型没答"，
+           是"还没轮到它答"。
+        """
+        if not reply.text.strip():
+            if reply.reasoning_tokens:
+                raise LLMCallError(
+                    f"模型把 {reply.reasoning_tokens} 个 token 全用在推理上、没有产出内容"
+                    f"（finish_reason={reply.finish_reason or '未知'}）—— 需要调大 max_tokens"
+                )
+            raise LLMCallError(
+                f"模型返回了空内容（finish_reason={reply.finish_reason or '未知'}）"
+            )
+
+        try:
+            return loads_tolerant(reply.text)
+        except LLMParseError:
+            if reply.finish_reason == "length":
+                raise LLMCallError(
+                    f"输出被 max_tokens 截断、JSON 不完整（completion_tokens="
+                    f"{reply.completion_tokens}）—— 这不是模型答错，是预算不够"
+                ) from None
+            raise
 
     def chat_json(self, messages: Sequence[dict[str, str]], **kwargs: Any) -> tuple[Any, LLMReply]:
         """`chat(json_mode=True)` 的便利形式，返回 `(data, reply)`。"""

@@ -256,7 +256,7 @@ def test_summary_must_not_invent_names(session: Session) -> None:
     > 就是改写与归纳。详见 `service.summary_names_are_grounded` 的 docstring。
 
     所以现在：**模型写的总结一律保留**（它读起来明显优于降级文案），
-    疑似数据外的名词只记进 `ungrounded_terms` 供页面标注。
+    疑似数据外的名词只记进 `report.signals.ungrounded_terms` 供页面标注。
     """
     llm = FakeLLM().queue(
         _round_reply([(1, "命中"), (2, "未命中"), (3, "未命中")]),
@@ -268,9 +268,10 @@ def test_summary_must_not_invent_names(session: Session) -> None:
 
     assert report.summary_source == "llm", "现在不再因 grounding 而降级"
     assert "Kubernetes" in report.summary, "总结要保留（它仍是给用户看的文案）"
-    assert "Kubernetes" in report.ungrounded_terms, "但必须被标出来"
+    assert "Kubernetes" in report.signals.ungrounded_terms, "但必须被标出来"
     # 落库 + 读回来都要带着这个信号（否则页面上标不出来）
-    assert service.get_report(session, interview).ungrounded_terms == report.ungrounded_terms
+    stored = service.get_report(session, interview)
+    assert stored.signals.ungrounded_terms == report.signals.ungrounded_terms
 
 
 def test_fallback_summary_is_assembled_from_data(session: Session) -> None:
@@ -293,6 +294,112 @@ def test_fallback_summary_is_assembled_from_data(session: Session) -> None:
     assert "depth" in report.summary
     assert "40" in report.summary
     assert "volatile" in report.summary
+
+
+def test_summary_check_catches_a_contradicted_weak_dimension(session: Session) -> None:
+    """**ADR-0003 真正担心的那种矛盾**：结论性断言与数据不一致。
+
+    ADR 举的例子是"评语说没答到内存屏障，总结却写并发基础扎实"。在报告层面，
+    同一类错的可判定形态是**"哪一维最弱"说反了** —— 数据里 depth 最低，
+    总结却说 accuracy 是短板。这条能被程序抓住（不需要词表，只需比对断言与数据）。
+    """
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "未命中"), (3, "未命中")]),
+        _eval_reply(accuracy=90, completeness=85, clarity=80, depth=40),
+        _summary_reply("整体不错，accuracy 是最低的一项，需要重点提升。"),
+    )
+    interview = _play(session, hits=None, llm=llm)
+    report = service.finish_interview(session, interview=interview, llm=llm)
+
+    assert report.signals.contradictions, "说了反的最弱维度必须被发现"
+    assert "depth" in report.signals.contradictions[0]
+    assert report.summary_source == "llm", "仍然是标注不拦"
+
+
+def test_summary_check_accepts_a_correct_weak_dimension(session: Session) -> None:
+    """**误报守卫**：说对了就不该报警 —— 这条检查在本项目里已经误报过四次。"""
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "未命中"), (3, "未命中")]),
+        _eval_reply(accuracy=90, completeness=85, clarity=80, depth=40),
+        _summary_reply("整体不错，depth 是最低的一项，需要重点提升。"),
+    )
+    interview = _play(session, hits=None, llm=llm)
+    report = service.finish_interview(session, interview=interview, llm=llm)
+
+    assert report.signals.contradictions == []
+    assert report.signals.unknown_numbers == []
+
+
+def test_summary_check_accepts_chinese_dimension_names(session: Session) -> None:
+    """总结用中文说维度名（"深度是短板"）也要认 —— 报告里存的是英文，两套都得对。"""
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "未命中"), (3, "未命中")]),
+        _eval_reply(accuracy=90, completeness=85, clarity=80, depth=40),
+        _summary_reply("概念没问题，深度是短板。"),
+    )
+    interview = _play(session, hits=None, llm=llm)
+    report = service.finish_interview(session, interview=interview, llm=llm)
+    assert report.signals.contradictions == []
+
+    llm2 = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "未命中"), (3, "未命中")]),
+        _eval_reply(accuracy=90, completeness=85, clarity=80, depth=40),
+        _summary_reply("概念没问题，准确性是短板。"),
+    )
+    interview2 = _play(session, hits=None, llm=llm2)
+    report2 = service.finish_interview(session, interview=interview2, llm=llm2)
+    assert report2.signals.contradictions, "说「准确性」最弱而数据是 depth —— 该被抓到"
+
+
+def test_summary_check_catches_numbers_that_are_not_in_the_data(session: Session) -> None:
+    """数字核查：**数字是闭集词汇**，所以这条能做得精确（不像名词）。"""
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "未命中"), (3, "未命中")]),
+        _eval_reply(accuracy=90, completeness=85, clarity=80, depth=40),
+        _summary_reply("这场大概 95 分，比上次的 88 分进步了。"),
+    )
+    interview = _play(session, hits=None, llm=llm)
+    report = service.finish_interview(session, interview=interview, llm=llm)
+
+    assert set(report.signals.unknown_numbers) == {"95", "88"}
+
+
+def test_summary_check_accepts_numbers_from_the_data(session: Session) -> None:
+    """引用数据里的数字（含"命中/被考"的两半）与它们的差，都不算编造。
+
+    90/85/80/40 按 `.3/.3/.2/.2` 合成 = **77**（不是 74 —— 我第一版这里就写错了，
+    而检查当场把它当成"数据里没有的数字"报了出来）。
+    """
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "命中"), (3, "未命中")]),
+        _eval_reply(accuracy=90, completeness=85, clarity=80, depth=40),
+        _summary_reply("总分 77；四维是 90、85、80、40；掌握度从 0/0 到 2/3。"),
+    )
+    interview = _play(session, hits=None, llm=llm)
+    report = service.finish_interview(session, interview=interview, llm=llm)
+
+    assert report.signals.unknown_numbers == [], (
+        f"这些数字都来自数据，不该报警：{report.signals.unknown_numbers}"
+    )
+
+
+def test_summary_check_catches_a_wrong_total(session: Session) -> None:
+    """**附带能力**：总结报了一个与四维分对不上的总分，会被当成未知数字抓出来。
+
+    这条不是刻意设计的，是"数字必须来自数据（含其函数）"的自然结果 ——
+    但它抓的正是"结论与数据不一致"这一类，所以值得钉住。
+    """
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "命中"), (3, "未命中")]),
+        _eval_reply(accuracy=90, completeness=85, clarity=80, depth=40),
+        _summary_reply("总分 74，还有提升空间。"),
+    )
+    interview = _play(session, hits=None, llm=llm)
+    report = service.finish_interview(session, interview=interview, llm=llm)
+
+    assert report.signals.unknown_numbers == ["74"], (
+        "四维分合成是 77，说 74 就是与数据不一致"
+    )
 
 
 def test_grounding_accepts_terms_from_the_criteria_text(session: Session) -> None:

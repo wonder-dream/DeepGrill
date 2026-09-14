@@ -91,21 +91,27 @@ def answer(
     me = _require(user, session)
     ts = interview.get_session_row(session, session_id, me.id)
 
+    before = _usage_snapshot(llm)
     result = interview.submit_answer(
         session, ts=ts, answer_text=answer_text.strip(), llm=llm
     )
-    account.record_tokens(session, me.id, _tokens_of(llm))
 
     if result.finished:
         # 这道题问完了：还有下一题就跳过去，没有就收尾出报告
         nxt = report_service.next_pending_session(session, interview_id=ts.interview_id)
         if nxt is not None:
+            _record_usage(session, me.id, llm, before)
             return RedirectResponse(f"/interview/{nxt.id}", status_code=302)
         report = report_service.finish_interview_by_id(
             session, interview_id=ts.interview_id, llm=llm
         )
+        # ⚠️ 记账必须在这个**请求的末尾**：收尾还会调两次模型（判分 + 总结）。
+        # 第一版只在 submit_answer 后记一次，于是那两次的 token 从来没进账本
+        # —— 决策 14 的"第二道安全网"因此少记了大半。
+        _record_usage(session, me.id, llm, before)
         return RedirectResponse(f"/report/{report.interview_id}", status_code=302)
 
+    _record_usage(session, me.id, llm, before)
     data = report_service.interview_page_data(session, ts=ts, user_id=me.id)
     return render(
         request,
@@ -114,14 +120,25 @@ def answer(
     )
 
 
-def _tokens_of(llm) -> int:
-    """把这次调用用掉的 token 记进额度账本的第二道安全网（决策 14）。
+def _usage_snapshot(llm) -> dict[str, int]:
+    """请求开始时客户端的累计用量（用于取差值）。"""
+    return dict(getattr(llm, "usage_total", {}) or {})
 
-    真实客户端会带 `usage`；测试替身没有这一项 —— 所以取不到就返回 0，
-    但**不静默**（debug 日志里留一行）。
+
+def _record_usage(session: Session, user_id: int, llm, before: dict[str, int]) -> int:
+    """把这个请求里**全部** LLM 调用消耗的 token 记进额度账本（决策 14）。
+
+    为什么取差值而不是读"最近一次"：一次请求可能调用多次（判定 + 判分 + 总结），
+    而"最近一次"只会记到最后一次 —— 实测就是这么漏掉两次的。
+
+    没有 `usage_total` 的客户端（测试替身）返回 0，**不报错**：替身本来就没有真实
+    用量，而记账不该因为测试替身而炸。
     """
-    usage = getattr(llm, "last_usage", None) or {}
-    try:
-        return int(usage.get("total_tokens") or 0)
-    except (AttributeError, TypeError, ValueError):
+    after = getattr(llm, "usage_total", None)
+    if not isinstance(after, dict):
         return 0
+    total = sum(after.get(k, 0) - before.get(k, 0) for k in ("prompt_tokens", "completion_tokens"))
+    if total < 0:  # 客户端被换过（不该发生）——不记负账
+        return 0
+    account.record_tokens(session, user_id, total)
+    return total
