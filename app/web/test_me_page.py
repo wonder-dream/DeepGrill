@@ -114,3 +114,77 @@ def test_owner_cannot_delete_itself(client: TestClient, db: Path) -> None:
 def test_export_requires_login(client: TestClient) -> None:
     client.post("/logout")
     assert client.get("/me/export", follow_redirects=False).status_code == 302
+
+
+# ---------------------------------------------------------------------------
+# 简历页（决策 8）
+# ---------------------------------------------------------------------------
+PROFILE = {
+    "headline": "后端，3 年",
+    "years": "3 年",
+    "skills": ["Redis"],
+    "projects": [
+        {"name": "优惠券系统", "role": "后端", "tech": ["Redis"],
+         "highlights": ["QPS 从 800 提升到 3000"], "probe_points": ["锁超时怎么协调"]}
+    ],
+}
+QUESTIONS = {
+    "questions": [
+        {"stem": "你用 Redis 分布式锁扣库存 —— 锁超时和业务耗时怎么协调？",
+         "kind": "design", "difficulty": 4, "source": "优惠券系统",
+         "criteria": ["说清续期", "说清误删风险"]}
+    ]
+}
+
+
+def test_resume_page_shows_the_privacy_statement(client: TestClient) -> None:
+    body = client.get("/me/resume").text
+    assert "不保存简历原文" in body
+    assert "粘贴文本" in body, "要如实说明只支持粘贴，不能让人以为能传文件"
+
+
+def test_resume_submit_creates_private_questions(client: TestClient, db: Path) -> None:
+    from app.deps import get_llm
+    from tests.fakes import FakeLLM, FakeReply
+
+    fake = FakeLLM().queue(FakeReply(data=PROFILE), FakeReply(data=QUESTIONS))
+    client.app.dependency_overrides[get_llm] = lambda: fake
+
+    r = client.post("/me/resume", data={"resume_text": "张三，后端 3 年。" * 10, "note": "我的"})
+    assert r.status_code == 200
+    assert "新建私有题" in r.text
+    assert "1 道" in r.text
+    assert "优惠券系统" in r.text, "档案要显示出来"
+
+    with create_session_factory(create_db_engine(db))() as s:
+        from app.db.models import CandidateProfile, Question
+
+        assert s.execute(select(Question).where(Question.owner_user_id == 2)).scalars().all()
+        prof = s.execute(select(CandidateProfile)).scalars().one()
+        assert prof.structured["headline"] == "后端，3 年"
+
+
+def test_resume_submit_reports_model_failure(client: TestClient) -> None:
+    from app.deps import get_llm
+    from app.llm import LLMCallError
+    from tests.fakes import FakeLLM, FakeReply
+
+    client.app.dependency_overrides[get_llm] = lambda: FakeLLM().queue(
+        FakeReply(error=LLMCallError("模型挂了"))
+    )
+    r = client.post("/me/resume", data={"resume_text": "张三，后端 3 年。" * 10})
+    assert r.status_code == 502
+    assert "解析没成功" in r.text
+
+
+def test_resume_submit_refuses_too_short_input(client: TestClient) -> None:
+    """太短的多半是误操作 —— 明确拒绝，且**不调模型**。"""
+    from app.deps import get_llm
+    from tests.fakes import FakeLLM
+
+    fake = FakeLLM()
+    client.app.dependency_overrides[get_llm] = lambda: fake
+    r = client.post("/me/resume", data={"resume_text": "太短"})
+    assert r.status_code == 400
+    assert "太短" in r.text
+    assert fake.calls == []

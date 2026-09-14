@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}审核结果 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>审核结果</h1>
+  <dl>
+    <dt>新建知识点</dt><dd>{{ result.created_points }} 个</dd>
+    <dt>否决</dt><dd>{{ result.rejected }} 条</dd>
+    <dt>合并</dt><dd>{{ result.merged }} 条</dd>
+  </dl>
+  {% if skipped %}
+  <h2>被机器规则挡下的</h2>
+  <p class="muted">这些**没有**落库 —— 它们没通过判据①（写不出考察点），
+  或者决定本身不合法。列出来而不是丢掉。</p>
+  <ul>{% for s in skipped %}<li>{{ s }}</li>{% endfor %}</ul>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>下一步</h2>
+  <p>把题目挂到这些知识点上：</p>
+  <pre>python -m app.cli mount</pre>
+  <p class="muted">挂不上的题会进「待定池」，**不会**自动新建知识点（决策 46）。</p>
+  <p><a class="button" href="/bank">看题库</a></p>
+</section>
+{% endblock %}

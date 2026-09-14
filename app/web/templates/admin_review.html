@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}知识层人审 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>知识层人审</h1>
+  <p class="muted">对应决策 47 的「一次性最小审核页」：候选逐条通过 / 否决 / 合并，批量提交。
+  只有 owner 能做 —— 这一步是**全局装配**，改动会影响所有人的掌握度坐标系。</p>
+  {% if proposal and not proposal.llm_failed %}
+  <p>共 {{ proposal.candidates | length }} 条候选。</p>
+  {% endif %}
+</section>
+
+{% if not proposal %}
+<section class="card">
+  <p class="warn">没有找到提案文件 <code>{{ path }}</code>。</p>
+  <p>先跑一次管道生成候选：</p>
+  <pre>python -m app.cli propose --domain "Java 并发"</pre>
+</section>
+{% elif proposal.llm_failed %}
+<section class="card">
+  <p class="warn">上一次提候选失败了：{{ proposal.note }}</p>
+  <p>重跑 <code>python -m app.cli propose</code>。</p>
+</section>
+{% else %}
+<form method="post" action="/admin/review/apply">
+  <section class="card">
+    <h2>这批知识点属于哪个领域</h2>
+    <p><label>领域名 <input type="text" name="domain_name" required placeholder="如：Java 并发"></label></p>
+    <p class="muted">知识地图是**森林**（决策 52）：领域之间没有父子关系，所以一次装配一个领域。</p>
+  </section>
+
+  <section class="card">
+    <h2>候选知识点</h2>
+    <table>
+      <thead><tr><th>#</th><th>候选</th><th>考察点</th><th>出处题</th><th>决定</th></tr></thead>
+      <tbody>
+        {% for c in proposal.candidates %}
+        <tr>
+          <td>{{ loop.index0 }}</td>
+          <td>
+            <input type="text" name="name-{{ loop.index0 }}" value="{{ c.name }}">
+            {% if c.definition %}<br><span class="muted">{{ c.definition }}</span>{% endif %}
+            {% if c.exclusions %}<br><span class="muted">不考：{{ c.exclusions }}</span>{% endif %}
+          </td>
+          <td>
+            <ol class="tight">
+              {% for x in c.criteria %}<li>{{ x }}</li>{% endfor %}
+            </ol>
+            {% if c.unusable_reason %}<span class="warn">{{ c.unusable_reason }}</span>{% endif %}
+          </td>
+          <td class="muted">{{ c.question_ids | join("、") or "—" }}</td>
+          <td>
+            <label><input type="radio" name="action-{{ loop.index0 }}" value="approve"
+              {% if not c.unusable_reason %}checked{% endif %}> 通过</label><br>
+            <label><input type="radio" name="action-{{ loop.index0 }}" value="reject"
+              {% if c.unusable_reason %}checked{% endif %}> 否决</label><br>
+            <label>合并到
+              <select name="merge-{{ loop.index0 }}">
+                <option value="">（不合并）</option>
+                {% for other in proposal.candidates %}
+                {% if other != c %}
+                <option value="{{ loop.index0 }}">{{ other.name }}</option>
+                {% endif %}
+                {% endfor %}
+              </select>
+            </label>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <p><button class="button" type="submit">提交审核结果</button></p>
+    <p class="muted">提交后提案文件会改名为 <code>.applied.json</code>（保留痕迹，避免重复建点）。</p>
+  </section>
+</form>
+{% endif %}
+{% endblock %}

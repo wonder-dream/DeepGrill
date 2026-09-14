@@ -16,10 +16,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.account import service as account
+from app.bank import repository as bank_repository
 from app.db.models import Interview, User
-from app.deps import SESSION_COOKIE, get_current_user, get_session
-from app.errors import Forbidden, InvalidInput
+from app.deps import SESSION_COOKIE, get_current_user, get_llm, get_session
+from app.errors import AppError, Forbidden, InvalidInput
 from app.knowledge import service as knowledge
+from app.llm import LLMError
+from app.offline import profile_pipeline
 from app.profile import service as profile_service
 from app.web.templating import render
 
@@ -54,8 +57,72 @@ def me_page(request: Request, session: SessionDep, user: CurrentUserDep) -> obje
             "matrix": knowledge.mastery_matrix(session, user.id),
             "recent": recent,
             "counts": profile_service.count_remaining(session, user.id),
+            "profile": profile_pipeline.latest_profile(session, user.id),
+            "private_count": len(bank_repository.owned_ids(session, user.id)),
         },
     )
+
+
+@router.get("/me/resume")
+def resume_page(request: Request, session: SessionDep, user: CurrentUserDep) -> object:
+    """简历 → 私有题集（决策 8）。只接受**粘贴文本**，见页面上的一句说明。"""
+    if user is None:
+        return RedirectResponse("/login", status_code=302)
+    return render(
+        request,
+        "resume.html",
+        {
+            "user": user,
+            "profile": profile_pipeline.latest_profile(session, user.id),
+            "private_count": len(bank_repository.owned_ids(session, user.id)),
+            "error": None,
+            "result": None,
+        },
+    )
+
+
+@router.post("/me/resume")
+def resume_submit(
+    request: Request,
+    session: SessionDep,
+    user: CurrentUserDep,
+    llm=Depends(get_llm),
+    resume_text: Annotated[str, Form()] = "",
+    note: Annotated[str, Form()] = "",
+) -> object:
+    """解析简历并生成私有题集。
+
+    **不保存简历原文**（决策 8）：`resume_text` 只作为这次调用的输入，从不落库 ——
+    库里只留结构化档案。
+    """
+    if user is None:
+        return RedirectResponse("/login", status_code=302)
+
+    context: dict[str, object] = {
+        "user": user,
+        "profile": profile_pipeline.latest_profile(session, user.id),
+        "private_count": len(bank_repository.owned_ids(session, user.id)),
+        "error": None,
+        "result": None,
+    }
+    try:
+        result = profile_pipeline.create_private_question_set(
+            session, user_id=user.id, resume_text=resume_text, llm=llm, note=note
+        )
+    except AppError as e:
+        context["error"] = e.message
+        context["profile"] = profile_pipeline.latest_profile(session, user.id)
+        return render(request, "resume.html", context, status_code=e.status_code)
+    except LLMError as e:
+        # 模型侧失败也回同一页，并**明确告诉用户档案有没有保住**
+        context["error"] = f"解析没成功：{e}"
+        return render(request, "resume.html", context, status_code=502)
+
+    session.commit()
+    context["result"] = result
+    context["profile"] = profile_pipeline.latest_profile(session, user.id)
+    context["private_count"] = len(bank_repository.owned_ids(session, user.id))
+    return render(request, "resume.html", context)
 
 
 @router.get("/me/export")

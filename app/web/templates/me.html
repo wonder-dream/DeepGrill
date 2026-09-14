@@ -60,6 +60,17 @@
 </section>
 
 <section class="card">
+  <h2>简历与私有题集</h2>
+  {% if profile %}
+  <p>{{ profile.structured.get("headline") or "已有一份档案" }}</p>
+  <p class="muted">私有题：{{ private_count }} 道（只对你自己可见）。</p>
+  {% else %}
+  <p class="muted">还没有档案。粘贴一次简历，就能生成只属于你的题目。</p>
+  {% endif %}
+  <p><a class="button" href="/me/resume">{{ "更新简历" if profile else "用简历生成题目" }}</a></p>
+</section>
+
+<section class="card">
   <h2>我的数据</h2>
   <p class="muted">你的面试记录、私有题集与掌握度数据。可以随时导出带走，也可以随时注销。</p>
   <p><a class="button" href="/me/export">导出我的数据（JSON）</a></p>

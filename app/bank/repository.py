@@ -142,6 +142,35 @@ def stem_exists(session: Session, stem: str) -> bool:
     )
 
 
+def unmounted_public(session: Session) -> list[Question]:
+    """还没挂载到知识点的**公共题** —— 给知识层管道用（提候选 / 挂载的输入）。
+
+    为什么它也在仓储里：管道是写入方，但它同样不该自己 `select(Question)` ——
+    题目查询只有一条通道这件事，靠"每次都觉得这次是例外"是守不住的
+    （这条规则已经抓到过三次违规）。
+    """
+    return list(
+        session.execute(
+            select(Question)
+            .where(Question.owner_user_id.is_(None), Question.primary_point_id.is_(None))
+            .order_by(Question.id)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def public_questions(session: Session) -> list[Question]:
+    """全部**公共题**（不论挂没挂）—— 给知识层管道的提候选步骤用。"""
+    return list(
+        session.execute(
+            select(Question).where(Question.owner_user_id.is_(None)).order_by(Question.id)
+        )
+        .scalars()
+        .all()
+    )
+
+
 def owned_ids(session: Session, user_id: int) -> list[int]:
     """这位用户**自己**的题 id 清单（**不带可见性条件**）。
 

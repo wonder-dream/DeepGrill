@@ -79,6 +79,49 @@ class ProposalResult:
     llm_failed: bool = False
     note: str = ""
 
+    def to_json(self) -> dict[str, Any]:
+        """落盘用（**审核页需要它跨进程存在**）。
+
+        为什么不放内存：人审可能隔天做（几百条要看很久），而且审核页是另一个进程。
+        写成 JSON 文件是这里最轻的持久化 —— 它天然会过期（题变了就该重跑），
+        所以不该进库当业务数据。
+        """
+        return {
+            "candidates": [
+                {
+                    "name": c.name,
+                    "definition": c.definition,
+                    "exclusions": c.exclusions,
+                    "criteria": c.criteria,
+                    "question_ids": c.question_ids,
+                    # 把判据① 的结论一起存下来 —— 审核页要显示"这条为什么可疑"
+                    "unusable_reason": c.unusable_reason,
+                }
+                for c in self.candidates
+            ],
+            "llm_failed": self.llm_failed,
+            "note": self.note,
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> ProposalResult:
+        if not isinstance(raw, dict):
+            return cls(note="提案文件格式不对")
+        out = cls(llm_failed=bool(raw.get("llm_failed")), note=str(raw.get("note") or ""))
+        for item in raw.get("candidates") or []:
+            if not isinstance(item, dict):
+                continue
+            out.candidates.append(
+                Candidate(
+                    name=str(item.get("name") or ""),
+                    definition=str(item.get("definition") or ""),
+                    exclusions=str(item.get("exclusions") or ""),
+                    criteria=[str(c) for c in (item.get("criteria") or [])],
+                    question_ids=[int(i) for i in (item.get("question_ids") or []) if str(i).isdigit()],
+                )
+            )
+        return out
+
 
 def normalize_name(name: str) -> str:
     """候选名的**归一化**键，用于折叠同一批次里的重复。
