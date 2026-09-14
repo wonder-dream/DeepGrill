@@ -1,0 +1,75 @@
+[project]
+name = "deepgrill"
+version = "0.0.0"
+description = "AI 模拟面试平台 —— 三种形态（模拟面试 / 单题追问 / 题库练习）共享同一个面试官"
+requires-python = ">=3.13"
+
+# 依赖只列**用途上必需**的，不搬 v1 的 requirements.txt
+# （那是 v1 的事实，抄过来就成了第二份会漂的清单）。
+# 版本用下界不用 ==：真正可复现的版本记录属于 lock 文件，不属于这里。
+dependencies = [
+    "fastapi",        # 路由 + Depends 注入 db session + 参数校验（§3.4）
+    "uvicorn",        # ASGI 服务器
+    "sqlalchemy",     # ORM 与 session
+    "pydantic",       # 请求体校验；pydantic-settings 读配置
+    "pydantic-settings",
+    "jinja2",         # 服务端渲染整页 HTML（ADR-0004）
+    "itsdangerous",   # 签名会话 cookie
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    # ruff / mypy 在立「提交前自动跑类型检查与 lint」时再加（决策 38）
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# 只有 app/ 是包。migrations / prompts / tools / scripts 都在包外 ——
+# 这是 ADR-0010 的布局决策，不是遗漏。
+packages = ["app"]
+
+# ---------------------------------------------------------------------------
+# pytest 配置：**一开始就配死**，不许等出问题再补。
+#
+# 依据 ADR-0005 与决策 43：v1 的实测失败是「471 个测试写完却从未在根目录跑起来」，
+# 根因是既没有 pytest.ini 也没有 pyproject.toml —— pytest 从根目录递归收集时
+# 撞进残留目录报 PermissionError。**配错就是第二次"测试跑不起来"。**
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+# 收测试的三个位置：领域内的测试随领域走（ADR-0005），跨领域测试在 tests/，
+# 迁移的测试跟迁移走（它不是领域，也不是基础设施）。
+testpaths = ["app", "migrations", "tests"]
+norecursedirs = [".venv", ".uv-cache", "data", "docs", "*.egg-info", "__pycache__", "tools", "scripts"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+# 导入模式用 importlib，避免不同目录下同名测试文件互相遮蔽
+# （领域内测试文件名会重复，如 app/bank/test_repository.py 与别处的同名文件）
+addopts = [
+    "--import-mode=importlib",
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    # 关掉 pytest 自己的临时目录插件（tmpdir / tmp_path）。
+    #
+    # 理由不是洁癖，是实测：这个环境下 pytest 的 tmpdir 插件**必然失败** ——
+    #   · 它启动时会 `scandir` 系统临时目录里自己上次留下的 `pytest-of-<用户>`，
+    #     而那一步被拒（WinError 5）
+    #   · 把 basetemp 指到工作区内也没用：每次跑完那个目录就变得不可读，
+    #     删掉重建也照样被拒（tools/_probe_sandbox.py 可复现）
+    # v1 的"471 个测试写完却跑不起来"确实出在临时目录上（247 个用例报
+    # PermissionError，被记成"非代码失败"）。正确的解法是**不依赖它** ——
+    # 临时目录由 `tmp_dir` fixture 提供（见 tests/conftest.py）。
+    "-p",
+    "no:tmpdir",
+    "-p",
+    "no:cacheprovider",
+]
+markers = [
+    "slow: 需要真实文件库或较长时间（并发 / WAL 类）",
+    "llm: 需要真实调用 LLM（默认不跑）",
+]

@@ -36,7 +36,7 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ("规则9 INDEX 表格缺 docs/ 前缀", "docs/INDEX.md", "| `docs/v2数据模型.md` |", "| `v2数据模型.md` |"),
     ("规则10 ADR 影响文档指向不存在", "docs/adr/0008-hosting-overseas-single-node.md", "`AGENTS.md`", "`docs/nonexistent.md`"),
     ("规则11 引用台账里没有的决策号", "docs/v2数据模型.md", "（决策 21）", "（决策 999）"),
-    ("规则12 台账标题范围与实际不符", "docs/v2范围基线.md", "（1–55）", "（1–50）"),
+    ("规则12 台账标题范围与实际不符", "docs/v2范围基线.md", "（1–56）", "（1–50）"),
     ("规则13 accepted 的 ADR 缺 Consequences", "docs/adr/0006-offline-jobs-in-sql-with-a-worker.md", "## Consequences", "## 附注"),
     ("规则15 引用 ADR 缺 .md 后缀", "CONTEXT.md", "docs/adr/0005-code-is-split-by-domain.md", "docs/adr/0005"),
     ("规则16 AGENTS 未提 INDEX", "AGENTS.md", "`docs/INDEX.md`", "`docs/INDEX`", True),

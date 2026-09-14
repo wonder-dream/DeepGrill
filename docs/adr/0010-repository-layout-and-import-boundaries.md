@@ -30,7 +30,7 @@ app/                      应用包 —— 只有它是一个可导入的包
     db/models.py          全部表集中于此 —— 表之间有外键，拆开会让关系断裂（ADR-0005）
 
 migrations/               与 app/ **平级**。schema 变更的唯一入口
-  0001_initial.sql        一个迁移一个文件；runner 是 `python -m migrations.run`（待建）
+  0001_initial.sql        一个迁移一个文件；runner 是 `python -m migrations.run`（ADR-0011）
 prompts/                  与 app/ **平级**。纯数据（ADR-0007）
   interviewer/ offline/ embed/
 
