@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +34,20 @@ RULE21_PROBE = ROOT / "app" / "_selftest_ensure_ascii.py"
 RULE21_BAD = 'import json\n\nx = json.dumps({"a": "中文"})\n'
 RULE21_GOOD = 'import json\n\nx = json.dumps({"a": "中文"}, ensure_ascii=False)\n'
 
+# 规则 12 的锚点**必须跟着台账的当前范围走**。
+#
+# 第一版把「（1–63）」写死在这里，于是台账一长到 64，自检就报「锚点找不到」——
+# 从那以后规则 12 再也没人验过，而它拦下的是**与它无关**的一次提交（新增决策 64
+# 那一笔真的撞上了）。这正是本项目反复吃过的「冻结的数字」：把会变的东西抄一份，
+# 就一定会漂。现在范围从文档里读，变异体是「把上界减一」，永远与实际不符。
+# 读不到就直接报错（`assert`）—— 标题形态变了要有人来改这个锚点，不能静默跳过。
+_LEDGER_HEAD = re.search(
+    r"## 决策台账（\d+[–—]\d+）", (ROOT / "docs" / "v2范围基线.md").read_text(encoding="utf-8")
+)
+assert _LEDGER_HEAD, "台账标题的形态变了 —— 规则 12 的变异锚点要跟着改"
+_LEDGER_LO, _LEDGER_HI = re.search(r"(\d+)[–—](\d+)", _LEDGER_HEAD.group(0)).groups()
+_LEDGER_WRONG = f"## 决策台账（{_LEDGER_LO}–{int(_LEDGER_HI) - 1}）"
+
 # (说明, 目标文件, 原文, 篡改后) —— 每条对应一条规则，规则号写在说明里
 MUTATIONS: list[tuple[str, str, str, str]] = [
     ("规则1 顶层文档缺状态行", "README.md", "> 状态：活文档", "> 状态没了"),
@@ -44,7 +59,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     ("规则9 INDEX 表格缺 docs/ 前缀", "docs/INDEX.md", "| `docs/v2数据模型.md` |", "| `v2数据模型.md` |"),
     ("规则10 ADR 影响文档指向不存在", "docs/adr/0008-hosting-overseas-single-node.md", "`AGENTS.md`", "`docs/nonexistent.md`"),
     ("规则11 引用台账里没有的决策号", "docs/v2数据模型.md", "（决策 21）", "（决策 999）"),
-    ("规则12 台账标题范围与实际不符", "docs/v2范围基线.md", "（1–63）", "（1–50）"),
+    ("规则12 台账标题范围与实际不符", "docs/v2范围基线.md",
+     _LEDGER_HEAD.group(0), _LEDGER_WRONG),
     ("规则13 accepted 的 ADR 缺 Consequences", "docs/adr/0006-offline-jobs-in-sql-with-a-worker.md", "## Consequences", "## 附注"),
     ("规则15 引用 ADR 缺 .md 后缀", "CONTEXT.md", "docs/adr/0005-code-is-split-by-domain.md", "docs/adr/0005"),
     ("规则16 AGENTS 未提 INDEX", "AGENTS.md", "`docs/INDEX.md`", "`docs/INDEX`", True),
