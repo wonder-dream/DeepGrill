@@ -98,7 +98,7 @@
 | 晋升 + 自动门禁（决策 5/9/68）：四条确定性检查、过闸进公共待定池 | `app/bank/promotion.py` |
 | 事后治理（决策 5 + ADR-0002）：重复检测（离线任务）与三个处置动作 | `app/bank/quality.py`、`app/web/quality_page.py` |
 | 嵌入（ADR-0008）：接口 + 占位实现 + OpenAI 兼容客户端 + 缓存表（`0004`） | `app/llm/embeddings.py`、`app/offline/embedding_store.py` |
-| 全量装配管道（决策 44/46）：分批提候选 → 嵌入粗筛聚类 → 逐簇 LLM 归并（`propose --batched`） | `app/offline/knowledge_pipeline.py` |
+| 全量装配管道（决策 44/46/80）：分批提候选 → 嵌入粗筛聚类 → 逐簇 LLM 归并（`propose --batched`）、挂载支持**主 + 关联知识点** | `app/offline/knowledge_pipeline.py` |
 | 生成题这条内容来源（决策 4/5）：按缺题的已确认知识点补公共题，过门禁才插入（`app.cli generate`） | `app/offline/generation.py`、`prompts/offline/generate_public_questions.md` |
 | 阈值标定报告（决策 70 / §未决 6）：§11 每个数字的样本分布 + `--live` 单位成本，**只读不改常量** | `app/offline/calibration.py` |
 | lint 与类型检查（决策 38）：`ruff` + `mypy`，进 dev extra 与 pre-commit 钩子 | `pyproject.toml`、`.githooks/pre-commit` |
