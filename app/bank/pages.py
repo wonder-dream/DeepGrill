@@ -23,13 +23,21 @@ class BankListPage:
     has_prev: bool
     has_next: bool
     kind: str | None
+    owner_only: bool = False
 
 
 def bank_list(
-    session: Session, viewer_id: int | None, *, kind: str | None = None, page: int = 1
+    session: Session,
+    viewer_id: int | None,
+    *,
+    kind: str | None = None,
+    owner_only: bool = False,
+    page: int = 1,
 ) -> BankListPage:
     """题库列表页的数据。分页状态由服务端算好（ADR-0004：状态住 URL 与服务端）。"""
-    cards, total = service.browse(session, viewer_id, kind=kind, page=page)
+    cards, total = service.browse(
+        session, viewer_id, kind=kind, owner_only=owner_only, page=page
+    )
     return BankListPage(
         cards=cards,
         total=total,
@@ -37,4 +45,5 @@ def bank_list(
         has_prev=page > 1,
         has_next=page * service.PAGE_SIZE < total,
         kind=kind,
+        owner_only=owner_only,
     )

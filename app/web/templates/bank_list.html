@@ -2,8 +2,13 @@
 {% block title %}题库 · DeepGrill{% endblock %}
 {% block content %}
 <section class="card">
-  <h1>题库</h1>
+  <h1>{% if mine %}我的私有题集{% else %}题库{% endif %}</h1>
   <p class="muted">共 {{ data.total }} 道{% if data.kind %}（kind={{ data.kind }}）{% endif %}。浏览不消耗额度点。</p>
+  {% if mine %}
+  <p class="muted">只显示<strong>你自己的</strong>私有题 —— 别人看不到它们，也不出现在公共抽题里。
+     它们来自<a href="/me/resume">简历生成的私有题集</a>。</p>
+  <p><a class="button" href="/bank">看全部题库</a></p>
+  {% endif %}
   {% if quota %}
   <p class="muted">今日额度还剩 {{ quota.remaining }} / {{ quota.daily }} 点。</p>
   {% if quota.library_only %}

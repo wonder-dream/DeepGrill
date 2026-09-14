@@ -86,7 +86,8 @@
 | 额度与降级（决策 13）：单一额度点、耗尽后纯题库模式、token 第二道安全网 | `app/account/service.py`、`app/account/repository.py` |
 | 离线队列与 worker（原子认领 / 心跳回退 / 幂等 / TTL 回收 / 任务报告） | `app/offline/`（`jobs` · `worker` · `tasks` 三个模块） |
 | 离线管道：简历→档案→私有题集、知识层提议与人审 | `app/offline/profile_pipeline.py`、`app/offline/knowledge_pipeline.py` |
-| 页面：首页 / 题库 / 登录注册 / 我的 / 答题 / 报告 / 反馈 / 后台 / 观测 | `app/web/`（一个文件 = 一个 URL） |
+| 页面：首页 / 题库 / 登录注册 / 我的 / 答题 / 报告 / 反馈 / 收藏 / 后台 / 观测 | `app/web/`（一个文件 = 一个 URL） |
+| 首页 = 内容推荐中心（决策 3/23/63）：主按钮 / 今日推荐题（按掌握度现算）/ 私有题集 / 继续未完成 / 收藏 | `app/web/home_page.py` |
 | 观测页（决策 23）：离线队列 / 待定池 / 库体积 / 质量仪表板 / 离线报告 | `app/web/observability.py`、`app/web/observability_page.py` |
 | 收藏夹（决策 63）：收藏 / 取消 / 我的收藏页 / 题库列表 ★ 标记 / 首页与「我的」入口 | `app/bank/favorites.py`、`app/web/favorites_page.py`、`app/web/templates/my_favorites.html` |
 | 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker`） | `app/cli.py`、`app/offline/seed.py` |

@@ -63,18 +63,36 @@ def list_questions(
     *,
     kind: str | None = None,
     point_id: int | None = None,
+    point_ids: list[int] | None = None,
+    owner_only: bool = False,
+    exclude_ids: list[int] | None = None,
     offset: int = 0,
     limit: int = 20,
 ) -> tuple[list[Question], int]:
     """题库列表（分页）。返回 `(当页题目, 总数)`。
 
     分页不是装饰：目标是 2C2G（AGENTS.md §3.6「不许全量加载大表」）。
+
+    `point_ids` / `exclude_ids` / `owner_only` 是给**首页推荐**与**我的私有题集**
+    用的三个筛选项 —— 它们都只是往 `visible_to()` 后面接 `.where()`，所以推荐
+    永远捞不出看不见的题（这里没有第二条查询路径）。
     """
     stmt = visible_to(viewer_id)
     if kind:
         stmt = stmt.where(Question.kind == kind)
     if point_id is not None:
         stmt = stmt.where(Question.primary_point_id == point_id)
+    if point_ids is not None:
+        # 空列表要显式处理：`IN ()` 在 SQL 里是语法错误，而"一道薄弱点都没有"很正常
+        if not point_ids:
+            return [], 0
+        stmt = stmt.where(Question.primary_point_id.in_(point_ids))
+    if owner_only:
+        if viewer_id is None:
+            return [], 0
+        stmt = stmt.where(Question.owner_user_id == viewer_id)
+    if exclude_ids:
+        stmt = stmt.where(Question.id.not_in(exclude_ids))
 
     total = session.execute(
         select(func.count()).select_from(stmt.subquery())

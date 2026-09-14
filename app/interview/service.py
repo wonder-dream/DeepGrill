@@ -397,3 +397,61 @@ def get_session_row(session: Session, session_id: int, user_id: int) -> Intervie
     if row is None:
         raise NotFound("这个会话不存在")
     return row
+
+
+# ---------------------------------------------------------------------------
+# 首页要用的两件事（决策 3 / 23）
+# ---------------------------------------------------------------------------
+def active_interviews(session: Session, user_id: int, *, limit: int = 5) -> list[Interview]:
+    """**还没收尾**的面试 —— 首页的「继续未完成会话」（决策 23 的第二项）。
+
+    `status='active'` 就是"没收尾"：`finished` 出过报告，`abandoned` 是用户主动
+    放弃的。两种都不该出现在"继续"里 —— 把它们列出来会让人以为还有活要干。
+
+    **没有回收者，也不需要**：它是一条按 user 过滤、带 limit 的查询，不往内存里
+    存任何东西（AGENTS.md §3.2 管的是"进内存的东西"）。
+    """
+    return list(
+        session.execute(
+            select(Interview)
+            .where(Interview.user_id == user_id, Interview.status == "active")
+            .order_by(Interview.id.desc())
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def next_active_session(session: Session, interview_id: int) -> InterviewSession | None:
+    """一场面试里**下一道还没答完的题** —— "继续"按钮要跳到的那一页。
+
+    判据是"这一题的题会话还没收尾"（`sessions.status == 'active'`），不是"它答了
+    几轮"：一轮都没答和答了但没收尾，都要跳回同一页（页面上本来就显示着已答的轮次）。
+    """
+    return session.execute(
+        select(InterviewSession)
+        .where(
+            InterviewSession.interview_id == interview_id,
+            InterviewSession.status == "active",
+        )
+        .order_by(InterviewSession.seq)
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def answered_question_ids(session: Session, user_id: int) -> set[int]:
+    """这位用户**答过**（答过至少一轮）的题目 id。
+
+    用途只有一处：首页推荐的 `exclude_ids` —— 推荐一道刚答过的题没有意义。
+    它跨了三张表（`attempts` → `sessions` → `interviews`），所以放在面试领域里，
+    由首页装配层把结果递给 `bank`（决策：领域互不 import）。
+    """
+    rows = session.execute(
+        select(InterviewSession.question_id)
+        .join(Interview, Interview.id == InterviewSession.interview_id)
+        .join(Attempt, Attempt.session_id == InterviewSession.id)
+        .where(Interview.user_id == user_id)
+        .distinct()
+    ).all()
+    return {r[0] for r in rows}

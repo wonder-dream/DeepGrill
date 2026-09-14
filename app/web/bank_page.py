@@ -45,15 +45,24 @@ def bank_list(
     session: SessionDep,
     user: CurrentUserDep,
     kind: Annotated[str | None, Query()] = None,
+    mine: Annotated[int, Query(ge=0, le=1)] = 0,
     page: Annotated[int, Query(ge=1)] = 1,
 ) -> object:
-    data = pages.bank_list(session, _viewer(user), kind=kind, page=page)
+    """题库列表。`?mine=1` 就是首页那个「我的私有题集」入口（决策 3）。
+
+    它**复用同一个函数**、只多一个筛选条件：另写一条"只查我的题"的路径，等于多
+    一处能漏掉可见性过滤的地方（AGENTS.md §3.5）。
+    """
+    data = pages.bank_list(
+        session, _viewer(user), kind=kind, page=page, owner_only=bool(mine)
+    )
     return render(
         request,
         "bank_list.html",
         # 浏览**永远**可用（决策 13），所以这里只带额度状态用于提示，不做拦截。
         {
             "data": data,
+            "mine": bool(mine),
             "quota": account.quota_state(session, user.id) if user else None,
             # 一页的收藏状态**一次问完**（决策 63）—— 不在模板里逐题查库
             "favorited": (

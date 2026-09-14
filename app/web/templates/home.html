@@ -2,7 +2,7 @@
 {% block content %}
 <section class="card">
   <h1>AI 模拟面试平台</h1>
-  <p>面试官读完你的简历之外的东西还不在 MVP 里 —— 此刻能跑通的是"从题库抽题、逐题追问、结束给报告"这条主线。</p>
+  <p>首页是内容推荐中心：开始一场模拟面试，或者按你最近漏掉的考察点挑两道题接着练。</p>
 </section>
 
 {% if quota %}
@@ -19,12 +19,7 @@
 {% endif %}
 
 <section class="card">
-  <h2>三个入口</h2>
-  <ul>
-    <li><strong>模拟面试</strong>：抽多题 → 逐题提问 → 每题追问 → 总报告</li>
-    <li><strong>单题追问</strong>：挑一道题挖到深处</li>
-    <li><strong>题库练习</strong>：只看题与评分标准，不调 LLM、不耗额度</li>
-  </ul>
+  <h2>开始</h2>
   {% if user and quota and not quota.library_only %}
   <form method="post" action="/interview/start">
     <button class="button" name="mode" value="interview" type="submit">开始模拟面试（6 点）</button>
@@ -35,10 +30,79 @@
   {% else %}
   <p><a class="button" href="/bank">从题库挑一道题开始</a></p>
   {% endif %}
-  {% if user %}
-  <p class="muted">收藏夹（决策 63）：<a href="/me/favorites">我的收藏</a> —— 题库里点「收藏」的题都在那儿，不耗额度。</p>
+  <ul class="muted">
+    <li><strong>模拟面试</strong>：抽多题 → 逐题提问 → 每题追问 → 总报告</li>
+    <li><strong>单题追问</strong>：挑一道题挖到深处</li>
+    <li><strong>题库练习</strong>：只看题与评分标准，不调 LLM、不耗额度</li>
+  </ul>
+</section>
+
+{% if user %}
+<section class="card">
+  <h2>继续未完成</h2>
+  {% if active %}
+  <ul>
+    {% for a in active %}
+    <li>
+      <a href="/interview/{{ a.session_id }}">
+        {{ "模拟面试" if a.interview.mode == "interview" else "单题追问" }} #{{ a.interview.id }}
+      </a>
+      <span class="muted">开始于 {{ a.interview.started_at }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">没有答到一半的面试。</p>
   {% endif %}
 </section>
+
+<section class="card">
+  <h2>今日推荐题</h2>
+  {% if weak_points %}
+  <p class="muted">按你目前<strong>答不到</strong>的考察点现算 —— 它不是每天锁定的题单，
+     答一场就会变：</p>
+  <ul>
+    {% for c in weak_points %}
+    <li>{{ c.point_name }} —— 漏了 {{ c.missed }} 条（{{ c.percent }}）</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if recommended %}
+  <table>
+    <thead><tr><th>#</th><th>题干</th><th>知识点</th><th>难度</th></tr></thead>
+    <tbody>
+      {% for c in recommended %}
+      <tr>
+        <td>{{ c.id }}</td>
+        <td><a href="/bank/{{ c.id }}">{{ c.stem }}</a></td>
+        <td>{{ c.point_name or "—" }}</td>
+        <td>{{ c.difficulty }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if recommend_fallback %}
+  <p class="muted">还<strong>没测出薄弱点</strong>（没考过，或者都答对了）——
+     这里先摆几道最新的题；做过一场面试之后，这一栏就有依据了。</p>
+  {% endif %}
+  {% else %}
+  <p class="muted">题库里还没有可推荐的题。跑 <code>python -m app.cli seed</code> 灌一份演示数据。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>我的私有题集与收藏</h2>
+  <dl>
+    <dt>私有题</dt><dd>{{ private_count }} 道（只对你自己可见）</dd>
+    <dt>收藏</dt><dd>{{ favorite_count }} 道</dd>
+  </dl>
+  <p>
+    <a class="button" href="/bank?mine=1">看我的私有题集</a>
+    <a class="button" href="/me/favorites">我的收藏</a>
+    <a class="button" href="/me/resume">{{ "更新简历" if private_count else "用简历生成题目" }}</a>
+  </p>
+</section>
+{% endif %}
 
 <section class="card">
   <h2>当前状态</h2>

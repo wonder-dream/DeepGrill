@@ -68,15 +68,22 @@ def browse(
     *,
     kind: str | None = None,
     point_id: int | None = None,
+    owner_only: bool = False,
     page: int = 1,
 ) -> tuple[list[QuestionCard], int]:
-    """题库浏览（**不消耗额度点** —— 决策 13）。返回 `(卡片, 总条数)`。"""
+    """题库浏览（**不消耗额度点** —— 决策 13）。返回 `(卡片, 总条数)`。
+
+    `owner_only=True` 是「我的私有题集」那个入口（首页三个入口之一）——
+    它和浏览走**同一个**函数，因为"我的私有题集"就是"题库里属于我的那一部分"，
+    另写一条查询路径只会多一处能漏掉可见性过滤的地方。
+    """
     page = max(1, page)
     rows, total = repository.list_questions(
         session,
         viewer_id,
         kind=kind,
         point_id=point_id,
+        owner_only=owner_only,
         offset=(page - 1) * PAGE_SIZE,
         limit=PAGE_SIZE,
     )
@@ -85,6 +92,56 @@ def browse(
     )
     cards = [to_card(q, names.get(q.primary_point_id or -1, "")) for q in rows]
     return cards, total
+
+
+#: 首页「今日推荐题」的条数。它是**即时计算**的，不是每日锁定的题单
+#: （`docs/v2范围基线.md` 里点明了：`user_picks` / `questions.selected_at` 都已删掉，
+#: 换成别的推荐算法时不会留下数据残骸）。
+RECOMMEND_COUNT = 5
+
+
+def recommend(
+    session: Session,
+    viewer_id: int,
+    *,
+    weak_point_ids: list[int],
+    exclude_ids: set[int] | None = None,
+    limit: int = RECOMMEND_COUNT,
+) -> list[QuestionCard]:
+    """按**薄弱知识点**推荐题目 —— 决策 3 的「今日推荐题」。
+
+    ⚠️ 它**不自己算薄弱点**：那要读 `question_point_stats` / `attempts`，属于
+    `knowledge` 领域（ADR-0005：领域互不 import）。掌握度由调用方（首页装配）
+    算好、把**知识点 id** 递进来，这里只负责"在这些知识点下挑看得见的题"。
+
+    `exclude_ids` 是"已经答过的题"，同样由调用方给 —— 判断"答过没答过"要看面试
+    记录，那不是题库的事（`web/home_page.py` 把两边的结果拼起来）。
+
+    一条都不命中时返回 `[]`（而不是抛异常）：首页要显示"还没有测出薄弱点"，
+    那不是错误。
+    """
+    if not weak_point_ids:
+        return []
+    rows, _ = repository.list_questions(
+        session,
+        viewer_id,
+        point_ids=list(weak_point_ids),
+        exclude_ids=sorted(exclude_ids) if exclude_ids else None,
+        limit=limit,
+    )
+    names = repository.point_names(
+        session, {q.primary_point_id for q in rows if q.primary_point_id is not None}
+    )
+    return [to_card(q, names.get(q.primary_point_id or -1, "")) for q in rows]
+
+
+def latest(session: Session, viewer_id: int | None, *, limit: int = RECOMMEND_COUNT) -> list[QuestionCard]:
+    """最新几道可见的题 —— 首页在"还没有测出薄弱点"时的兜底。
+
+    兜底也要**说清楚自己是兜底**（页面上写"还没测出薄弱点，先看这几道"），
+    否则它会看起来像一条认真的推荐。
+    """
+    return browse(session, viewer_id, page=1)[0][:limit]
 
 
 def detail(session: Session, question_id: int, viewer_id: int | None) -> QuestionDetail:
