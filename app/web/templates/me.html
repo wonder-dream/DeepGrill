@@ -58,4 +58,28 @@
   </table>
   {% endif %}
 </section>
+
+<section class="card">
+  <h2>我的数据</h2>
+  <p class="muted">你的面试记录、私有题集与掌握度数据。可以随时导出带走，也可以随时注销。</p>
+  <p><a class="button" href="/me/export">导出我的数据（JSON）</a></p>
+  <dl>
+    <dt>面试记录</dt><dd>{{ counts.interviews }} 场</dd>
+    <dt>私有题</dt><dd>{{ counts.private_questions }} 道</dd>
+    <dt>收藏</dt><dd>{{ counts.favorites }} 条</dd>
+    <dt>档案</dt><dd>{{ counts.profiles }} 份</dd>
+  </dl>
+</section>
+
+<details class="card">
+  <summary>注销账号与数据</summary>
+  <p>注销会<strong>永久删除</strong>身份、令牌、额度记录、简历档案、全部面试与逐轮原文、
+  私有题集与收藏。聚合统计（不含身份信息）会保留，用于题库质量。</p>
+  <p class="warn">这一步不可恢复，也没有"回收站"。</p>
+  <form method="post" action="/me/delete">
+    <p><label>输入 <code>DELETE</code> 确认<br><input type="text" name="confirm" required></label></p>
+    <p><label>重输登录口令<br><input type="password" name="password" required></label></p>
+    <p><button class="button" type="submit">永久注销</button></p>
+  </form>
+</details>
 {% endblock %}

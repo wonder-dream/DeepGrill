@@ -84,6 +84,16 @@ def logout(session: Session, token: str) -> None:
     repository.revoke_token(session, token_hash(token))
 
 
+def verify_login(session: Session, *, email: str, password: str) -> bool:
+    """只校验口令、**不签发令牌**。
+
+    注销（`/me/delete`）要重输口令才允许执行 —— 它不能复用 `login()`，因为那会
+    顺手多签一个令牌，而这次请求根本不需要新会话。
+    """
+    user = repository.find_user_by_email(session, email.strip().lower())
+    return user is not None and verify_password(password, user.password_hash)
+
+
 def user_from_token(session: Session, token: str | None) -> User | None:
     if not token:
         return None
