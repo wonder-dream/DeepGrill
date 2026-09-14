@@ -96,8 +96,15 @@ class MasteryMatrix:
         return measured[:limit]
 
 
-def mastery_matrix(session: Session, user_id: int) -> MasteryMatrix:
+def mastery_matrix(
+    session: Session, user_id: int, *, exclude_interview_ids: set[int] | None = None
+) -> MasteryMatrix:
     """某位候选人的掌握度矩阵。**个人状态页与面试报告共用它**（决策 17）。
+
+    `exclude_interview_ids` 用来算"**这一场之前**"的快照 —— 报告要显示矩阵的
+    **变化**（②），而"之前"这个时点事后无法重建（ADR-0003：主体必须在 finish 时算）。
+    实现上是"用同一套聚合、只是少算几场"，而不是维护一份历史副本 —— 历史副本
+    会随用户注销而失去意义，而重算是确定的。
 
     两条查询，都不随数据量爆炸：
 
@@ -115,7 +122,7 @@ def mastery_matrix(session: Session, user_id: int) -> MasteryMatrix:
 
     covered: dict[int, set[int]] = {}
     hits: dict[int, set[int]] = {}
-    for raw in _hit_blobs_for_user(session, user_id):
+    for raw in _hit_blobs_for_user(session, user_id, exclude_interview_ids=exclude_interview_ids):
         for cid, status in _statuses(raw).items():
             point_id = criterion_point.get(cid)
             if point_id is None:
@@ -141,22 +148,43 @@ def mastery_matrix(session: Session, user_id: int) -> MasteryMatrix:
     )
 
 
-def _hit_blobs_for_user(session: Session, user_id: int) -> list[object]:
+def _hit_blobs_for_user(
+    session: Session, user_id: int, *, exclude_interview_ids: set[int] | None = None
+) -> list[object]:
     """该用户全部轮次的 `hits` 列值（**JsonText 已反序列化，所以是 dict**）。
 
     v1 的 `review_tags` 是把全表拉回 Python 做 `Counter`（快照 §6-P5 点名的
     N+1/全表加载之一）。这里只取需要的**一列**，且按 user 过滤。
     """
-    return list(
-        session.execute(
-            select(Attempt.hits)
-            .join(InterviewSession, InterviewSession.id == Attempt.session_id)
-            .join(Interview, Interview.id == InterviewSession.interview_id)
-            .where(Interview.user_id == user_id)
-        )
-        .scalars()
-        .all()
+    stmt = (
+        select(Attempt.hits)
+        .join(InterviewSession, InterviewSession.id == Attempt.session_id)
+        .join(Interview, Interview.id == InterviewSession.interview_id)
+        .where(Interview.user_id == user_id)
     )
+    if exclude_interview_ids:
+        stmt = stmt.where(Interview.id.not_in(sorted(exclude_interview_ids)))
+    return list(session.execute(stmt).scalars().all())
+
+
+def prerequisite_gaps(session: Session, point_ids: set[int], *, limit: int = 5) -> list[str]:
+    """**该补的前置知识点** —— 沿 `knowledge_point_edges` 往前走一跳。
+
+    这是 ADR-0003 的 ④：不调 LLM，纯查图。只走一跳是有意的（决策 48：前置边
+    是全链最弱一环，"限深 ≤2" 是对幻觉的防御，而复习推荐只需要 1-2 跳）。
+    """
+    from app.db.models import KnowledgePointEdge
+
+    if not point_ids:
+        return []
+    rows = session.execute(
+        select(KnowledgePoint.name)
+        .join(KnowledgePointEdge, KnowledgePointEdge.from_point_id == KnowledgePoint.id)
+        .where(KnowledgePointEdge.to_point_id.in_(sorted(point_ids)))
+        .distinct()
+        .limit(limit)
+    ).all()
+    return [r[0] for r in rows]
 
 
 def _statuses(raw: str | dict | None) -> dict[int, str]:
