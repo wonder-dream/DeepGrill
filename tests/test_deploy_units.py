@@ -137,3 +137,59 @@ def test_the_readme_carries_the_three_must_flip_switches() -> None:
     ):
         assert switch in text, f"部署文档没写 {switch}"
     assert "verify-backup" in text, "没写恢复演练 —— 没演练过的备份不算备份"
+
+
+# ---------------------------------------------------------------------------
+# 反代那一层（决策 77）
+# ---------------------------------------------------------------------------
+def _nginx() -> str:
+    return (DEPLOY / "nginx.conf").read_text(encoding="utf-8")
+
+
+def test_nginx_body_limit_covers_the_audio_upload() -> None:
+    """**这条是反代那一层唯一会静默咬人的地方。**
+
+    nginx 默认 `client_max_body_size 1m`，而 `app/llm/stt.py` 的 `MAX_AUDIO_BYTES`
+    是 8m。不改这里，超过 1MB 的语音回答在生产上会被挡成 413 —— 而开发机上跑的是
+    uvicorn，这一层根本不存在，所以本地怎么测都测不出来。
+    """
+    from app.llm.stt import MAX_AUDIO_BYTES
+
+    match = re.search(r"client_max_body_size\s+(\d+)([kmg]?);", _nginx())
+    assert match, "nginx 配置里没有 client_max_body_size"
+    value = int(match.group(1)) * {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3}[
+        match.group(2).lower()
+    ]
+    assert value >= MAX_AUDIO_BYTES, (
+        f"反代只放 {value} 字节，而应用允许上传 {MAX_AUDIO_BYTES} —— 语音回答会被 413"
+    )
+
+
+def test_nginx_proxies_to_where_the_web_unit_listens() -> None:
+    """反代的目标端口必须与 web 单元里 uvicorn 的监听地址一致 ——
+    这两个数字住在两个文件里，改一个忘一个就是 502。"""
+    unit = _unit_text(DEPLOY / "deepgrill-web.service")
+    host_port = re.search(r"--host (\S+) --port (\d+)", unit)
+    assert host_port, "web 单元里看不到 --host/--port"
+    assert f"proxy_pass http://{host_port.group(1)}:{host_port.group(2)}" in _nginx()
+
+
+def test_nginx_does_not_buffer_the_stream() -> None:
+    """面试页是 SSE：`proxy_buffering on` 会把流式变成一次性输出
+    （页面会长时间空白，然后整段一起出现）。"""
+    assert "proxy_buffering off" in _nginx()
+
+
+def test_nginx_keeps_the_health_check_out_of_the_rate_limiter() -> None:
+    """探活被限流 = 探针把健康站点判成挂了。"""
+    text = _nginx()
+    health = text.split("location = /healthz")[1]
+    assert "limit_req" not in health.split("}")[0]
+
+
+def test_nginx_only_speaks_modern_tls() -> None:
+    """源站也要 TLS（不靠 CF 的 Flexible SSL），且不留 TLS 1.0/1.1。"""
+    text = _nginx()
+    assert "ssl_protocols" in text
+    assert "TLSv1 " not in text and "TLSv1.1" not in text
+    assert "ssl_certificate " in text

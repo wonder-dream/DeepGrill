@@ -44,20 +44,41 @@ sudo -u deepgrill cp .env.example .env && sudo -u deepgrill chmod 600 .env
 sudo -u deepgrill .venv/bin/python -m migrations.run
 sudo -u deepgrill .venv/bin/python -m migrations.run --check   # 再确认一次
 
-# ⑤ 装单元
+# ⑤ 装单元与反代
 sudo cp deploy/*.service deploy/*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now deepgrill-web deepgrill-worker
 sudo systemctl enable --now deepgrill-backup.timer deepgrill-maintenance.timer
 
+sudo mkdir -p /etc/ssl/cloudflare
+sudo cp <你的 Origin Certificate>.pem /etc/ssl/cloudflare/deepgrill.pem
+sudo cp <你的 Origin Certificate>.key /etc/ssl/cloudflare/deepgrill.key
+sudo chmod 600 /etc/ssl/cloudflare/deepgrill.key
+sudo cp deploy/nginx.conf /etc/nginx/sites-available/deepgrill.conf
+sudo sed -i 's/deepgrill.example.com/<你的域名>/g' /etc/nginx/sites-available/deepgrill.conf
+sudo ln -sf /etc/nginx/sites-available/deepgrill.conf /etc/nginx/sites-enabled/deepgrill
+sudo nginx -t && sudo systemctl reload nginx
+
 # ⑥ 验证
-curl -fsS http://127.0.0.1:8000/healthz
+curl -fsS http://127.0.0.1:8000/healthz          # 应用自身
+curl -fsS https://<你的域名>/healthz             # 走完 CF + nginx 那一整条
 systemctl status deepgrill-web deepgrill-worker --no-pager
 systemctl list-timers 'deepgrill-*'
 ```
 
 `/healthz` 只回一个 200 + JSON，**不查库**（限流也豁免它）—— 它是给外部探活用的，
 不该因为一次写锁竞争就把整个站点判成挂了。
+
+### 反代那一层为什么在仓库里（决策 77）
+
+`app/llm/stt.py` 允许上传 **8MB** 的录音，而 nginx 默认 `client_max_body_size` 是
+**1m** —— 不改这一行，超过 1MB 的语音回答在生产上会被挡成 **413**，而开发机上跑的
+是 uvicorn，**这一层根本不存在，本地怎么测都测不出来**。`tests/test_deploy_units.py`
+把这个数字与应用的常量对上了（还有 SSE 不许被缓冲、探活不许被限流、源站只许 TLS1.2+）。
+
+TLS 的两段都要加密：访客 → Cloudflare 由 CF 负责；**Cloudflare → 源站这一段用
+Origin Certificate**。"Flexible SSL"（CF→源站明文）会让令牌在公网上裸奔一段，
+而这一段在链路上看起来像内网。
 
 ## 三、备份：做的那一半与**不做**的那一半
 

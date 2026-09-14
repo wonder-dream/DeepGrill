@@ -90,7 +90,7 @@
 | 首页 = 内容推荐中心（决策 3/23/63）：主按钮 / 今日推荐题（按掌握度现算）/ 私有题集 / 继续未完成 / 收藏 | `app/web/home_page.py` |
 | 观测页（决策 23）：离线队列 / 待定池 / 库体积 / 质量仪表板 / 离线报告 | `app/web/observability.py`、`app/web/observability_page.py` |
 | 收藏夹（决策 63）：收藏 / 取消 / 我的收藏页 / 题库列表 ★ 标记 / 首页与「我的」入口 | `app/bank/favorites.py`、`app/web/favorites_page.py`、`app/web/templates/my_favorites.html` |
-| 语音输入（决策 32/33）：**STT 接口 + 占位实现**、面试页录音与模式切换、轮次标「语音」 | `app/llm/stt.py`、`app/web/static/interview.js` |
+| 语音输入（决策 32/33/76）：**STT 接口 + 占位实现 + OpenAI 兼容的真实适配器**、面试页录音与模式切换、轮次标「语音」 | `app/llm/stt.py`、`app/web/static/interview.js` |
 | 面试页 SSE 流式（ADR-0004 的第三件事）：两段式回复（散文 + 分隔行 + json）、流式客户端、`prose`/`done`/`error` 帧 | `app/llm/__init__.py`、`app/web/interview_page.py`、`app/web/static/interview.js` |
 | 进程内限流（决策 66）：按 IP / 按用户三档、滑动窗口 + reserve/settle、TTL 与容量回收 | `app/ratelimit.py`、`app/main.py`、`app/deps.py` |
 | 讲解按需生成 + 缓存（决策 67）：题目 id + 版本为键、不预生成、TTL 与容量回收 | `app/knowledge/explanation.py`、`migrations/0003_explanation_cache.sql` |
@@ -103,7 +103,7 @@
 | 阈值标定报告（决策 70 / §未决 6）：§11 每个数字的样本分布 + `--live` 单位成本，**只读不改常量** | `app/offline/calibration.py` |
 | lint 与类型检查（决策 38）：`ruff` + `mypy`，进 dev extra 与 pre-commit 钩子 | `pyproject.toml`、`.githooks/pre-commit` |
 | 备份与**恢复验证**（ADR-0008）：`VACUUM INTO` 快照 + gzip + 清单 + 当场自验 | `app/backup.py`、`app/cli.py` |
-| **部署产物**（决策 73）：server / worker / 备份 / 增量维护四个 systemd 单元 + 两个定时器 + 部署步骤 | `deploy/`（`tests/test_deploy_units.py` 把单元与 CLI 的一致性钉住） |
+| **部署产物**（决策 73/77）：server / worker / 备份 / 增量维护四个 systemd 单元 + 两个定时器 + **nginx 反代配置** + 部署步骤 | `deploy/`（`tests/test_deploy_units.py` 把单元/反代与代码的四个不变量钉住） |
 | 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker` / `backup` / `generate` / `calibrate`） | `app/cli.py`、`app/offline/seed.py` |
 | v1 题目导入（只读连接 + 幂等 + 标签映射） | `tools/import_v1.py`、`tools/test_import_v1.py` |
 | 对照工具（文档 vs SQL 字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |
@@ -111,7 +111,7 @@
 
 | 还没有 | 归属 |
 |---|---|
-| 语音转写的**真实供应商**（接口与占位实现已就位；`DEEPGRILL_STT_PROVIDER=none` 时明确失败并让人改用打字） | 决策 32 / ADR-0009 |
+| 语音转写的**账号**（代码已就绪：`DEEPGRILL_STT_PROVIDER=api` + 三家 OpenAI 兼容的端点都能用；缺的只是一份 key 与模型名） | 决策 76 |
 | **嵌入的真实供应商**（接口 / 占位实现 / 缓存都就位；DeepSeek 不提供 embeddings，见 `.env.example`）—— 配好之前**全量装配跑不了** | ADR-0008 |
 | **全量装配本身还没跑**：库里 3007 道导入题仍在待定池（真跑：配嵌入 → `propose --batched` → 人审 → `mount`） | 决策 44/46 |
 | 知识层的**增量维护**只剩"机器上装没装"这一步 —— 定时器已在 `deploy/deepgrill-maintenance.{service,timer}`（`generate --enqueue` + `worker --once`），装上即生效 | 决策 46 / 73 |

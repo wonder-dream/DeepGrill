@@ -64,8 +64,13 @@ class Settings(BaseSettings):
     #: （降级可以，静默不行：绝不返回一段假转写去骗判分）。
     #: `"fake"` = 占位实现，返回一段**标着占位**的文字，只为让整条语音链路
     #: （录音 → 转写 → 判分 → 落库）在没有供应商时也能被走通。
-    #: 接真实供应商时在这里加一个值 —— 模型名同样按用途命名（决策 50）。
+    #: `"api"` = **OpenAI 兼容的 `/audio/transcriptions`**（下面三项要配齐）——
+    #: 硅基流动的 `FunAudioLLM/SenseVoiceSmall`、`TeleAI/TeleSpeechASR` 等都在此列
+    #: （决策 76：形状是 OpenAI 定的，写死某一家的请求体等于把"选哪家"固化进代码）。
     stt_provider: str = "none"
+    stt_model: str = ""
+    stt_base_url: str = ""
+    stt_api_key: str = ""
 
     #: 嵌入的供应商（ADR-0008：**嵌入走 API**，不跑本地模型）。
     #:
