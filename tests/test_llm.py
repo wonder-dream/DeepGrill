@@ -206,6 +206,33 @@ def test_plain_empty_content_is_also_an_error() -> None:
         c.chat_json([{"role": "user", "content": "hi"}])
 
 
+def test_plain_text_call_with_empty_content_is_also_an_error() -> None:
+    """**非 json 的纯文本调用也要拦空内容**（讲解生成就是这条路）。
+
+    实测：讲解 prompt 用 `max_tokens=2048` 时每次拿到空内容 —— 全被推理吃掉了，
+    而症状看起来像"模型不肯说话"。若这里不抛，空串会一路走到"写进缓存"，
+    变成一个所有人都读得到的坏数据。
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json=_body("", finish="length", reasoning="想了很多", reasoning_tokens=2000)
+        )
+
+    with _client(handler) as c, pytest.raises(LLMCallError) as e:
+        c.chat([{"role": "user", "content": "讲一讲"}])
+    assert "推理" in str(e.value) and "max_tokens" in str(e.value)
+
+
+def test_plain_text_call_with_a_normal_reply_is_fine() -> None:
+    """正常的一段文本当然不许被上面那条检查误伤。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_body("这是一段讲解。"))
+
+    with _client(handler) as c:
+        assert c.chat([{"role": "user", "content": "讲一讲"}]).text == "这是一段讲解。"
+
+
 def test_finish_reason_and_reasoning_are_exposed() -> None:
     """这两个字段必须能被调用方看到 —— 否则上面那些区分无从判断。"""
 
@@ -301,8 +328,16 @@ def test_prompt_name_cannot_escape_the_prompts_dir() -> None:
         prompts_mod.resolve("../../etc/passwd")
 
 
-def test_every_prompt_mentions_json() -> None:
-    """**回归测试**：所有 prompt 里必须出现 "json" 这个词。
+#: **纯文本输出**（不走 `response_format=json_object`）的 prompt —— 它们不需要
+#: 出现 "json" 这个词。列在这里是**显式声明**：新增一个文本 prompt 就要来加一行，
+#: 而不是让"所有 prompt 都必须提 json"这条规则被悄悄放宽。
+TEXT_PROMPTS = {
+    "knowledge/explain_question.md",  # 讲解：一整段人话，没有结构要解析（决策 67）
+}
+
+
+def test_every_json_prompt_mentions_json() -> None:
+    """**回归测试**：用 `response_format=json_object` 的 prompt 必须出现 "json" 这个词。
 
     服务端对 `response_format={"type":"json_object"}` 的硬要求是**prompt 正文里
     得有 json 这个词**，否则直接 400：
@@ -318,13 +353,32 @@ def test_every_prompt_mentions_json() -> None:
     prompts_dir = prompts_mod.PROMPTS_DIR
     checked = 0
     for path in sorted(prompts_dir.rglob("*.md")):
+        name = path.relative_to(prompts_dir).as_posix()
+        if name in TEXT_PROMPTS:
+            continue
         text = path.read_text(encoding="utf-8")
         assert "json" in text.lower(), (
-            f"{path.relative_to(prompts_dir.parent)} 里没有 'json' 这个词 —— "
-            f"用 response_format=json_object 调它会被服务端 400 拒绝"
+            f"{name} 里没有 'json' 这个词 —— 用 response_format=json_object 调它会被"
+            f"服务端 400 拒绝。若它是**纯文本** prompt，把它加进 TEXT_PROMPTS"
         )
         checked += 1
     assert checked >= 3, f"只找到 {checked} 个 prompt，目录结构可能变了"
+
+
+def test_text_prompts_are_actually_text() -> None:
+    """反过来也要守：被豁免的 prompt **不许**偷偷要求结构化输出。
+
+    没有这条，TEXT_PROMPTS 会变成"放进来的都免检"的口袋 —— 而一个既要 json 又
+    被豁免的 prompt 正是那个 400 的来源。
+    """
+    prompts_dir = prompts_mod.PROMPTS_DIR
+    for name in TEXT_PROMPTS:
+        path = prompts_dir / name
+        assert path.is_file(), f"TEXT_PROMPTS 里的 {name} 不存在"
+        assert "json" not in path.read_text(encoding="utf-8").lower(), (
+            f"{name} 被声明为纯文本 prompt，正文里却出现了 json —— "
+            f"要么它其实需要 json_object（那就从 TEXT_PROMPTS 里删掉），要么是措辞问题"
+        )
 
 
 def test_unfilled_placeholder_raises() -> None:

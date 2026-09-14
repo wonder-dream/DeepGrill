@@ -103,6 +103,23 @@ def purge_finished_jobs(session: Session, payload: dict[str, Any]) -> dict[str, 
     return {"message": f"回收 {purged} 条终态任务记录", "purged": purged}
 
 
+def purge_explanations(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    """清掉过期与超量的**讲解缓存**（决策 67 + AGENTS.md §3.2）。
+
+    为什么讲解缓存要挂在这里：它是**长期驻留的库表状态**（题目数 × 版本数），
+    而 §3.2 的要求是"任何新增状态都要有回收者" —— 没有它，这张表只会一直长。
+    `purge()` 是幂等的（删过就没有了），所以可以被队列重试。
+    """
+    from app.knowledge import explanation as explanation_module
+
+    report = explanation_module.purge(session)
+    return {
+        "message": f"讲解缓存：{report}",
+        "by_age": report.by_age,
+        "by_capacity": report.by_capacity,
+    }
+
+
 register(
     JobSpec(
         name="self_repair_stats",
@@ -117,5 +134,13 @@ register(
         run=purge_finished_jobs,
         idempotent=True,
         description="回收终态任务记录（TTL 见 jobs.FINISHED_TTL）",
+    )
+)
+register(
+    JobSpec(
+        name="purge_explanations",
+        run=purge_explanations,
+        idempotent=True,
+        description="回收讲解缓存（TTL 与容量上限见 knowledge.explanation）",
     )
 )

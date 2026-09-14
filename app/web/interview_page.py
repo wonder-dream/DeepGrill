@@ -57,6 +57,7 @@ from app.errors import AppError, QuotaExhausted
 from app.interview import service as interview
 from app.llm.stt import MAX_AUDIO_BYTES, STTError, STTUnavailable, Transcript
 from app.report import service as report_service
+from app.web import llm_usage
 from app.web.templating import render
 
 logger = logging.getLogger(__name__)
@@ -445,24 +446,15 @@ def _render_round_error(request: Request, data, message: str, *, kind: str = "in
 
 
 def _usage_snapshot(llm) -> dict[str, int]:
-    """请求开始时客户端的累计用量（用于取差值）。"""
-    return dict(getattr(llm, "usage_total", {}) or {})
+    """请求开始时客户端的累计用量（用于取差值）。
+
+    实现搬到了 `app/web/llm_usage.py` —— 题库那边（讲解生成）也要记账，而记账逻辑
+    抄一份到第二个页面就是漏记的开始。这里保留同名薄封装，是为了让这一页的调用点
+    读起来不变。
+    """
+    return llm_usage.snapshot(llm)
 
 
 def _record_usage(session: Session, user_id: int, llm, before: dict[str, int]) -> int:
-    """把这个请求里**全部** LLM 调用消耗的 token 记进额度账本（决策 14）。
-
-    为什么取差值而不是读"最近一次"：一次请求可能调用多次（判定 + 判分 + 总结），
-    而"最近一次"只会记到最后一次 —— 实测就是这么漏掉两次的。
-
-    没有 `usage_total` 的客户端（测试替身）返回 0，**不报错**：替身本来就没有真实
-    用量，而记账不该因为测试替身而炸。
-    """
-    after = getattr(llm, "usage_total", None)
-    if not isinstance(after, dict):
-        return 0
-    total = sum(after.get(k, 0) - before.get(k, 0) for k in ("prompt_tokens", "completion_tokens"))
-    if total < 0:  # 客户端被换过（不该发生）——不记负账
-        return 0
-    account.record_tokens(session, user_id, total)
-    return total
+    """把这个请求里全部 LLM 调用的 token 记进账本（决策 14）。"""
+    return llm_usage.record(session, user_id, llm, before)

@@ -44,6 +44,7 @@ __all__ = [
     "Criterion",
     "Domain",
     "Evaluation",
+    "Explanation",
     "Interview",
     "InviteCode",
     "Job",
@@ -362,6 +363,18 @@ question_point_stats = Table(
     Column("updated_at", String, nullable=False, server_default=_NOW),
 )
 
+explanation_cache = Table(
+    "explanation_cache",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("question_id", ForeignKey("questions.id"), nullable=False),
+    #: 复合键的另一半：提示词版本 + 题干哈希（见 `app/knowledge/explanation.py`）。
+    #: 它让"改了 prompt"与"改了题干"两种情况都自动失效，不必再比别的列。
+    Column("version", String, nullable=False),
+    Column("body", Text, nullable=False),
+    Column("created_at", String, nullable=False, server_default=_NOW),
+)
+
 
 class _Row:
     """让映射出来的类能 `Row(**kwargs)` 构造，也能 `repr` 出主键。
@@ -470,6 +483,12 @@ class UserFavorite(_Row):
     pass
 
 
+class Explanation(_Row):
+    """讲解缓存（`migrations/0003_explanation_cache.sql` / 决策 67）。"""
+
+    pass
+
+
 class QuestionFeedback(_Row):
     pass
 
@@ -515,6 +534,7 @@ CLASS_BY_TABLE: dict[Table, type[_Row]] = {
     task_logs: TaskLog,
     jobs: Job,
     question_point_stats: QuestionPointStat,
+    explanation_cache: Explanation,
 }
 
 for _table, _cls in CLASS_BY_TABLE.items():

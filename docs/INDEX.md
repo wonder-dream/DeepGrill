@@ -93,6 +93,8 @@
 | 语音输入（决策 32/33）：**STT 接口 + 占位实现**、面试页录音与模式切换、轮次标「语音」 | `app/llm/stt.py`、`app/web/static/interview.js` |
 | 面试页 SSE 流式（ADR-0004 的第三件事）：两段式回复（散文 + 分隔行 + json）、流式客户端、`prose`/`done`/`error` 帧 | `app/llm/__init__.py`、`app/web/interview_page.py`、`app/web/static/interview.js` |
 | 进程内限流（决策 66）：按 IP / 按用户三档、滑动窗口 + reserve/settle、TTL 与容量回收 | `app/ratelimit.py`、`app/main.py`、`app/deps.py` |
+| 讲解按需生成 + 缓存（决策 67）：题目 id + 版本为键、不预生成、TTL 与容量回收 | `app/knowledge/explanation.py`、`migrations/0003_explanation_cache.sql` |
+| 启动期检查：拒绝占位口令（决策 58）与**半迁移**的库 | `app/db/startup.py` |
 | 演示数据与运维命令（`seed` / `status` / `propose` / `mount` / `worker`） | `app/cli.py`、`app/offline/seed.py` |
 | v1 题目导入（只读连接 + 幂等 + 标签映射） | `tools/import_v1.py`、`tools/test_import_v1.py` |
 | 对照工具（文档 vs SQL 字段差集 —— **审阅辅助，不是校验器**） | `tools/_compare_schema.py` |

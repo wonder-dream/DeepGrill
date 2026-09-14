@@ -387,6 +387,19 @@ class LLMClient:
         )
         if json_mode:
             reply.data = self._parse_json_reply(reply)
+        elif not reply.text.strip():
+            # **纯文本调用也会有这个失败**：这个模型先推理，而推理吃 `max_tokens` ——
+            # 预算给少了就是"想完了没地方写"（content 空、reasoning_tokens 不为 0）。
+            # 实测踩过：讲解生成写 `max_tokens=2048`，每次都拿到空内容，而症状看起来
+            # 像"模型不肯说话"。所以这里与 json 那条路用同一句话说清原因。
+            if reply.reasoning_tokens:
+                raise LLMCallError(
+                    f"模型把 {reply.reasoning_tokens} 个 token 全用在推理上、没有产出内容"
+                    f"（finish_reason={reply.finish_reason or '未知'}）—— 需要调大 max_tokens"
+                )
+            raise LLMCallError(
+                f"模型返回了空内容（finish_reason={reply.finish_reason or '未知'}）"
+            )
         return reply
 
     def _parse_json_reply(self, reply: LLMReply) -> Any:

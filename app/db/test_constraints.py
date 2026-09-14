@@ -234,6 +234,76 @@ def test_startup_check_on_an_unmigrated_db_is_silent(tmp_dir: Path) -> None:
     assert_database_is_ready(db, require_secure=True)
 
 
+# --- 半迁移防护（加了 0003 之后实测撞到的那种失败） --------------------------
+def test_half_migrated_db_is_refused(tmp_dir: Path) -> None:
+    """**迁移了一半** → 拒绝启动，并指向那条命令。
+
+    为什么要有这条：加了 `explanation_cache`（0003）之后，没迁移的开发库上
+    **只有题库详情页 500**（那一页读讲解缓存），其余页面正常 —— 那种"某一页莫名
+    500"比"进程起不来"难查得多。而它本来可以是一句启动期的话。
+    """
+    import sqlite3
+
+    from app.db.startup import SchemaOutOfDate, assert_schema_covers_code, missing_tables
+
+    db = tmp_dir / "half.db"
+    migrate(db)
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute("DROP TABLE explanation_cache")
+
+    assert missing_tables(db) == ["explanation_cache"]
+    with pytest.raises(SchemaOutOfDate) as e:
+        assert_schema_covers_code(db)
+    assert "python -m migrations.run" in str(e.value), "诊断信息要指向那一条命令"
+
+
+def test_create_app_refuses_a_half_migrated_db(tmp_dir: Path) -> None:
+    import sqlite3
+
+    from app.config import Settings
+    from app.db.startup import SchemaOutOfDate
+    from app.main import create_app
+
+    db = tmp_dir / "half2.db"
+    migrate(db)
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute("DROP TABLE explanation_cache")
+
+    with pytest.raises(SchemaOutOfDate):
+        create_app(Settings(database_path=db))
+
+
+def test_a_fresh_db_with_no_tables_is_still_allowed(tmp_dir: Path) -> None:
+    """一张表都没有 = "还没初始化"，不是"半迁移"。
+
+    （首页要能显示"先跑 python -m migrations.run"，所以这条不能拦。）
+    """
+    from app.db.startup import assert_schema_covers_code, missing_tables
+
+    db = tmp_dir / "nothing.db"
+    assert missing_tables(db) == []
+    assert_schema_covers_code(db)  # 不抛
+
+    db.write_bytes(b"")  # 存在但是空的库文件
+    assert missing_tables(db) == []
+    assert_schema_covers_code(db)
+
+
+def test_missing_tables_uses_the_code_mapping(tmp_dir: Path) -> None:
+    """判据是**代码要用的表**（`models.metadata`），不是"库里有几张表"。
+
+    这样它不必去读 `schema_migrations`（那要 import `migrations/`，与 ADR-0010 的
+    目录纪律相反）—— 而且它问的正是真正要紧的那件事：代码能不能跑起来。
+    """
+    from app.db.models import metadata
+    from app.db.startup import missing_tables
+
+    db = tmp_dir / "full.db"
+    migrate(db)
+    assert missing_tables(db) == []
+    assert "explanation_cache" in metadata.tables
+
+
 # --- 夹具辅助 ---------------------------------------------------------------
 #: 迁移会种一个占位 owner（id=1），所以测试数据从 2 起 —— 不占用它，
 #: 也就不用去改 0001 里那条 INSERT。

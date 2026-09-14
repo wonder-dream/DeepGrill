@@ -30,6 +30,25 @@
 {% endif %}
 
 <section class="card">
+  <h2>讲解</h2>
+  {% if explain_notice %}
+  <p class="warn">{{ explain_notice }}（额度没扣，可以再试一次。）</p>
+  {% endif %}
+  {% if explanation %}
+  <p>{{ explanation.body }}</p>
+  <p class="muted">这是按需生成的讲解（同一道题只生成一次，之后读缓存）。</p>
+  {% elif can_start %}
+  <p class="muted">还没有为这道题生成过讲解。它会讲"为什么"而不是复述参考答案；
+     生成一次之后所有人打开这道题都直接读缓存，所以它**不消耗额度点**。</p>
+  <form method="post" action="/bank/{{ data.question.id }}/explain">
+    <button class="button" type="submit">生成讲解</button>
+  </form>
+  {% else %}
+  <p class="muted"><a href="/login">登录</a>后可以为这道题生成一段讲解。</p>
+  {% endif %}
+</section>
+
+<section class="card">
   <h2>收藏</h2>
   {% if request.query_params.get("favorite") == "ok" %}
   <p class="muted">已收藏 —— 在<a href="/me/favorites">我的收藏</a>里找得到它。</p>

@@ -13,16 +13,23 @@ AGENTS.md §3.4：路由层只做参数校验、鉴权、调 service、返回响
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.account import service as account
 from app.bank import favorites, pages, service
 from app.db.models import User
-from app.deps import get_current_user, get_session
+from app.deps import get_current_user, get_llm, get_session, rate_limit_interviewer
+from app.knowledge import explanation
+from app.llm import LLMError
+from app.web import llm_usage
 from app.web.templating import render
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -82,6 +89,53 @@ def bank_detail(
 ) -> object:
     # 不可见与不存在都由 service 抛 NotFound → main 的异常处理器渲染错误页
     data = service.detail(session, question_id, _viewer(user))
+    return _render_detail(request, session, data, user, notice=None)
+
+
+@router.post("/bank/{question_id}/explain")
+def explain_question(
+    request: Request,
+    question_id: int,
+    session: SessionDep,
+    user: CurrentUserDep,
+    llm=Depends(get_llm),
+    _rate_limit: None = Depends(rate_limit_interviewer),
+) -> object:
+    """按需生成讲解（决策 67）。
+
+    三件事：
+
+    ① **只对可见的题生成** —— 题目行来自 `service.detail()`（它过 `visible_to()`），
+       于是"别人的私有题"在这里自动 404，不必另写一套判断。
+    ② **不扣额度点**（它属于题库那一边，基线的额度列里没有它），
+       但这次调用的 token **要进账本**（决策 14）—— 否则"钱花在哪"答不出来。
+    ③ **失败要说出来**：模型挂了就把错误渲染回详情页（含一句"讲解没生成出来"），
+       而不是静默地什么都不显示（§3.1）。
+    """
+    me = user
+    if me is None:
+        return RedirectResponse("/login", status_code=302)
+
+    data = service.detail(session, question_id, _viewer(user))
+    before = llm_usage.snapshot(llm)
+    try:
+        result = explanation.explain(session, question=data.question, llm=llm)
+    except LLMError as e:
+        llm_usage.record(session, me.id, llm, before)
+        logger.warning("题目 %s 的讲解没生成出来：%s", question_id, e)
+        return _render_detail(
+            request, session, data, user,
+            notice=f"讲解没生成出来：{e}",
+            status_code=502,
+        )
+
+    llm_usage.record(session, me.id, llm, before)
+    return RedirectResponse(f"/bank/{question_id}?explain=ok", status_code=302)
+
+
+def _render_detail(request: Request, session: Session, data, user, *, notice, status_code: int = 200) -> object:
+    """详情页的渲染（GET 与"讲解生成失败"那条路共用，免得两处慢慢分叉）。"""
+    cached_explanation = explanation.cached(session, question=data.question)
     return render(
         request,
         "bank_detail.html",
@@ -89,10 +143,11 @@ def bank_detail(
             "data": data,
             "can_start": user is not None,
             "quota": account.quota_state(session, user.id) if user else None,
-            "is_favorited": (
-                favorites.is_favorited(session, user_id=user.id, question_id=question_id)
-                if user
-                else False
+            "is_favorited": False if user is None else favorites.is_favorited(
+                session, user_id=user.id, question_id=data.question.id
             ),
+            "explanation": cached_explanation,
+            "explain_notice": notice,
         },
+        status_code=status_code,
     )
