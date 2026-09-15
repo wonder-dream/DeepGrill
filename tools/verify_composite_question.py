@@ -80,28 +80,29 @@ def main(argv: list[str] | None = None) -> int:
         with create_session_factory(engine)() as session:
             question = session.get(Question, args.question) if args.question else None
             if question is None:
-                # 自动找一道"看起来综合"的：题干里至少踩到两个已确认知识点的名字。
-                # 为什么不固定用真题 1065：那道题是"知识图谱更新机制"，与演示库里
-                # 那六个知识点**真的不相关** —— 模型把它退回待定池是**正确行为**
-                # （决策 46：挂不上就等，绝不自动新建知识点）。实测跑过一次，
-                # 它就是这么退回来的。
-                from app.db.models import KnowledgePoint
+                # **判据换成正查库**：`question_points` 里挂了 ≥2 个点的题，就是"综合题"的
+                # 定义本身 —— 不依赖名字怎么起。
+                #
+                # ⚠️ 第一版是拿"知识点名字"去题干里做子串匹配，那在只有 6 个演示点
+                # （`volatile`、`限流算法`）时凑合，而现在 133 个点的名字都是
+                # `上下文工程基础` 这类抽象能力名，题干里根本不会原样出现两个 ——
+                # 于是它报"没有一道综合题"，而库里其实有 78 道（**假否定**）。
+                from sqlalchemy import func
 
-                names = [
-                    (p.id, p.name)
-                    for p in session.execute(
-                        select(KnowledgePoint).where(KnowledgePoint.status == "confirmed")
-                    ).scalars()
-                ]
-                rows, _ = bank_repository.list_questions(session, None, limit=args.limit)
-                scored = [
-                    (sum(1 for _, name in names if name in (q.stem or "")), q)
-                    for q in rows
-                ]
-                scored = [(n, q) for n, q in scored if n >= 2]
-                if not scored and args.synthetic:
-                    # 造一道**明确跨界**的题：它同时踩两个已确认知识点。
-                    # 这是为了验**机制**（一次作答 → 多个格子），不是因为语料里有它。
+                from app.db.models import QuestionPoint
+
+                counts = dict(
+                    session.execute(
+                        select(QuestionPoint.question_id, func.count())
+                        .group_by(QuestionPoint.question_id)
+                        .having(func.count() >= 2)
+                    ).all()
+                )
+                print(f"挂在 ≥2 个知识点上的题：{len(counts)} 道（这就是综合题）")
+                best = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+                if not best and args.synthetic:
+                    # 一道都没有时才造：验的是**机制**（一次作答 → 多个格子），
+                    # 不是因为语料里有它。
                     question = Question(
                         kind="design",
                         stem="设计一个高并发订单系统：既要保证缓存与数据库的一致性，"
@@ -113,15 +114,13 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     session.add(question)
                     session.flush()
-                    print(f"库里没有真综合题，造了一道演示题 #{question.id}（同时踩两个知识点）")
-                elif not scored:
-                    print(f"扫了 {len(rows)} 道公共题，没有一道同时踩到两个已确认知识点 ——"
-                          f" 当前这六个点还建不出综合题（要造一道就加 --synthetic）")
+                    print(f"库里没有真综合题，造了一道演示题 #{question.id}")
+                elif not best:
+                    print("库里没有一题挂在两个点上 —— 先跑装配与 mount（要造一道就加 --synthetic）")
                     return 2
                 else:
-                    scored.sort(key=lambda pair: -pair[0])
-                    question = scored[0][1]
-                    print(f"自动选中 #{question.id}（踩到 {scored[0][0]} 个知识点名字）")
+                    question = session.get(Question, best[0][0])
+                    print(f"选中 #{question.id}（挂在 {best[0][1]} 个点上）—— 按点数从多到少选")
             print(f"真题 #{question.id}：{question.stem[:60]}")
             print(f"  挂载前：primary_point_id={question.primary_point_id}")
 
@@ -138,10 +137,13 @@ def main(argv: list[str] | None = None) -> int:
             ts = interview.start_drill(session, user_id=user.id, question_id=question.id)
             for round_no in range(2):
                 result = interview.submit_answer(session, ts=ts, answer_text=ANSWER, llm=llm)
-                print(f"  第 {round_no + 1} 轮：命中 {sum(1 for v in result.new_hits.values() if v == '命中')}"
-                      f" / 未命中 {sum(1 for v in result.new_hits.values() if v == '未命中')}"
-                      f" / 未涉及 {sum(1 for v in result.new_hits.values() if v == '未涉及')}"
-                      f"（建议收尾={result.finished}）")
+                # ⚠️ 不猜字段名：`RoundResult` 的字段改过（`new_hits` 是**计数**不是映射），
+                # 猜错就是 AttributeError（实测踩过两次）。这里把它的字段原样打出来。
+                fields = {
+                    key: (value if isinstance(value, (int, bool)) else str(value)[:36])
+                    for key, value in vars(result).items()
+                }
+                print(f"  第 {round_no + 1} 轮：{fields}")
             session.commit()
 
             print("  掌握度矩阵（只看这道题牵动的格子）：")
@@ -152,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
             for point_id in sorted(touched):
                 cell = matrix.by_point()[point_id]
                 print(f"    #{point_id} {cell.point_name}：覆盖 {cell.covered}、命中 {cell.hit}"
-                      f"、未命中 {cell.miss}、比率 {cell.percent}")
+                      f"、未命中 {cell.missed}、比率 {cell.percent}")
             empty = [c.point_name for c in matrix.cells if not c.covered]
             print(f"    （没考过的格子仍是空格：{len(empty)} 个，例如 {empty[:3]}）")
             print(f"  判定：牵动 {len(touched)} 个知识点"
