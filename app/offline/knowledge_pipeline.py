@@ -249,12 +249,16 @@ def apply_review(
     candidates: list[Candidate],
     decisions: list[Decision],
     domain_name: str,
+    domain_of: dict[int, str] | None = None,
 ) -> ApplyResult:
     """把人的决定落库：通过 → 建知识点 + 考察点；否决 → 不建；合并 → 并到目标。
 
     **域是新建的**（MVP）：人审时给一个领域名，管道建域并把这批知识点挂进去。
-    真正的"领域有哪些"也该由人定（决策 26：前两层人审），但 MVP 里一次装配就是
-    一个域，够用且不假装有更多结构。
+    真正的"领域有哪些"也该由人定（决策 26：前两层人审）。
+
+    `domain_of`（决策 84）：**每一行可以指定自己的领域**（下标 → 领域名），缺省用
+    `domain_name`。加它的原因很实在：一次装配出来的候选常常跨好几块（Agent / RAG /
+    系统设计…），而「一份提案一个领域」逼着人先拆批再审 —— 有了它，混合的提案一次审完。
 
     `skipped` 记录**被机器规则挡下**的候选（判据① 的机器可判部分）—— 不静默丢弃。
     """
@@ -299,9 +303,13 @@ def apply_review(
     if not approved:
         return result
 
-    domain = _get_or_create_domain(session, domain_name)
+    # 按行解析领域：同名共用同一个域（`_get_or_create_domain` 本身是幂等的）
+    domains: dict[str, int] = {}
     for index, cand in approved:
-        point = _commit_point(session, domain_id=domain.id, cand=cand)
+        name = (domain_of or {}).get(index) or domain_name
+        if name not in domains:
+            domains[name] = _get_or_create_domain(session, name).id
+        point = _commit_point(session, domain_id=domains[name], cand=cand)
         by_index[index] = point.id
         result.created_points += 1
         # 建完就把这条候选**自己的题**挂上去。

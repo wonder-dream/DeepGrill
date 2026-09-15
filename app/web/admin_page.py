@@ -87,7 +87,13 @@ async def apply_review(request: Request, session: SessionDep, user: CurrentUserD
     domain_name = str(form.get("domain_name") or "").strip() or "未命名领域"
 
     decisions: list[kp.Decision] = []
+    domain_of: dict[int, str] = {}
     for index, cand in enumerate(proposal.candidates):
+        # 逐行领域（决策 84）：留空就用顶部那个。防空串而不是防 None ——
+        # 表单里没填的输入框会提交空字符串。
+        picked = str(form.get(f"domain-{index}") or "").strip()
+        if picked:
+            domain_of[index] = picked
         action = str(form.get(f"action-{index}") or "reject")
         if action == "approve":
             name = str(form.get(f"name-{index}") or cand.name).strip()
@@ -107,7 +113,12 @@ async def apply_review(request: Request, session: SessionDep, user: CurrentUserD
             decisions.append(kp.Decision(index, "reject"))
 
     result = kp.apply_review(
-        session, candidates=proposal.candidates, decisions=decisions, domain_name=domain_name
+        session,
+        candidates=proposal.candidates,
+        decisions=decisions,
+        domain_name=domain_name,
+        # 逐行领域（决策 84）：`{下标: 领域名}`，留空的行不在里面 → 用顶部那个
+        domain_of=domain_of,
     )
     session.commit()
 

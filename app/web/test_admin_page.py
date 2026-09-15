@@ -175,3 +175,56 @@ def test_apply_without_proposal_is_refused(owner_client: TestClient, tmp_dir: Pa
     monkeypatch.setattr(admin_page, "PROPOSAL_PATH", tmp_dir / "missing.json")
     r = owner_client.post("/admin/review/apply", data={"domain_name": "D"})
     assert r.status_code == 403
+
+
+def test_each_row_can_pick_its_own_domain(
+    owner_client: TestClient, db: Path, proposal_file: Path
+) -> None:
+    """决策 84：**逐行选领域** —— 一次提交建到两个域下。
+
+    在这之前"一份提案只能一个领域"，于是混合的候选必须先拆成几批（`split_proposal.py`），
+    每批填一个领域名。这条测试盯的正是那个限制被拿掉：第 0 行进「甲域」、第 1 行进「乙域」。
+    （提案内容由 `proposal_file` 夹具准备好，这里只给两行不同的领域名。）
+    """
+    # ⚠️ 自己写一份**两条候选**的提案：`proposal_file` 夹具那份只有一条，
+    # 于是第 1 行的决定会被忽略，测试看起来"逐行领域没生效"（实测踩过）。
+    import json
+
+    from app.db.models import Domain, KnowledgePoint
+
+    proposal_file.write_text(
+        json.dumps(
+            {
+                "domain": "兜底域",
+                "candidates": [
+                    {"name": "甲点", "definition": "甲", "exclusions": "",
+                     "criteria": ["甲判据一", "甲判据二"], "question_ids": [1]},
+                    {"name": "乙点", "definition": "乙", "exclusions": "",
+                     "criteria": ["乙判据一", "乙判据二"], "question_ids": [2]},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    owner_client.post(
+        "/admin/review/apply",
+        data={
+            "domain_name": "兜底域",
+            "action-0": "approve",
+            "name-0": "甲点",
+            "domain-0": "甲域",
+            "action-1": "approve",
+            "name-1": "乙点",
+            "domain-1": "乙域",
+        },
+    )
+    with create_session_factory(create_db_engine(db))() as s:
+        points = {
+            point.name: s.execute(
+                select(Domain.name).where(Domain.id == point.domain_id)
+            ).scalar_one()
+            for point in s.execute(select(KnowledgePoint)).scalars()
+        }
+    assert points == {"甲点": "甲域", "乙点": "乙域"}, f"逐行领域没生效：{points}"

@@ -35,7 +35,8 @@
   <section class="card">
     <h2>这批知识点属于哪个领域</h2>
     <p><label>领域名 <input type="text" name="domain_name" required placeholder="如：Java 并发"></label></p>
-    <p class="muted">知识地图是森林（决策 52）：领域之间没有父子关系，所以一次装配一个领域。</p>
+    <p class="muted">知识地图是森林（决策 52）：领域之间没有父子关系。
+    **每一行都能单独指定领域**（留空则用上面这个）—— 于是混合的提案不必先拆批再审。</p>
   </section>
 
   <section class="card">
@@ -79,6 +80,8 @@
                option，页面直接卡死、完全没法读。改成填编号（编号就是左列那个 1 起的号）。
                ⚠️ 还要有一个 `value="merge"` 的单选 —— 后端只在 action == "merge" 时才读
                `merge-{i}`。原来没有这个单选，所以**那 2.9 万个 option 根本点不出效果**。 #}
+            <label>放进领域 <input type="text" name="domain-{{ loop.index0 }}"
+              placeholder="留空=用顶部那个" style="width:9em"></label><br>
             <label><input type="radio" name="action-{{ loop.index0 }}" value="merge"> 合并到编号</label>
             <input type="number" min="1" max="{{ proposal.candidates | length }}"
               name="merge-{{ loop.index0 }}" placeholder="填左列编号" style="width:7em">
