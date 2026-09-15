@@ -564,7 +564,12 @@ def derive_edges(*args: object, **kwargs: object) -> list[object]:
 #: 一道题最多挂在几个知识点上（主 + 关联）。上限的理由见 `_related_ids`。
 MAX_RELATED_POINTS = 3
 
-PROPOSE_BATCH = 40
+#: 一批提几道题。**真模型实测标定的**（§未决 6 点名要标的那个数）：
+#: `deepseek-flash` 是推理模型，**思考也吃 `max_tokens`**（默认 8192）。实测 ——
+#: 5 道 → 完成 4246（其中推理 2926）22s；10 道 → 完成 5634（推理 4201）27s；
+#: **40 道 → 每一批都失败**（推理吃光 8192，或输出被截断成半个 JSON）。
+#: 标定工具：`python tools/calibrate_propose_batch.py 5 10 20`
+PROPOSE_BATCH = 10
 #: 粗筛聚类的相似度阈值。**同样是待标定的**：太高 → 同一个知识点被拆成好几条候选
 #: （人审时要合并很多次）；太低 → 不同的知识点被并到一起（人审时要拆开，更难）。
 CLUSTER_THRESHOLD = 0.86
