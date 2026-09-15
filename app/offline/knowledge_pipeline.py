@@ -40,6 +40,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.bank import repository as bank_repository
 from app.db.models import Criterion, Domain, KnowledgePoint, Question
 from app.llm import LLMError, prompts
 
@@ -911,7 +912,6 @@ def merge_points(
         Criterion,
         KnowledgePoint,
         KnowledgePointEdge,
-        Question,
         QuestionPoint,
         RolePoint,
     )
@@ -927,9 +927,8 @@ def merge_points(
         raise InvalidInput("源与目标是同一个知识点")
 
     report = MergeReport(source=source.name, target=target.name)
-    questions = list(
-        session.execute(select(Question).where(Question.primary_point_id == source_id)).scalars()
-    )
+    # 走 bank 的仓储（AGENTS §3.5）：这条守卫当场抓到过这里直连 select(Question)
+    questions = bank_repository.questions_of_point(session, source_id)
     related = list(
         session.execute(select(QuestionPoint).where(QuestionPoint.point_id == source_id)).scalars()
     )

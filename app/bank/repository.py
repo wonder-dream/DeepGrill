@@ -318,6 +318,20 @@ def difficulty_counts(session: Session) -> dict[int, int]:
     return {int(level): int(n) for level, n in rows}
 
 
+def questions_of_point(session: Session, point_id: int) -> list[Question]:
+    """挂在某个知识点上的题（**不带可见性过滤**）。
+
+    为什么不过滤：它给两类**管理动作**用 —— 事后合并知识点（`merge-points`）与离线治理。
+    合并必须把源点上的**所有**题搬走（包括私有题），漏一道就留下"挂在一个不再存在的点上的题"。
+    面向请求的浏览走 `list_questions`（那里有可见性过滤）。
+    """
+    return list(
+        session.execute(
+            select(Question).where(Question.primary_point_id == point_id)
+        ).scalars()
+    )
+
+
 def owned_ids(session: Session, user_id: int) -> list[int]:
     """这位用户**自己**的题 id 清单（**不带可见性条件**）。
 
