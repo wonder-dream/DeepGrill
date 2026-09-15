@@ -279,7 +279,11 @@ def test_full_assembly_flow_feeds_the_review_page(session: Session) -> None:
         }),
     )
     merged, judgement = kp.juddge_clusters(session, clusters=cluster_candidates, llm=llm)
-    assert judgement.merged + judgement.kept == len(cluster_candidates)
+    # **失败也算一条出路**：归并失败的那一簇保持原样（`juddge_clusters` 的 docstring：
+    # 保守方向 —— 多留几条候选让人审时合并，比把两条不同的点合成一条代价小）。
+    # 这条断言原来只数 merged + kept，于是在聚类开始真的聚出多成员簇（阈值从 0.86 降到
+    # 0.60 之后）而假 LLM 没排到归并回复时就红了 —— 红的是断言漏了一种合法结果。
+    assert judgement.merged + judgement.kept + judgement.failed == len(cluster_candidates)
 
     result = kp.ProposalResult(candidates=merged)
     payload = result.to_json()

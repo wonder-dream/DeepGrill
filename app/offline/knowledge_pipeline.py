@@ -164,7 +164,9 @@ def propose_points(questions: Sequence[Question], *, llm) -> ProposalResult:
                         questions=payload, count=len(questions)
                     ),
                 }
-            ]
+            ],
+            # 这一步的输出是十几条候选的完整 json；默认 8192 会被推理吃光
+            max_tokens=PROPOSE_MAX_TOKENS,
         )
     except LLMError as e:
         logger.warning("提候选失败：%s", e)
@@ -569,10 +571,25 @@ MAX_RELATED_POINTS = 3
 #: 5 道 → 完成 4246（其中推理 2926）22s；10 道 → 完成 5634（推理 4201）27s；
 #: **40 道 → 每一批都失败**（推理吃光 8192，或输出被截断成半个 JSON）。
 #: 标定工具：`python tools/calibrate_propose_batch.py 5 10 20`
-PROPOSE_BATCH = 10
+#: 一批提几道题 + 给这条路多少输出预算。**两个数一起才成立**：
+#: `deepseek-flash` 是推理模型，思考也吃 `max_tokens`；40 道题在 8192 下**每一批都失败**
+#: （推理吃光预算），在 16384 下成功（实测完成 13818、其中推理 9337、49s）。
+#: 批大一点不只是省钱（76 批而不是 302 批）—— 模型在一批里看到的题越多，越能把它们
+#: 归成同一个能力点（试跑：40 题出 11 个点，而 10 题出 8 个）。
+#: 标定工具：`python tools/calibrate_propose_batch.py`、`python tools/probe_max_tokens.py`
+PROPOSE_BATCH = 40
+
+#: 提候选这一步的输出预算。**只有这条路要显式抬**：它的输出是十几条候选的完整 json，
+#: 而默认 8192 会被推理吃光（实测 `finish_reason=length`）。
+PROPOSE_MAX_TOKENS = 16384
 #: 粗筛聚类的相似度阈值。**同样是待标定的**：太高 → 同一个知识点被拆成好几条候选
 #: （人审时要合并很多次）；太低 → 不同的知识点被并到一起（人审时要拆开，更难）。
-CLUSTER_THRESHOLD = 0.86
+#: 候选聚类的相似度阈值。**实测标定的**（试跑 120 道题 / 29 条候选）：
+#: 0.85 / 0.80 / 0.75 一簇都聚不起来（近义的能力名达不到那些余弦 —— 0.86 是 v1 拿来比
+#: **题干**的），0.70 → 24 簇、0.65 → 21 簇、**0.60 → 15 簇（最大簇 6）**。
+#: 聚类本来就该**粗**：判定"这两条是不是同一个点"是下一步 LLM 归并的活
+#: （见 `merge_cluster` 的 docstring），阈值太严等于让那一步没活可干。
+CLUSTER_THRESHOLD = 0.60
 
 
 def batch_questions(
