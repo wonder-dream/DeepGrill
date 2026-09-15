@@ -294,6 +294,35 @@ def test_a_genuinely_big_cluster_is_split_by_lower_level_clustering() -> None:
     assert {frozenset(g) for g in groups} == {frozenset(left), frozenset(right)}
 
 
+def test_splitting_recurses_until_every_piece_fits() -> None:
+    """**三级链条**：一条 240 条的长链要在两层里拆完，不是只拆一层。
+
+    四个 60 条的小团，相邻两团的余弦分别是 0.75 / 0.68 / 0.62（夹角精心摆过），
+    非相邻的都低于 0.60 —— 于是：
+
+    * 0.60：整条链连通 → 一个 240 的簇
+    * 0.65：`{g1,g2,g3}`（180，仍超限）与 `{g4}`
+    * 0.70：`{g1,g2}`（120，仍超限）与 `{g3}`
+    * 0.75：还拆不开 → 按顺序切块
+
+    这条测试存在的唯一原因是**上一层只会拆一层**这一点测不出来（去掉递归的变异在那
+    个输入上语义等价，抓不住）；有了三级链条，去掉递归就会留下 180 与 120 的超限簇。
+    """
+    import math
+
+    angles = [0.0, 41.41, 88.57, 140.25]   # cos 相邻 ≈ 0.75 / 0.68 / 0.62
+    ordered: dict[str, list[float]] = {}
+    for index, angle in enumerate(angles):
+        vector = [math.cos(math.radians(angle)), math.sin(math.radians(angle))]
+        for i in range(60):
+            ordered[f"g{index}_{i}"] = vector
+
+    groups = kp._split_oversized(ordered, [list(ordered)], max_size=60)
+    assert all(len(g) <= 60 for g in groups), sorted((len(g) for g in groups), reverse=True)
+    assert len(groups) == 4, f"240 条应当拆成 4 块：{[len(g) for g in groups]}"
+    assert sorted(r for g in groups for r in g) == sorted(ordered), "一条都不能丢"
+
+
 # ---------------------------------------------------------------------------
 # 关联知识点（决策 24 / 80）：一道综合题可以同时挂在多个点上
 # ---------------------------------------------------------------------------
