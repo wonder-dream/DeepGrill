@@ -146,7 +146,8 @@ def test_apply_reject_and_merge(
             "action-0": "approve",
             "name-0": "volatile",
             "action-1": "merge",
-            "merge-1": "0",
+            # 页面上的编号是**左列那个从 1 起的号**：合并到第 1 行要填 "1"（不是下标 "0"）
+            "merge-1": "1",
         },
     )
     assert r.status_code == 200

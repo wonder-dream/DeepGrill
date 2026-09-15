@@ -93,10 +93,14 @@ async def apply_review(request: Request, session: SessionDep, user: CurrentUserD
             name = str(form.get(f"name-{index}") or cand.name).strip()
             decisions.append(kp.Decision(index, "approve", name=name))
         elif action == "merge":
-            # 合并目标用下拉框，只有一个值（其它候选的下标）；空 = 不合并
+            # 页面上的编号是**左列那个从 1 起的号**（人看着填），所以这里要减 1 换成下标。
+            # 原来是个遍历全部候选的下拉框、值直接是下标；171 条候选时那是 2.9 万个 option，
+            # 而且没有 value="merge" 的单选，等于那段 UI 既卡又点不出效果。
             target = str(form.get(f"merge-{index}") or "")
-            if target.isdigit():
-                decisions.append(kp.Decision(index, "merge_into", merge_into=int(target)))
+            if target.isdigit() and 1 <= int(target) <= len(proposal.candidates):
+                decisions.append(
+                    kp.Decision(index, "merge_into", merge_into=int(target) - 1)
+                )
             else:
                 decisions.append(kp.Decision(index, "reject"))
         else:
