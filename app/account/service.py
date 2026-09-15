@@ -24,11 +24,18 @@ from app.db.models import InviteCode, QuotaLedger, User
 from app.errors import Forbidden, InvalidInput, NotFound, QuotaExhausted
 from app.security import hash_password, new_token, token_hash, verify_password
 
-#: 每日额度点上限。**这个数是标定出来的**（决策 71 / §未决 9）：`calibrate --live`
+#: **标定值**：8（决策 71 / §未决 9）。拿真 token 反推出来的 —— `calibrate --live`
 #: 实测一轮追问 ≈ 2.6k token、一场面试（3 题 × 3 轮 + 判分 ≈ 12 次调用）≈ 31.5k token，
-#: 而立项时的成本模型是"每人每天约 1 场面试 ≈ 0.06 元"。
-#: 20 点（= 3 场多）是那个模型的 **3 倍**；8 点 = 1 场面试 + 2 轮追问 ≈ 37k token/天/人。
-DAILY_UNITS = 8
+#: 而立项时的成本模型是"每人每天约 1 场面试 ≈ 0.06 元"；20 点（3 场多）是那个模型的 3 倍，
+#: 8 点 = 1 场面试 + 2 轮追问 ≈ 37k token/天/人。
+#:
+#: ⚠️ 这个常量**留着**是因为它是那次标定的结论；改运行值请改下面的 `DAILY_UNITS`，
+#: 不要顺手把它也抹掉（否则下次没人知道 8 是哪来的）。
+CALIBRATED_DAILY_UNITS = 8
+
+#: **运行值**。⚠️ 当前 32 是**临时测试值**（用户要求放宽以便测试），**不是**重新标定的
+#: 结果 —— 标定值仍是上面那个 8（决策 71 的推导在台账里）。测试完请改回来。
+DAILY_UNITS = 32
 
 #: 各形态的扣减（决策 2 的额度点列）。`browse` 恒为 0 —— 题库永远可用。
 #:

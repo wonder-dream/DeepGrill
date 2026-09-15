@@ -125,21 +125,19 @@ def test_quota_exhaustion_refuses_and_leaves_no_half_interview(session: Session)
     assert len(session.query(Interview).all()) == before, "额度不足不该留下面试行"
 
 
-def test_the_daily_ration_is_one_interview_plus_a_few_rounds(session: Session) -> None:
-    """每日上限的**标定结果**要被钉住（决策 71）：一天够 1 场面试 + 若干轮追问。
+def test_the_daily_ration_never_blocks_a_single_interview(session: Session) -> None:
+    """每日上限的那条**永远不该破**的约束：一天至少开得了一场完整面试。
 
-    这条不是在测"数字等于几"，而是在测标定出来的**配比**：上限必须装得下一场
-    完整面试（否则产品形态里的主按钮当天点不了第二次就是荒唐的），又必须小到
-    能当成本阀门用（一场 + 几轮，而不是无限场）。
+    为什么不再钉"1 场 + 1–4 轮"那个区间：那是**标定值 8** 的配比（决策 71 拿真 token
+    反推的），而运行值现在被临时调到 32 做测试（`CALIBRATED_DAILY_UNITS` 仍记着 8）。
+    钉死具体数字会让"临时放宽"和"重新标定"看起来一样 —— 所以这里只钉约束，
+    标定值本身由 `CALIBRATED_DAILY_UNITS` 与台账一起保管。
     """
     from app.account import service as account
 
-    interview = account.COST["interview"]
-    assert interview <= account.DAILY_UNITS, "至少得能开一场面试"
-    extra_rounds = account.DAILY_UNITS - interview
-    assert 1 <= extra_rounds <= 4, (
-        f"每日上限 {account.DAILY_UNITS} 点 = 1 场 + {extra_rounds} 轮追问，"
-        "超出这个区间就得重新标定（决策 71 的推导在 `calibrate --live` 里）"
+    assert account.COST["interview"] <= account.DAILY_UNITS, "至少得能开一场面试"
+    assert account.COST["interview"] <= account.CALIBRATED_DAILY_UNITS, (
+        "标定值本身也必须能开一场面试（否则标定那次就标错了）"
     )
 
 

@@ -31,7 +31,10 @@ def test_app_boots_and_home_renders(client: TestClient) -> None:
     r = client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    assert "AI 模拟面试平台" in r.text
+    # 断言锚在**主页自己的文案**上（`home.html` 的 h1）：原来断的是
+    # "AI 模拟面试平台"，那句在模板里早就不存在了 —— 一条断言里的字符串
+    # 如果没有事实源，它就会在某个分支下恰好通过、换个配置就红。
+    assert "面试官会" in r.text
 
 
 def test_create_app_uses_the_injected_settings(client: TestClient, settings: Settings) -> None:
@@ -78,7 +81,8 @@ def test_home_counts_rows_once_migrated(client: TestClient, settings: Settings) 
     r = client.get("/")
     assert r.status_code == 200
     assert "已连接" in r.text
-    assert "<dd>0 道</dd>" in r.text
+    # 题库那一行在模板里是 `<dt>题库</dt><dd>{{ question_count }}</dd>`（无"道"字）
+    assert "<dt>题库</dt><dd>0</dd>" in r.text
 
     # 插一道题，计数要跟着动 —— 否则"已连接"只是个写死的字符串
     conn = sqlite3.connect(str(settings.resolved_database_path()))
@@ -90,7 +94,7 @@ def test_home_counts_rows_once_migrated(client: TestClient, settings: Settings) 
     finally:
         conn.close()
 
-    assert "<dd>1 道</dd>" in client.get("/").text
+    assert "<dt>题库</dt><dd>1</dd>" in client.get("/").text
 
 
 def test_unknown_path_returns_404_json(client: TestClient) -> None:
