@@ -91,6 +91,19 @@ def cmd_propose(settings: Settings, domain: str, *, batched: bool = False) -> in
             with create_session_factory(engine)() as session:
                 proposal = kp.propose_batched(session, questions=questions, llm=client)
                 print(f"分批 {proposal.batches} 批，候选 {len(proposal.candidates)} 条")
+                # 落一份**归并前**的候选：调聚类阈值 / 拆分策略时不必再花 76 次
+                # LLM 调用重提（这一轮真吃过这个亏 —— 提案里只有归并后的结果）
+                _candidates_path = PROPOSAL_PATH.parent / "knowledge_candidates.json"
+                _candidates_path.write_text(
+                    json.dumps(
+                        kp.ProposalResult(candidates=proposal.candidates).to_json()
+                        | {"domain": domain},
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                print(f"归并前的候选另存一份 → {_candidates_path}")
                 for note in proposal.notes:
                     print(f"  [注意] {note}", file=sys.stderr)
                 clusters, embed_report = kp.cluster_candidates(

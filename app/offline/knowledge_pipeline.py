@@ -591,6 +591,11 @@ PROPOSE_MAX_TOKENS = 16384
 #: （见 `merge_cluster` 的 docstring），阈值太严等于让那一步没活可干。
 CLUSTER_THRESHOLD = 0.60
 
+#: 一个簇最多装几道题。**超过就在簇内以更高阈值再聚一次**（递归到装得下为止）——
+#: 单链接聚类会传递闭包：A~B、B~C 就把 A 和 C 拴在一起，实测链出过 655 道题的大团
+#: （占语料的 22%）。那种点在掌握度矩阵上只会变成一个"要么全中要么全不中"的格子。
+MAX_CLUSTER_SIZE = 60
+
 
 def batch_questions(
     questions: Sequence[Question], *, size: int = PROPOSE_BATCH
@@ -743,7 +748,9 @@ def merge_cluster(group: list[Candidate], *, llm) -> Candidate | None:
                         candidates="\n".join(blocks), count=len(group)
                     ),
                 }
-            ]
+            ],
+            # 与提候选同因：推理模型思考也吃 max_tokens（实测有一簇因此失败）
+            max_tokens=PROPOSE_MAX_TOKENS,
         )
     except LLMError as e:
         logger.warning("归并一簇失败：%s", e)
@@ -770,6 +777,41 @@ def merge_cluster(group: list[Candidate], *, llm) -> Candidate | None:
     )
 
 
+def _split_oversized(
+    ordered: dict[str, list[float]],
+    groups: list[list[str]],
+    *,
+    threshold: float | None = None,
+    max_size: int | None = None,
+    depth: int = 0,
+) -> list[list[str]]:
+    """把过大的簇**在簇内**再聚一次（阈值抬高一点），递归到装得下为止。
+
+    单链接聚类会传递闭包，所以"阈值调低 → 巨簇"是必然的：实测 0.60 聚出了 655 道题
+    的大团。这一步是给那种情况兜底，而不是把阈值调回高处（调回去又会回到"一题一个点"）。
+
+    ⚠️ 递归到装不下时**按顺序切块**收尾，绝不返回一个超限的簇 —— 上限是硬约束：
+    它决定的是"一个知识点最多影响多少道题的掌握度"。
+    """
+    base = CLUSTER_THRESHOLD if threshold is None else threshold
+    limit = MAX_CLUSTER_SIZE if max_size is None else max_size
+    out: list[list[str]] = []
+    for group in groups:
+        if len(group) <= limit:
+            out.append(group)
+            continue
+        inner = {ref: ordered[ref] for ref in group}
+        higher = min(base + 0.05 * (depth + 1), 0.95)
+        pieces = cluster_by_score(inner, threshold=higher)
+        # 抬阈值还是没拆开（说明这一团真的互相很像）→ 按顺序切成 limit 一块
+        if len(pieces) == 1 or depth >= 4:
+            out.extend(group[i : i + limit] for i in range(0, len(group), limit))
+            continue
+        out.extend(_split_oversized(inner, pieces, threshold=higher, max_size=limit,
+                                    depth=depth + 1))
+    return out
+
+
 def cluster_candidates(
     session: Session,
     *,
@@ -790,7 +832,7 @@ def cluster_candidates(
     )
     # 顺序稳定：按 ref 排序再聚类（`cluster_by_score` 的结果依赖键顺序）
     ordered = {ref: vectors[ref] for ref in sorted(vectors)}
-    groups = cluster_by_score(ordered)
+    groups = _split_oversized(ordered, cluster_by_score(ordered))
     return [[by_ref[ref] for ref in group] for group in groups], {
         "embedded": report.embedded,
         "reused": report.reused,

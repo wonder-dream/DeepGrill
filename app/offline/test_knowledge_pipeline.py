@@ -263,6 +263,38 @@ def test_prerequisite_edges_are_deliberately_not_implemented() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 巨簇拆分（决策 81）
+# ---------------------------------------------------------------------------
+def test_oversized_clusters_are_never_returned() -> None:
+    """**上限是硬约束**：一个知识点最多影响多少道题的掌握度。
+
+    单链接聚类会传递闭包（A~B、B~C 就把 A 和 C 拴在一起），实测链出过 655 道题的
+    大团。这一团互相之间的余弦都很高、拆不开，于是只能按顺序切块 ——
+    但**绝不能原样返回一个超限的簇**。
+    """
+    refs = [f"r{i}" for i in range(250)]
+    ordered = {ref: [1.0, 0.0] for ref in refs}   # 全部同向：任何阈值都拆不开
+    groups = kp._split_oversized(ordered, [refs], max_size=60)
+    assert len(groups) > 1, "250 条必须被切开"
+    assert all(len(g) <= 60 for g in groups), [len(g) for g in groups]
+    assert sorted(r for g in groups for r in g) == sorted(refs), "切开但一条都不能丢"
+
+
+def test_a_genuinely_big_cluster_is_split_by_lower_level_clustering() -> None:
+    """能靠**抬阈值再聚**拆开的，就该按语义拆，而不是按顺序切。
+
+    两团互相正交的向量（同一团内余弦 1.0、跨团 0.0）：在 0.60 下它们本来就会被分开，
+    这里直接喂一个"已经被链在一起"的 120 条大簇，看它能不能拆回两团。
+    """
+    left = {f"a{i}": [1.0, 0.0] for i in range(60)}
+    right = {f"b{i}": [0.0, 1.0] for i in range(60)}
+    ordered = {**left, **right}
+    groups = kp._split_oversized(ordered, [list(ordered)], max_size=60)
+    assert sorted(len(g) for g in groups) == [60, 60]
+    assert {frozenset(g) for g in groups} == {frozenset(left), frozenset(right)}
+
+
+# ---------------------------------------------------------------------------
 # 关联知识点（决策 24 / 80）：一道综合题可以同时挂在多个点上
 # ---------------------------------------------------------------------------
 def _points(session: Session, *ids: int) -> None:
