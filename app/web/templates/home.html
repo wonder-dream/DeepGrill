@@ -2,7 +2,7 @@
 {% block content %}
 <section class="card hero">
   <div class="kicker">Mock Interview · AI</div>
-  <h1>面试官会<span class="rot"><span>追问你</span><span>拆穿你</span></span><br>到答不上来为止</h1>
+  <h1 data-testid="home-hero">面试官会<span class="rot"><span>追问你</span><span>拆穿你</span></span><br>到答不上来为止</h1>
   <p class="hero-sub">看面经只能背到第一层答案。这里的 AI 面试官顺着你的回答连环深挖，
      按考察点命中驱动追问，直到暴露你真正的边界。</p>
   <p class="hero-cta">
@@ -10,7 +10,7 @@
     <a class="button" href="/bank">先逛题库</a>
   </p>
   <dl class="stats">
-    <dt>题库</dt><dd>{{ question_count }}</dd>
+    <dt data-testid="home-question-count">题库</dt><dd>{{ question_count }}</dd>
     <dt>知识点</dt><dd>{{ point_count }}</dd>
   </dl>
 </section>
@@ -38,7 +38,7 @@
 {% if quota %}
 <section class="card">
   <h2>今日额度</h2>
-  <p>还剩 <strong>{{ quota.remaining }} / {{ quota.daily }}</strong> 点。
+  <p data-testid="quota-line">还剩 <strong>{{ quota.remaining }} / {{ quota.daily }}</strong> 点。
      <span class="muted">模拟面试 6 点 · 单题追问 1 点 · 题库浏览不耗额度。</span></p>
   {% if quota.library_only %}
   <p class="warn">额度用完了 —— 现在是<strong>纯题库模式</strong>：题目、考察点、参考答案、
