@@ -596,6 +596,11 @@ CLUSTER_THRESHOLD = 0.60
 #: （占语料的 22%）。那种点在掌握度矩阵上只会变成一个"要么全中要么全不中"的格子。
 MAX_CLUSTER_SIZE = 60
 
+#: 一个知识点**最多覆盖多少道题**。它才是那个该管住的量：一条候选平均覆盖 4 道题，
+#: 所以"一个簇里 60 条候选"（合规）合并出来能覆盖 213 道题 —— 实测踩过这个错位。
+#: 超限的簇在这里被**贪心装桶**拆开（大的先放，桶内题数并集不超过上限）。
+MAX_POINT_QUESTIONS = 60
+
 
 def batch_questions(
     questions: Sequence[Question], *, size: int = PROPOSE_BATCH
@@ -812,6 +817,48 @@ def _split_oversized(
     return out
 
 
+def _split_by_questions(
+    groups: list[list[str]],
+    *,
+    by_ref: dict,
+    limit: int | None = None,
+) -> list[list[str]]:
+    """把**覆盖题数**超限的簇拆开 —— 上限管的是"一个点覆盖多少道题"。
+
+    与 `_split_oversized` 的分工：那个管"一个簇里有几条候选"（聚类的形状），
+    这个管"合并出来的点会盖住多少道题"（掌握度矩阵的形状）。两者都要，因为一条候选
+    可以覆盖多道题，也可以只覆盖一道 —— 只卡候选数会让大点漏过去。
+
+    拆法是**贪心装桶**：按候选覆盖的题数从大到小放，桶内并集不超过上限就继续放。
+    不抬阈值再聚的原因：簇内的候选本来就已经在 0.60 上互相像了，再抬高只会拆出
+    更碎的块，而这里要的只是"别让一个点盖太多题"。
+
+    ⚠️ 单条候选自己就超过上限时它单独成桶（会超限）—— 那种题只能等人审时手工处理，
+    代码不该为了迁就它把上限悄悄放宽。
+    """
+    cap = MAX_POINT_QUESTIONS if limit is None else limit
+    out: list[list[str]] = []
+    for group in groups:
+        covered = {qid for ref in group for qid in by_ref[ref].question_ids}
+        if len(covered) <= cap:
+            out.append(group)
+            continue
+        buckets: list[list[str]] = []
+        taken: list[set[int]] = []
+        for ref in sorted(group, key=lambda r: -len(by_ref[r].question_ids)):
+            qids = set(by_ref[ref].question_ids)
+            for index, already in enumerate(taken):
+                if len(already | qids) <= cap:
+                    buckets[index].append(ref)
+                    taken[index] |= qids
+                    break
+            else:
+                buckets.append([ref])
+                taken.append(qids)
+        out.extend(buckets)
+    return out
+
+
 def cluster_candidates(
     session: Session,
     *,
@@ -833,6 +880,7 @@ def cluster_candidates(
     # 顺序稳定：按 ref 排序再聚类（`cluster_by_score` 的结果依赖键顺序）
     ordered = {ref: vectors[ref] for ref in sorted(vectors)}
     groups = _split_oversized(ordered, cluster_by_score(ordered))
+    groups = _split_by_questions(groups, by_ref=by_ref)
     return [[by_ref[ref] for ref in group] for group in groups], {
         "embedded": report.embedded,
         "reused": report.reused,
