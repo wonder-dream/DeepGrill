@@ -15,7 +15,7 @@
 |---|---|
 | `PASS` / `FAIL` | 自动判据的两种结果。`FAIL` 会让整个脚本以 1 退出 |
 | `BLOCKED` | **前置条件还没满足**（例如知识层装配还没跑，所以"待定池为 0"必然不成立）。它不是失败 —— 是"这条现在验不了"，且原因打印出来 |
-| `MANUAL` | 判据本身要求人做（真题 1065 走一遍、每季度恢复演练）。写成自动检查会让检查**变形** |
+| `MANUAL` | 判据本身要求人做（综合题那条要真调模型、备份恢复要真演练）。写成自动检查会让检查**变形** |
 
 ⚠️ `BLOCKED` 与 `MANUAL` **不影响退出码**：把"还没到那一步"算成失败，结果是所有人
 学会忽略这个脚本。
@@ -188,9 +188,13 @@ CHECKS: list[Check] = [
     Check("全部题已按知识点归位", "查库：待定池应为 0", "fn", _pending_pool),
     Check(
         "一道综合题同时更新多个知识点的掌握度",
-        "app/knowledge/test_mastery.py + 人工用真题 1065 走一遍",
+        "python tools/verify_composite_question.py（真作答一次，看矩阵是否牵动 ≥2 个格子）",
         "fn",
-        lambda: (MANUAL, "自动部分见 app/knowledge/test_mastery.py；真题 1065 需人工走一遍"),
+        lambda: (
+            MANUAL,
+            "跑 python tools/verify_composite_question.py —— 它要真调模型（约 30 秒），"
+            "不该进这个执行器；2026-09-15 实测：题 #920 牵动 4 个格子",
+        ),
     ),
     Check(
         "「没考过」与「考了但没答」在矩阵上可区分",

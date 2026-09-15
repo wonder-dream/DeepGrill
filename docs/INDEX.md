@@ -112,12 +112,10 @@
 
 | 还没有 | 归属 |
 |---|---|
-| 语音转写的**账号**（代码已就绪：`DEEPGRILL_STT_PROVIDER=api` + 三家 OpenAI 兼容的端点都能用；缺的只是一份 key 与模型名） | 决策 76 |
-| 嵌入与转写的**账号**（决策 76/79：代码与模型名都已配好 —— 硅基流动的 `BAAI/bge-m3` 与 `XingChenAGI/XingChenASR-V3.2-Ultra`，缺的只是一份 key）—— `python tools/check_providers.py --live` 一次验完 | 决策 79 |
-| **全量装配本身还没跑**：库里 3007 道导入题仍在待定池（真跑：配嵌入 → `propose --batched` → 人审 → `mount`） | 决策 44/46 |
+| 真实供应商的**配额与计费**（代码与端点都通了；免费额度用尽后换付费档） | 决策 79 |
+| 主观项：领域划分与个别知识点的合并（`merge-points` 已就绪，等你判定） | 决策 83/84 |
 | 知识层的**增量维护**只剩"机器上装没装"这一步 —— 定时器已在 `deploy/deepgrill-maintenance.{service,timer}`（`generate --enqueue` + `worker --once`），装上即生效 | 决策 46 / 73 |
 | **备份的异地那一跳**：仓库做「快照 + 清单 + 当场自验 + 保留策略」与**定时**（`deploy/deepgrill-backup.timer`），上传对象存储仍留在部署侧一行 `ExecStartPost`（ADR-0008 明说频率与保留策略待定） | ADR-0008 / 决策 73 |
-| 验收标准里剩两条不是绿的就跑不完：**待定池为 0**（等装配）与**综合题人工验证**（真题 1065）—— 其余 10 条由 `scripts/check_acceptance.py` 自动跑 | 决策 74 |
 
 > **已经还掉的三笔债**（原先在这张表里）：枚举列的 `CHECK` 约束（决策 57）已进
 > `migrations/0001_initial.sql`；**启动拒绝占位口令**（决策 58）已进
