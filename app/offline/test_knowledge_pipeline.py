@@ -412,3 +412,55 @@ def test_a_related_point_brings_its_criteria_into_scoring(session: Session) -> N
 
     texts = [c.text for c in bank_repository.criteria_of_question(session, question)]
     assert texts == ["更新顺序", "令牌桶与漏桶"], "关联点的判据没进判分"
+
+
+def test_merge_points_moves_everything_and_deletes_the_source(session: Session) -> None:
+    """决策 83：事后合并两个知识点 —— 题、关联、考察点都要跟着走，源点删掉。
+
+    只搬题会留下"关联指向一个不存在的点"；只搬题与关联会留下孤儿考察点
+    （历史 `attempts.hits` 存的是 criterion id，删了它历史就断链）。
+    """
+    from app.db.models import Criterion, KnowledgePoint, QuestionPoint
+
+    session.add(Domain(id=1, name="D"))
+    session.add(KnowledgePoint(id=71, domain_id=1, name="源点", status="confirmed"))
+    session.add(KnowledgePoint(id=72, domain_id=1, name="目标点", status="confirmed"))
+    session.flush()
+    session.add(Criterion(point_id=71, seq=1, text="源的判据一", shared=0))
+    session.add(Criterion(point_id=71, seq=2, text="源的判据二", shared=0))
+    question = session.get(Question, 1)
+    assert question is not None
+    question.primary_point_id = 71
+    session.add(QuestionPoint(question_id=2, point_id=71))
+    session.add(QuestionPoint(question_id=1, point_id=72))   # 目标已有题 1 的关联
+    session.commit()
+
+    dry = kp.merge_points(session, source_id=71, target_id=72, dry_run=True)
+    assert (dry.questions, dry.related, dry.criteria) == (1, 1, 2)
+    assert dry.deleted is False and session.get(KnowledgePoint, 71) is not None, "演练不许改数"
+
+    report = kp.merge_points(session, source_id=71, target_id=72)
+    session.commit()
+    assert report.deleted is True
+    assert session.get(KnowledgePoint, 71) is None, "源点要删掉"
+    assert session.get(Question, 1).primary_point_id == 72
+    related = sorted(
+        (r.question_id, r.point_id) for r in session.execute(select(QuestionPoint)).scalars()
+    )
+    assert related == [(1, 72), (2, 72)], f"关联要并过去且不撞主键：{related}"
+    assert all(
+        c.point_id == 72 for c in session.execute(select(Criterion)).scalars()
+    ), "考察点要跟着走"
+
+
+def test_merge_points_refuses_nonsense(session: Session) -> None:
+    from app.db.models import KnowledgePoint
+    from app.errors import InvalidInput
+
+    session.add(Domain(id=1, name="D"))
+    session.add(KnowledgePoint(id=71, domain_id=1, name="点", status="confirmed"))
+    session.commit()
+    with pytest.raises(InvalidInput):
+        kp.merge_points(session, source_id=71, target_id=71)
+    with pytest.raises(InvalidInput):
+        kp.merge_points(session, source_id=999, target_id=71)

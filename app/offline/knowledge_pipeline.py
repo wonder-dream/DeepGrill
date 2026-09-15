@@ -859,6 +859,116 @@ def _split_by_questions(
     return out
 
 
+@dataclass
+class MergeReport:
+    """两个知识点合并的结果 —— 给 CLI 打印与人看。"""
+
+    source: str = ""
+    target: str = ""
+    questions: int = 0
+    related: int = 0
+    criteria: int = 0
+    deleted: bool = False
+    notes: list[str] = field(default_factory=list)
+
+    def summary(self) -> str:
+        head = f"「{self.source}」→「{self.target}」"
+        counts = f"题 {self.questions}、关联 {self.related}、考察点 {self.criteria}"
+        return f"{head}（演练，什么都没改）：{counts}" if not self.deleted else \
+               f"{head}：搬{counts}，源点已删除"
+
+
+def merge_points(
+    session: Session, *, source_id: int, target_id: int, dry_run: bool = False
+) -> MergeReport:
+    """把**源知识点**并进**目标知识点**（决策 83：事后发现重复时的补救）。
+
+    人审只能在**同一份提案内**合并候选；一旦提交，库里就没有合并入口了 —— 而 171 个点
+    分批审下来，跨批次的重复几乎必然出现。这个函数补上那一步。
+
+    三件事一起做，缺一件都会留下孤儿数据：
+
+    · **搬题**：`questions.primary_point_id` 源 → 目标
+    · **搬关联**：`question_points.point_id` 源 → 目标（目标已有该题的行就删掉源那行 ——
+      主键是 `(question_id, point_id)`，不先去重会撞主键）
+    · **搬考察点**：`criteria.point_id` 源 → 目标，**保留 criterion id**：
+      `attempts.hits` 存的就是它，改 id 等于让历史答题记录指空；保留则历史掌握度跟着
+      挪到目标点下（这正是"合并"该有的效果）
+    · 最后删源点，连同指向它的 `role_points` 与依赖边
+
+    ⚠️ **搬考察点会改变历史归属**（掌握度矩阵跟着变）—— 这是合并的本意，但必须让人先
+    看见，所以先跑 `--dry-run`。
+    """
+    from app.db.models import (
+        Criterion,
+        KnowledgePoint,
+        KnowledgePointEdge,
+        Question,
+        QuestionPoint,
+        RolePoint,
+    )
+    from app.errors import InvalidInput
+
+    source = session.get(KnowledgePoint, source_id)
+    target = session.get(KnowledgePoint, target_id)
+    if source is None:
+        raise InvalidInput(f"知识点 {source_id} 不存在")
+    if target is None:
+        raise InvalidInput(f"知识点 {target_id} 不存在")
+    if source_id == target_id:
+        raise InvalidInput("源与目标是同一个知识点")
+
+    report = MergeReport(source=source.name, target=target.name)
+    questions = list(
+        session.execute(select(Question).where(Question.primary_point_id == source_id)).scalars()
+    )
+    related = list(
+        session.execute(select(QuestionPoint).where(QuestionPoint.point_id == source_id)).scalars()
+    )
+    criteria = list(
+        session.execute(select(Criterion).where(Criterion.point_id == source_id)).scalars()
+    )
+    report.questions, report.related, report.criteria = len(questions), len(related), len(criteria)
+    if source.status != target.status:
+        report.notes.append(f"状态不同（源 {source.status}、目标 {target.status}）")
+    if dry_run:
+        return report
+
+    existing = {
+        row.question_id
+        for row in session.execute(
+            select(QuestionPoint).where(QuestionPoint.point_id == target_id)
+        ).scalars()
+    }
+    for question in questions:
+        question.primary_point_id = target_id
+    for row in related:
+        if row.question_id in existing:
+            session.delete(row)
+        else:
+            row.point_id = target_id
+    for criterion in criteria:
+        criterion.point_id = target_id
+    session.flush()
+
+    for role_row in session.execute(
+        select(RolePoint).where(RolePoint.point_id == source_id)
+    ).scalars():
+        session.delete(role_row)
+    for edge_row in session.execute(
+        select(KnowledgePointEdge).where(
+            (KnowledgePointEdge.from_point_id == source_id)
+            | (KnowledgePointEdge.to_point_id == source_id)
+        )
+    ).scalars():
+        session.delete(edge_row)
+    session.flush()
+    session.delete(source)
+    session.flush()
+    report.deleted = True
+    return report
+
+
 def cluster_candidates(
     session: Session,
     *,

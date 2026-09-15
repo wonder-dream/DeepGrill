@@ -50,7 +50,9 @@ def cmd_seed(settings: Settings) -> int:
     return 0
 
 
-def cmd_propose(settings: Settings, domain: str, *, batched: bool = False) -> int:
+def cmd_propose(
+    settings: Settings, domain: str, *, batched: bool = False, only_pending: bool = False
+) -> int:
     """跑知识层管道的第一步：提候选知识点 → 落成提案文件（供人审）。
 
     `--batched` 是**全量装配**那条路（决策 44）：分批提候选 → 嵌入粗筛聚类 →
@@ -71,7 +73,13 @@ def cmd_propose(settings: Settings, domain: str, *, batched: bool = False) -> in
         # 走 bank 的仓储，不自己 select(Question)（AGENTS.md §3.5；
         # 这条规则已经抓到过三次违规，包括这个文件的第一版）
         questions = bank_repository.public_questions(session)
-        print(f"待提候选的公共题：{len(questions)} 道")
+        if only_pending:
+            # 补漏用：只对还没挂上主知识点的题提候选。全量重跑一次要 76 批、几十分钟，
+            # 而补漏通常只剩几十道 —— 没有这个开关就只能全量重来。
+            questions = [q for q in questions if q.primary_point_id is None]
+            print(f"只对待定池提候选：{len(questions)} 道")
+        else:
+            print(f"待提候选的公共题：{len(questions)} 道")
         if not questions:
             print("题库里还没有公共题 —— 先跑 python -m app.cli seed", file=sys.stderr)
             return 2
@@ -135,6 +143,31 @@ def cmd_propose(settings: Settings, domain: str, *, batched: bool = False) -> in
         print(f"（提候选失败：{result.note}）", file=sys.stderr)
         return 1
     print("下一步：起服务后打开 /admin/review 逐条审")
+    return 0
+
+
+def cmd_merge_points(
+    settings: Settings, source: int, target: int, *, dry_run: bool = False
+) -> int:
+    """把源知识点并进目标知识点（决策 83）—— 事后发现重复时的补救。
+
+    **先跑 `--dry-run`**：打印两边各有多少题 / 关联 / 考察点，确认了再去掉这个开关。
+    搬考察点会改变历史归属（掌握度矩阵跟着变），这一步必须让人看见。
+    """
+    from app.offline.knowledge_pipeline import merge_points
+
+    engine = create_db_engine(settings.resolved_database_path())
+    with create_session_factory(engine)() as session:
+        _ensure_migrated(session)
+        report = merge_points(session, source_id=source, target_id=target, dry_run=dry_run)
+        print(report.summary())
+        for note in report.notes:
+            print(f"  [注意] {note}", file=sys.stderr)
+        if dry_run:
+            print("这是演练：什么都没改。确认后去掉 --dry-run 再跑一次。")
+            return 0
+        session.commit()
+    print("合并完成（不可撤销 —— 要回退请用 data/backups 的快照）")
     return 0
 
 
@@ -363,7 +396,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="全量装配那条路：分批提 + 嵌入聚类 + 逐簇判断（需要嵌入供应商）",
     )
+    propose.add_argument(
+        "--only-pending",
+        action="store_true",
+        help="只对还没挂载的公共题提候选（补漏用，不必全量重跑）",
+    )
     sub.add_parser("mount", help="把题挂到已确认的知识点上（挂不上进待定池）")
+    merge = sub.add_parser("merge-points", help="把源知识点并进目标知识点（决策 83）")
+    merge.add_argument("source", type=int, help="源知识点 id（它会被删掉）")
+    merge.add_argument("target", type=int, help="目标知识点 id（保留）")
+    merge.add_argument("--dry-run", action="store_true", help="只看影响，不改任何东西")
     worker = sub.add_parser("worker", help="跑离线 worker（jobs 表；Ctrl-C 退出）")
     worker.add_argument("--once", action="store_true", help="跑空队列就退出（排查用）")
     backup = sub.add_parser("backup", help="做一份备份并当场验证可恢复（ADR-0008）")
@@ -394,9 +436,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         return cmd_status(settings)
     if args.command == "propose":
-        return cmd_propose(settings, args.domain, batched=args.batched)
+        return cmd_propose(
+            settings, args.domain, batched=args.batched, only_pending=args.only_pending
+        )
     if args.command == "mount":
         return cmd_mount(settings)
+    if args.command == "merge-points":
+        return cmd_merge_points(settings, args.source, args.target, dry_run=args.dry_run)
     if args.command == "worker":
         return cmd_worker(settings, args.once)
     if args.command == "backup":
