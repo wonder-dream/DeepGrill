@@ -313,6 +313,62 @@ def test_evaluate_failure_is_persisted_not_silent(session: Session) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 转写容错（决策 85）
+# ---------------------------------------------------------------------------
+def test_voice_round_tells_the_model_the_words_came_from_speech(session: Session) -> None:
+    """语音轮的转写错字**不算他答错** —— 而这句话必须真的进 prompt。
+
+    ADR-0009 把「下游模型本就能读通」当作不设确认环节的理由，而那条假设只在
+    **错得读不通**时成立：「拉格」= RAG 这种同音错字的句子是通的，不说，模型就照
+    错字判成概念错误 —— 而那个判定会进掌握度矩阵（记的是识别的错）。
+    """
+    ts = service.start_drill(session, user_id=ME, question_id=1)
+    llm = FakeLLM().queue(_round_reply([(1, "命中"), (2, "未涉及"), (3, "未涉及")]))
+    service.submit_answer(
+        session,
+        ts=ts,
+        answer_text="靠内存屏障做的",
+        llm=llm,
+        input_mode="voice",
+        stt_text="靠内存平障做的",
+    )
+
+    round_prompt = llm.last_prompt()
+    assert "语音转写" in round_prompt, "判分那一段必须知道这是转写来的"
+    assert "同音" in round_prompt, "说清错在哪一类字上，模型才敢还原"
+    assert "不补他没说的内容" in round_prompt, (
+        "宁松勿严的边界必须跟提示一起给出 —— 少了它，每个考察点都能被「猜」成命中"
+    )
+
+    # 四维分那条 prompt 要带同一段说明：它评的 accuracy 正是被错字污染的那一维
+    #
+    # ⚠️ 先断言 `status == "ok"`：`render()` 在**缺占位符时会抛 LLMError**，而
+    # `evaluate_session` 把它降级成 status='failed' —— 那样模型根本没被调用，
+    # `last_prompt()` 拿到的还是上一轮的 prompt，单看"提示里有没有这句话"会**假绿**。
+    llm.on("eval", _eval_reply())
+    result = service.evaluate_session(session, ts=ts, llm=llm)
+    assert result.status == "ok", "判分失败说明这段提示没渲染成（asr_note 少传就会这样）"
+    eval_prompt = llm.last_prompt()
+    assert "四维分" in eval_prompt, "确认这是判分那条 prompt，不是上一轮的"
+    assert "语音转写" in eval_prompt, "评 accuracy 时也得知道这是转写"
+
+
+def test_typed_round_tells_the_model_there_is_no_transcription(session: Session) -> None:
+    """打字作答**不放宽**（决策 85 的边界②）—— 那里的错字是他自己敲的。
+
+    这条同时钉住"按模态分岔"这件事本身：两段说明共用一个渲染槽，谁都不能被
+    写成两种模态都发。
+    """
+    ts = service.start_drill(session, user_id=ME, question_id=1)
+    llm = FakeLLM().queue(_round_reply([(1, "命中"), (2, "未涉及"), (3, "未涉及")]))
+    service.submit_answer(session, ts=ts, answer_text="靠内存屏障", llm=llm)
+
+    prompt = llm.last_prompt()
+    assert "打字" in prompt, "打字轮要明确说没有转写这一环"
+    assert "同音" not in prompt, "打字轮不该拿到那句容错说明"
+
+
+# ---------------------------------------------------------------------------
 # 降级不静默（AGENTS.md §3.1）
 # ---------------------------------------------------------------------------
 def test_llm_failure_records_the_round_as_not_covered(session: Session) -> None:

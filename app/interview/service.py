@@ -181,6 +181,8 @@ def run_round(
     原文**、`answer_text` 是**实际送进判分的文本**。两列分开存的理由写在
     `migrations/0001_initial.sql` 的 `attempts` 注释里（清晰度要有原始素材），而
     "不设确认环节"意味着它们**通常相同**。录音本身不经过这里（决策 33）。
+    它同时决定判分 prompt 里那句**转写容错**（决策 85）：语音轮里被写错的术语
+    不算他答错，语音这条链上的识别错误不该记进掌握度矩阵。
 
     ⚠️ **先取上一轮快照，再写本轮**（§3.6 的具体 bug，重写极易再犯）。
     """
@@ -198,6 +200,7 @@ def run_round(
         criteria=_criteria_block(criteria),
         history=history or "（这是第一轮）",
         answer=answer_text or "（候选人没有作答）",
+        asr_note=_asr_note(input_mode),
     )
 
     decision_failed = False
@@ -351,6 +354,7 @@ def evaluate_session(session: Session, *, ts: InterviewSession, llm) -> Evaluati
                         criteria=_snapshot_block(criteria, snapshot),
                         history=transcript(session, ts.id, include_answers=True),
                         clarity_hint=_clarity_hint(mode),
+                        asr_note=_asr_note(mode),
                     ),
                 }
             ]
@@ -384,6 +388,36 @@ def _clarity_hint(mode: str) -> str:
     if mode == "voice":
         return "本题是**语音作答**：clarity = 表达流畅、少口头禅（测的是说话）。"
     return "本题是**打字作答**：clarity = 结构清晰、有条理（测的是组织与排版）。"
+
+
+def _asr_note(mode: str) -> str:
+    """**转写容错**（决策 85）：语音轮的术语错字不算他答错。
+
+    为什么必须显式写进 prompt：ADR-0009 把「下游模型本就能读通」当成"不设确认
+    环节"的理由，而那条假设只在**错得读不通**时成立。「拉格」（RAG）、「哈西表」
+    （哈希表）这类同音错字的句子是**通的** —— 不说，模型就照错字判成概念错误，
+    而那个判定会进掌握度矩阵（记下来的是识别的错，不是候选人的水平）。
+
+    ⚠️ 边界也写在提示里：**放宽的只有「字写错了」**。整段话里没有对应某条考察点
+    的意思时仍记未命中 —— 少了这句，「宁松勿严」会退化成"每条考察点都能被猜成
+    命中"，矩阵立刻失真。
+
+    打字作答**不给**这道口子：那里的错字是他自己敲的，且提交前有机会改。
+    """
+    if mode == "voice":
+        return (
+            "候选人的话是**语音转写**出来的，而这是一场技术面试 —— 术语密集，"
+            "同音/近音字被写错是常态（「红黑书」= 红黑树、「拉格」= RAG、"
+            "「哈西表」= 哈希表、「萎曲」= 微服务）。判定时按**语音上说得通**"
+            "去还原他的意思：\n"
+            "① 只要某条考察点的术语**听起来可能是他说的那个词**、上下文也对得上，"
+            "就算他提到了 —— 不要因为字写错就记未命中，也不要要求他写出正确写法；\n"
+            "② 追问时用**正确的术语写法**，不要复读转写里的错词；\n"
+            "③ ⚠️ 但**不补他没说的内容**：整段话里压根没有对应某条考察点的意思时，"
+            "怎么还原都补不出来 —— 那条仍记 `未命中` / `未涉及`。"
+            "放宽的只有「字写错了」，不是「他没答」。"
+        )
+    return "候选人的话是**打字**输入的，没有转写这一环 —— 术语写错就是他用错了，照常判。"
 
 
 def _snapshot_block(criteria, snapshot: HitSnapshot) -> str:
