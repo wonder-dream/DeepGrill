@@ -1,8 +1,38 @@
 {% extends "base.html" %}
 {% block content %}
+<section class="card hero">
+  <div class="kicker">Mock Interview · AI</div>
+  <h1>面试官会<span class="rot"><span>追问你</span><span>拆穿你</span></span><br>到答不上来为止</h1>
+  <p class="hero-sub">看面经只能背到第一层答案。这里的 AI 面试官顺着你的回答连环深挖，
+     按考察点命中驱动追问，直到暴露你真正的边界。</p>
+  <p class="hero-cta">
+    <a class="button" href="#start">开始一场面试 →</a>
+    <a class="button" href="/bank">先逛题库</a>
+  </p>
+  <dl class="stats">
+    <dt>题库</dt><dd>{{ question_count }}</dd>
+    <dt>知识点</dt><dd>{{ point_count }}</dd>
+  </dl>
+</section>
+
 <section class="card">
-  <h1>AI 模拟面试平台</h1>
-  <p>首页是内容推荐中心：开始一场模拟面试，或者按你最近漏掉的考察点挑两道题接着练。</p>
+  <div class="bento">
+    <div class="cell">
+      <span class="no">[ 01 ]</span>
+      <h3>模拟面试</h3>
+      <p class="desc">抽多题 → 逐题提问 → 每题追问 → 总报告。一场 6 额度点。</p>
+    </div>
+    <div class="cell">
+      <span class="no">[ 02 ]</span>
+      <h3>单题追问</h3>
+      <p class="desc">挑一道题挖到深处，追问由考察点命中驱动。1 额度点。</p>
+    </div>
+    <div class="cell">
+      <span class="no">[ 03 ]</span>
+      <h3>题库练习</h3>
+      <p class="desc">只看题与评分标准，不调 LLM、不耗额度，匿名也能刷。</p>
+    </div>
+  </div>
 </section>
 
 {% if quota %}
@@ -18,7 +48,7 @@
 </section>
 {% endif %}
 
-<section class="card">
+<section class="card" id="start">
   <h2>开始</h2>
   {% if user and quota and not quota.library_only %}
   <form method="post" action="/interview/start">
@@ -106,10 +136,6 @@
 
 <section class="card">
   <h2>当前状态</h2>
-  <dl>
-    <dt>库</dt><dd>{{ database_status }}</dd>
-    <dt>题库</dt><dd>{{ question_count }} 道</dd>
-    <dt>知识点</dt><dd>{{ point_count }} 个</dd>
-  </dl>
+  <p class="muted">库：{{ database_status }}</p>
 </section>
 {% endblock %}

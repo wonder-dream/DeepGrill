@@ -20,7 +20,7 @@
       <tr>
         <td>{{ c.point_name }}</td>
         <td>{% if c.covered %}{{ c.hit }} / {{ c.covered }}{% else %}—{% endif %}</td>
-        <td>{% if c.rate is none %}<span class="muted">没考过</span>{% else %}{{ c.percent }}{% endif %}</td>
+        <td>{% if c.rate is none %}<span class="muted">没考过</span>{% else %}<span class="bar"><i style="width: {{ (c.rate * 100) | round(0) | int }}%"></i></span>{{ c.percent }}{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>

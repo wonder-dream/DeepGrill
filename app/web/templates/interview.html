@@ -1,11 +1,16 @@
 {% extends "base.html" %}
 {% block title %}第 {{ data.seq }} 题 · DeepGrill{% endblock %}
 {% block content %}
+<section class="card exambar">
+  <span class="b">[<i>{{ data.point_name or "未挂知识点" }}</i>]</span>
+  <div class="prog-wrap">
+    <span class="mono">第 {{ data.seq }} 题 / 共 {{ data.total_questions }} 题</span>
+    <div class="prog"><i style="width: {{ ((data.seq / data.total_questions) * 100) | round(0) | int if data.total_questions else 0 }}%"></i></div>
+  </div>
+  <span class="mono">{{ data.rounds | length }} / {{ data.session.max_rounds }} 轮</span>
+</section>
+
 <section class="card">
-  <p class="muted">
-    第 {{ data.seq }} / {{ data.total_questions }} 题 · 知识点 {{ data.point_name or "—" }}
-    · 已问 {{ data.rounds | length }} 轮
-  </p>
   <h1>{{ data.question.stem }}</h1>
 </section>
 
@@ -28,13 +33,20 @@
 {% if data.rounds %}
 <section class="card">
   <h2>对话</h2>
-  {% for r in data.rounds %}
-  <p>
-    <strong>你{% if r.input_mode == "voice" %}<span class="tag">语音</span>{% endif %}：</strong>
-    {{ r.answer_text or "（未作答）" }}
-  </p>
-  {% if r.feedback_text %}<p class="muted"><strong>面试官：</strong>{{ r.feedback_text }}</p>{% endif %}
-  {% endfor %}
+  <div class="chat">
+    {% for r in data.rounds %}
+    <div class="msg me">
+      <div class="who">你{% if r.input_mode == "voice" %}<span class="tag">语音</span>{% endif %}</div>
+      <div class="body">{{ r.answer_text or "（未作答）" }}</div>
+    </div>
+    {% if r.feedback_text %}
+    <div class="msg ai">
+      <div class="who">面试官</div>
+      <div class="body">{{ r.feedback_text }}</div>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
 </section>
 {% endif %}
 

@@ -5,7 +5,7 @@
   <h1>面试报告</h1>
   <dl>
     <dt>形态</dt><dd>{{ "模拟面试" if report.mode == "interview" else "单题追问" }}</dd>
-    <dt>总分</dt><dd>{{ report.total_score if report.total_score is not none else "—" }}</dd>
+    <dt>总分</dt><dd class="score-wrap"><span class="score-big">{{ report.total_score if report.total_score is not none else "—" }}</span><span class="muted">分</span></dd>
   </dl>
   {% if report.summary %}
   <p>{{ report.summary }}</p>
