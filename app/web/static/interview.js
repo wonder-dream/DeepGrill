@@ -170,6 +170,7 @@
         say(error.message + " —— 请用打字作答。");
         recordBtn.disabled = false;
         recordBtn.textContent = "开始录音";
+        recordBtn.classList.remove("recording");
         if (liveCard) { liveCard.hidden = true; }
         return;
       }
@@ -223,6 +224,7 @@
       recorder.start();
       recording = true;
       recordBtn.textContent = "结束并提交";
+      recordBtn.classList.add("recording");
       say("正在录音…… 说完点「结束并提交」。");
     }).catch(function (err) {
       // 权限被拒是最常见的：明确说"改用打字"，而不是留下一个死按钮
@@ -235,6 +237,7 @@
   function submit(parts) {
     recording = false;
     recordBtn.textContent = "开始录音";
+    recordBtn.classList.remove("recording");
     if (!parts || parts.length === 0) {
       say("什么都没录到 —— 再试一次，或者用打字作答。");
       return;
