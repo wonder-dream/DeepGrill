@@ -340,7 +340,11 @@ class LLMClient:
         messages: Sequence[dict[str, str]],
         *,
         json_mode: bool = False,
-        max_tokens: int = 8192,
+        # ⚠️ **默认 16384，不是 8192**：`deepseek-flash` 是推理模型，**思考也吃 max_tokens**，
+        # 实测在三条离线路上撞过同一面墙（提候选 40 道题、逐簇归并、挂载 20 道题 + 131 个点
+        # 的目录），症状统一是 reasoning_tokens 吃满、content 为空。8192 是在"输出不会太长"
+        # 的假设下定的，而这个假设对推理模型不成立（API 实测接受 16384 与 32768）。
+        max_tokens: int = 16384,
         temperature: float = 0.2,
         model: str | None = None,
     ) -> LLMReply:

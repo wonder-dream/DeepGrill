@@ -187,6 +187,11 @@ def test_api_provider_falls_back_to_the_llm_credentials() -> None:
             llm_base_url="https://llm.example/v1",
             stt_provider="api",
             stt_model="FunAudioLLM/SenseVoiceSmall",
+            # ⚠️ 这两个**必须显式清空**：不然会从开发者的 `.env` 读到真实的 key/域名，
+            # 于是"回落用 LLM 凭证"这条就被测成了"用了 .env 里的凭证" —— 与 `stt_model`
+            # 那处是同一个坑（那处当时修了，这处漏了，实测在用户填好 key 之后红了）
+            stt_api_key="",
+            stt_base_url="",
         )
     )
     assert isinstance(from_llm, APISTT)
