@@ -1,6 +1,15 @@
 {% extends "base.html" %}
 {% block title %}知识层人审 · DeepGrill{% endblock %}
 {% block content %}
+{# 这一页要比别处宽：默认容器是 46rem（≈736px），五列加长文本在那里会挤成一团 ——
+   左边大片留白、右边「决定」列放不下。它是内部工具页，用页面内 <style> 放宽容器与列宽，
+   不动全局样式（其它页面的行宽是有意收窄的，读起来更舒服）。 #}
+<style>
+  main { max-width: 84rem; }
+  .review-table { table-layout: fixed; }
+  .review-table th, .review-table td { vertical-align: top; overflow-wrap: anywhere; }
+  .review-table input[type="text"] { width: 100%; box-sizing: border-box; }
+</style>
 <section class="card">
   <h1>知识层人审</h1>
   <p class="muted">对应决策 47 的「一次性最小审核页」：候选逐条通过 / 否决 / 合并，批量提交。
@@ -31,7 +40,12 @@
 
   <section class="card">
     <h2>候选知识点</h2>
-    <table>
+    <table class="review-table">
+      {# 固定列宽：不让「考察点」那段长文本把「决定」列挤没（原来就是被挤得放不下） #}
+      <colgroup>
+        <col style="width:3rem"><col style="width:22rem"><col>
+        <col style="width:8rem"><col style="width:12rem">
+      </colgroup>
       <thead><tr><th>#</th><th>候选</th><th>考察点</th><th>覆盖的题</th><th>决定</th></tr></thead>
       <tbody>
         {% for c in proposal.candidates %}
