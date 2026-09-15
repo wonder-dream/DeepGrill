@@ -432,7 +432,11 @@ def test_merge_points_moves_everything_and_deletes_the_source(session: Session) 
     assert question is not None
     question.primary_point_id = 71
     session.add(QuestionPoint(question_id=2, point_id=71))
-    session.add(QuestionPoint(question_id=1, point_id=72))   # 目标已有题 1 的关联
+    session.add(QuestionPoint(question_id=1, point_id=72))
+    # ⚠️ **同一个题号在两边都有** —— 这才是"搬关联会撞 `(question_id, point_id)` 主键"
+    # 那条分支的真正触发条件。第一版只有"不同题号"，于是"去掉去重分支"的变异**抓不住**
+    # （实测：3 条变异里漏掉的就是它）。
+    session.add(QuestionPoint(question_id=2, point_id=72))
     session.commit()
 
     dry = kp.merge_points(session, source_id=71, target_id=72, dry_run=True)
