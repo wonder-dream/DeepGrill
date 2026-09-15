@@ -3,25 +3,35 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
   <title>{% block title %}DeepGrill{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/">DeepGrill</a>
+    <a class="logo" href="/"><span class="dot"></span>deepgrill<span class="caret">_</span></a>
     <nav>
-      <a href="/bank">题库</a>
-      <a href="/me">我的</a>
-      {% if user %}
-      <span class="muted">{{ user.username }}</span>
-      <form class="inline" method="post" action="/logout"><button class="link" type="submit">退出</button></form>
-      {% else %}
-      <a href="/login">登录</a>
+      <a class="pill {{ 'active' if request.url.path.startswith('/bank') }}" href="/bank">题库</a>
+      <a class="pill {{ 'active' if request.url.path.startswith('/me') }}" href="/me">我的</a>
+      {% if user and user.role == "owner" %}
+      <a class="pill {{ 'active' if request.url.path.startswith('/admin') }}" href="/admin">后台</a>
       {% endif %}
     </nav>
+    <span class="meta">
+      {% if user %}
+      [ <span class="muted">{{ user.username }}</span> ]
+      <form class="inline" method="post" action="/logout"><button class="link" type="submit">退出</button></form>
+      {% else %}
+      <a class="pill {{ 'active' if request.url.path.startswith('/login') }}" href="/login">登录</a>
+      {% endif %}
+    </span>
   </header>
   <main>
     {% block content %}{% endblock %}
   </main>
+  <footer class="statusbar">
+    <span>deepgrill v2 · 模拟面试 · <span class="ok">online</span></span>
+    <span>{% if user %}<span class="ok">●</span> {{ user.username }}{% else %}guest{% endif %}</span>
+  </footer>
 </body>
 </html>
