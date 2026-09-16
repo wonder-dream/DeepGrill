@@ -16,29 +16,29 @@
     <nav>
       {# 一级入口（决策 96）。高亮按"路径 + 查询串"判：/bank?mine=1（私有题集）与
          /bank 是两个入口，只用 startswith('/bank') 会让两个同时亮 #}
-      <a class="pill {{ 'active' if request.url.path == '/bank' and request.query_params.get('mine') != '1' }}" href="/bank"><span class="g">题</span><span class="lbl">题库</span></a>
+      <a class="pill {{ 'active' if request.url.path == '/bank' and request.query_params.get('mine') != '1' }}" href="/bank"><span class="g">?</span><span class="lbl">题库</span></a>
       {% if user %}
-      <a class="pill {{ 'active' if request.url.path.startswith('/me/favorites') }}" href="/me/favorites"><span class="g">藏</span><span class="lbl">收藏</span></a>
-      <a class="pill {{ 'active' if request.url.path == '/bank' and request.query_params.get('mine') == '1' }}" href="/bank?mine=1"><span class="g">私</span><span class="lbl">私有题</span></a>
-      <a class="pill {{ 'active' if request.url.path.startswith('/me') and not request.url.path.startswith('/me/favorites') }}" href="/me"><span class="g">我</span><span class="lbl">我的</span></a>
+      <a class="pill {{ 'active' if request.url.path.startswith('/me/favorites') }}" href="/me/favorites"><span class="g">★</span><span class="lbl">收藏</span></a>
+      <a class="pill {{ 'active' if request.url.path == '/bank' and request.query_params.get('mine') == '1' }}" href="/bank?mine=1"><span class="g">◆</span><span class="lbl">私有题</span></a>
+      <a class="pill {{ 'active' if request.url.path.startswith('/me') and not request.url.path.startswith('/me/favorites') }}" href="/me"><span class="g">❯</span><span class="lbl">我的</span></a>
       {# 只在**真有**答到一半的会话时出现：一个点了没反应的入口比不显示更糟 #}
       {% if rail and rail.resume_session_id %}
-      <a class="pill {{ 'active' if request.url.path.startswith('/interview') }}" href="/interview/{{ rail.resume_session_id }}" title="继续 {{ rail.resume_title }}"><span class="g">续</span><span class="lbl">继续面试</span></a>
+      <a class="pill {{ 'active' if request.url.path.startswith('/interview') }}" href="/interview/{{ rail.resume_session_id }}" title="继续 {{ rail.resume_title }}"><span class="g">&#x25B6;&#xFE0E;</span><span class="lbl">继续面试</span></a>
       {% endif %}
       {% endif %}
       {% if user and user.role == "owner" %}
-      <a class="pill {{ 'active' if request.url.path.startswith('/admin') }}" href="/admin"><span class="g">后</span><span class="lbl">后台</span></a>
+      <a class="pill {{ 'active' if request.url.path.startswith('/admin') }}" href="/admin"><span class="g">&#x2699;&#xFE0E;</span><span class="lbl">后台</span></a>
       {% endif %}
     </nav>
     <div class="rail-meta">
       {% if user %}
       <p class="rail-user">{{ user.username }}</p>
       <form class="inline" method="post" action="/logout">
-        <button class="pill inv" type="submit"><span class="g">退</span><span class="lbl">退出</span></button>
+        <button class="pill inv" type="submit"><span class="g">←</span><span class="lbl">退出</span></button>
       </form>
       {% else %}
       {# 一个入口就够：登录页本来就有通往注册的链接（决策 96） #}
-      <a class="pill {{ 'active' if request.url.path.startswith('/login') or request.url.path.startswith('/register') }}" href="/login"><span class="g">登</span><span class="lbl">登录/注册</span></a>
+      <a class="pill {{ 'active' if request.url.path.startswith('/login') or request.url.path.startswith('/register') }}" href="/login"><span class="g">→</span><span class="lbl">登录/注册</span></a>
       {% endif %}
     </div>
     <label class="rail-btn" for="nav-toggle" title="收起 / 展开边栏"></label>
