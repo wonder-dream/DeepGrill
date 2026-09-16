@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.db.models import InviteCode, QuotaLedger, User, UserToken
@@ -174,18 +175,92 @@ def quota_row(session: Session, user_id: int, day: str, kind: str = "day") -> Qu
     ).scalar_one_or_none()
 
 
+def _refresh_quota_row(session: Session, user_id: int, day: str) -> None:
+    """把当天那一行重新读一遍 —— **顺带刷新身份映射里的那个对象**。
+
+    ⚠️ 下面两条语句的累加是在 **SQL 里**算的，而 ORM 的身份映射不会因此刷新已经
+    加载过的对象：同一个会话里"先读过额度 → 扣点 → 再读"会拿到旧值（实测读到
+    `units_used=6` 而库里是 12），而 `units_used_today()` 正是这么读的 ——
+    于是页面说"还剩 26 点"、库里其实只剩 20（AGENTS.md §3.1 那类静默不一致）。
+    `populate_existing=True` 是这道刷新唯一需要的开关。
+    """
+    session.get(QuotaLedger, (user_id, "day", day), populate_existing=True)
+
+
 def add_usage(
     session: Session, user_id: int, *, day: str, units: int = 0, tokens: int = 0
-) -> QuotaLedger:
-    """累加当天的用量。**每日一行**，不做全量流水（决策 13 + Open-2）。"""
-    row = quota_row(session, user_id, day)
-    if row is None:
-        row = QuotaLedger(user_id=user_id, kind="day", day=day, units_used=0, tokens_used=0)
-        session.add(row)
-    row.units_used += units
-    row.tokens_used += tokens
-    row.updated_at = now_iso()
-    return row
+) -> None:
+    """累加当天的用量。**每日一行**，不做全量流水（决策 13 + Open-2）。
+
+    ⚠️ 用 `ON CONFLICT … DO UPDATE SET x = x + :n`（**一条语句**）而不是
+    "先查再改"：后者在同一用户并发两次时会把其中一次的累加**丢掉**
+    （两个事务都在对方写库之前读到同一个旧值），而这一列是 token 账本
+    ——「钱花在哪」不能少记（AGENTS.md §3.8）。主键 `(user_id, kind, day)`
+    就是 ON CONFLICT 的目标，不需要额外索引。
+    """
+    stmt = (
+        sqlite_insert(QuotaLedger)
+        .values(
+            user_id=user_id,
+            kind="day",
+            day=day,
+            units_used=units,
+            tokens_used=tokens,
+            updated_at=now_iso(),
+        )
+        .on_conflict_do_update(
+            index_elements=["user_id", "kind", "day"],
+            set_={
+                "units_used": QuotaLedger.units_used + units,
+                "tokens_used": QuotaLedger.tokens_used + tokens,
+                "updated_at": now_iso(),
+            },
+        )
+    )
+    session.execute(stmt)
+    session.flush()
+    _refresh_quota_row(session, user_id, day)
+
+
+def try_spend_units(
+    session: Session, user_id: int, *, day: str, units: int, daily_limit: int
+) -> bool:
+    """**原子地**扣额度点：够就扣并返回 True，不够就一点不动并返回 False。
+
+    为什么必须是**一条语句**：原来的实现是「先 `quota_state()` 读余额 → 再
+    `add_usage()` 累加」——两步之间没有锁。实测：6 路并发 `POST /interview/start`
+    造出 6 场面试（36 点）而账本只记了 **12 点**，日上限被静默突破；另一路表现是
+    撞 `PRIMARY KEY` 变成 500。判断"够不够"与"扣掉"必须在同一个语句里，
+    否则并发下两者一定对不上。
+
+    `WHERE units_used + :units <= :daily_limit` 是**条件更新**：条件不成立时
+    这条 UPSERT 一行都不写，`rowcount` 为 0 —— 那就是"不够"。
+
+    调用方保证 `0 <= units <= daily_limit`（`units` 是常量 `COST[mode]`，
+    最大 6，而日上限是 32）：**插入**那条路没有条件可挂（新行的余额本来就是 0），
+    所以一次要的比日上限还多这件事只能由服务层的常量校验挡。
+    """
+    stmt = (
+        sqlite_insert(QuotaLedger)
+        .values(
+            user_id=user_id,
+            kind="day",
+            day=day,
+            units_used=units,
+            tokens_used=0,
+            updated_at=now_iso(),
+        )
+        .on_conflict_do_update(
+            index_elements=["user_id", "kind", "day"],
+            set_={"units_used": QuotaLedger.units_used + units, "updated_at": now_iso()},
+            where=(QuotaLedger.units_used + units) <= daily_limit,
+        )
+    )
+    result = session.execute(stmt)
+    session.flush()
+    ok = bool(result.rowcount)
+    _refresh_quota_row(session, user_id, day)
+    return ok
 
 
 def recent_usage(session: Session, *, days: int = 30) -> list[QuotaLedger]:

@@ -177,15 +177,23 @@ def spend_units(
 
     ⚠️ **它不负责"扣了之后能不能开始"** —— 那是编排层的事（面试域创建时扣、
     失败时不重复扣）。这里只做"记账 + 不够就拒绝"。
+
+    "够不够"与"扣掉"是**一条语句**（`repository.try_spend_units`，决策 90）：
+    原先分两步（先读余额再累加）时，6 路并发 `POST /interview/start` 造出 6 场
+    面试（36 点）而账本只记了 12 点 —— 日上限被静默突破，另一路表现是撞主键 500。
     """
     cost = COST.get(mode)
     if cost is None:
         raise InvalidInput(f"未知的形态：{mode}")
     if cost == 0:
         return 0
-    if not quota_state(session, user_id).affords(mode):
+    if not repository.try_spend_units(
+        session, user_id, day=today(), units=cost, daily_limit=DAILY_UNITS
+    ):
         raise QuotaExhausted()
-    repository.add_usage(session, user_id, day=today(), units=cost, tokens=tokens)
+    if tokens:
+        # token 是第二道安全网（决策 14），同一语句里一起累加
+        repository.add_usage(session, user_id, day=today(), tokens=tokens)
     return cost
 
 
