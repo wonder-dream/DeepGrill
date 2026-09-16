@@ -168,12 +168,17 @@ def test_list_page_requires_login(app) -> None:
 # 状态在别处也看得见
 # ---------------------------------------------------------------------------
 def test_bank_list_marks_favorites_with_a_star(client: TestClient) -> None:
-    """列表页的 ★ 是**批量**查出来的（一页一次查询，不逐题查库）。"""
-    assert "★" not in client.get("/bank").text
+    """列表页的 ★ 是**批量**查出来的（一页一次查询，不逐题查库）。
+
+    ⚠️ 断言要用**带 `title` 的那个标记**，而不是光秃秃的 `★`：侧边栏的「收藏」入口
+    在收起态也是 ★（决策 96 那一轮加的），于是"整页不含 ★"早就不等于"这道题没收藏"。
+    钉住标记本身才钉住原意 —— 而且它顺带保证了那个 `title`（悬停提示）还在。
+    """
+    mark = '<span title="已收藏">★</span>'
+    assert mark not in client.get("/bank").text
     client.post("/bank/1/favorite")
     body = client.get("/bank").text
-    assert "★" in body
-    assert body.count("★") == 1, "只该有一道题被标星"
+    assert body.count(mark) == 1, "只该有一道题被标星"
 
 
 def test_me_page_has_an_entry_to_favorites(client: TestClient) -> None:
