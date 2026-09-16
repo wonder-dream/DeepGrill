@@ -27,7 +27,7 @@
 | 首件事是**替换 owner 口令** | `python -m app.cli set-password --email owner@local`（交互输入，或 `DEEPGRILL_NEW_PASSWORD='…'`；命令会同时撤销该账号的旧令牌）。**再用同一条命令改掉 `demo@local`** —— 它的口令 `deepgrill-demo` 明写在 `app/offline/seed.py` 里，是公开值 |
 | **（走 CF 就必须做）装 realip：`sudo sh deploy/refresh-cloudflare-ips.sh`** | `allow`/`deny` 和 `$binary_remote_addr` 看的都是 **TCP 对端地址**，而经 CF 进来的连接对端是 CF 边缘节点 —— 不装 realip，`/admin` 白名单里写谁的 IP 都会被 403（**管理员自己也进不去**），按 IP 的限流也会把全站算成一个来源。脚本只信任 CF 网段，所以伪造 `CF-Connecting-IP` 没有意义 |
 | **`/admin` 的第二道门 = nginx Basic 认证**（决策 94） | 反代这一层**独立于**应用里的 owner 登录再收一道，失败方向是"进不去"。**刻意不用 IP 白名单**：`allow`/`deny` 比的是 TCP 对端地址（经 CF 进来的是边缘节点，得先装 realip）；即便装了 realip，"多出口 + 双栈 + 校园网共享 /64"的网络里白名单会周期性把**管理员自己**关在门外 —— 上线当天连撞三次。口令文件 `/etc/nginx/.htpasswd-admin`：生成 `sudo htpasswd -c /etc/nginx/.htpasswd-admin admin`，重设 `sudo htpasswd /etc/nginx/.htpasswd-admin admin`（**没有 `-c`**）|
-| **（切 CF 之后必做）源站只允许 Cloudflare 回源** | 反代把访客 IP 取自 `CF-Connecting-IP`。端口若对全网开放，任何人都能绕过 CF 直连源站（realip 只信 CF 网段，所以限流骗不过去，但直连仍然能绕开 CF 的 WAF/缓存）。CF 一生效就用防火墙只放 CF 的出口网段（域名直连阶段做不了这一步，那时访客就是直连来的）|
+| **（切 CF 之后必做）源站只允许 Cloudflare 回源** | 端口若对全网开放，任何人都能绕过 CF 直连源站（realip 只信 CF 网段，所以限流骗不过去，但直连仍然能绕开 CF 的缓存与 WAF）。判定放在 **nginx**（决策 95）而不是系统防火墙：判据和 realip 必须是**同一份** CF 网段列表，而它由 `deploy/refresh-cloudflare-ips.sh` 一起生成；放系统防火墙还会让"配错"变成"锁死 SSH"的风险点 |
 | **`/admin` 的白名单** | `nginx.conf` 里 `location ^~ /admin` 段留了 `deny all` + 一行注释掉的 `allow`。**上线前把你的出口 IP 填进去**（或改用 Cloudflare Access，那种做法下这一段可以删）|
 | `mkdir -p backups` | systemd 的 `ReadWritePaths` 要求目录**存在**；不存在时 backup 单元直接起不来（`ProtectSystem=strict` 的经典坑）|
 
@@ -105,10 +105,10 @@ sudo chmod 640 /etc/nginx/.htpasswd-admin
 # 忘了口令就重设（注意**没有 -c**，有 -c 会把整个文件重建）：
 #   sudo htpasswd /etc/nginx/.htpasswd-admin admin
 
-# ④ 走 Cloudflare 的话，装上 realip（不装的话限流会全站共用一个桶）
+# ④ 走 Cloudflare 的话，装上 realip + "只允许 CF 回源"那道门（同一份列表，决策 94/95）
 sudo sh deploy/refresh-cloudflare-ips.sh
-# 列表会变，一周刷一次就够（可挂 timer/cron）：
-#   0 4 * * 1 root sh /srv/deepgrill/deploy/refresh-cloudflare-ips.sh
+# 列表会变，每天刷一次就够（一次 HTTP 请求 + 一次 reload）：
+#   10 4 * * * root sh /srv/deepgrill/deploy/refresh-cloudflare-ips.sh >/dev/null
 
 # ⑦ 验证
 curl -fsS http://127.0.0.1:8000/healthz          # 应用自身

@@ -226,6 +226,26 @@ def test_the_cloudflare_realip_refresh_is_wired() -> None:
     assert "refresh-cloudflare-ips.sh" in readme, "部署文档没提这一步"
 
 
+def test_nginx_only_accepts_cloudflare_as_the_origin_client() -> None:
+    """源站只允许 CF 回源（决策 95），且判定必须用**未经改写的**对端地址。
+
+    写成 `$remote_addr` 是错的：它已经被 realip 换成访客 IP，于是"这是不是 CF"
+    永远为真 —— 那道门看着在、其实不存在。真实的对端在 `$realip_remote_addr`。
+    两个 server 块都要有：80 那块虽然只做跳转，但它同样能被直连。
+    """
+    text = _nginx()
+    assert text.count("if ($from_cloudflare = 0) { return 403; }") == 2, (
+        "两个 server 块都要有这道门（80 与 443）"
+    )
+    script = (DEPLOY / "refresh-cloudflare-ips.sh").read_text(encoding="utf-8")
+    # 脚本里那两行是 `echo "geo \$realip_remote_addr ..."`（$ 要转义），所以按转义后的写法断言
+    assert r"geo \$realip_remote_addr \$from_cloudflare" in script, (
+        "生成脚本没有产出这道门要用的 geo 表"
+    )
+    assert "default 0;" in script, "白名单必须默认拒绝（失败方向朝安全那边）"
+    assert "ips-v4" in script and "ips-v6" in script
+
+
 def test_the_offsite_backup_hook_is_wired() -> None:
     """异地备份要么走 `DEEPGRILL_BACKUP_MIRROR`（代码里做），要么走本机来拉 ——
     两条路都必须在仓库里留痕，否则下一个人只会看到"备份成功"的绿灯。"""
