@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
+from sqlalchemy import update as sqlite_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -261,6 +262,40 @@ def try_spend_units(
     ok = bool(result.rowcount)
     _refresh_quota_row(session, user_id, day)
     return ok
+
+
+def refund_units(
+    session: Session, user_id: int, *, day: str, units: int
+) -> int:
+    """把**已经记账**的额度点退回去（决策 98）。返回实际退回的点数（0 = 一点没退）。
+
+    与 `try_spend_units` 同一个形状：**一条语句 + 条件更新**，只是条件反了过来。
+    这不是对称洁癖 —— "先读余额再减"在并发下与扣点那条路会互相覆盖（决策 90 的
+    同一课，那次是日上限被静默突破）。
+
+    `WHERE units_used >= :units` 是必要的守卫：`units_used` 是"今天已经花了多少"，
+    退成负数会让 `remaining` 超过日上限，页面上就会出现 `35/32` 这种数字。
+    条件不成立时一行都不写、返回 0（那一天没有可退的账）。
+
+    只更新已存在的那一行（不 upsert）：返还针对的是**当初那次扣点**，那天的行一定在；
+    行不在就说明这一天压根没扣过 —— 不该凭空造出一行 `-3`。
+    """
+    if units <= 0:
+        return 0
+    stmt = (
+        sqlite_update(QuotaLedger)
+        .where(
+            QuotaLedger.user_id == user_id,
+            QuotaLedger.kind == "day",
+            QuotaLedger.day == day,
+            QuotaLedger.units_used >= units,
+        )
+        .values(units_used=QuotaLedger.units_used - units, updated_at=now_iso())
+    )
+    result = session.execute(stmt)
+    session.flush()
+    _refresh_quota_row(session, user_id, day)
+    return units if result.rowcount else 0
 
 
 def recent_usage(session: Session, *, days: int = 30) -> list[QuotaLedger]:

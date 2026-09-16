@@ -65,7 +65,9 @@
     {% endfor %}
   </ul>
   <form method="post" action="/interview/{{ active[0].interview.id }}/abandon">
-    <p class="muted">放弃之后<strong>额度点不退还</strong>（它在开场时就已经记账了），
+    <p class="muted">已答 {{ active[0].rounds }} 轮。放弃会
+    {%- if active[0].refund %}退还 <strong>{{ active[0].refund }}</strong> 点（≤2 轮全额、3–6 轮一半、再往后不退）
+    {%- else %}不退还额度点（已答 {{ active[0].rounds }} 轮）{% endif %}，
     那场面试会留在<a href="/me/interviews">面试记录</a>里。</p>
     <p><button class="button" type="submit">放弃这一场</button></p>
   </form>

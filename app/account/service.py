@@ -81,6 +81,31 @@ def today() -> str:
     return (datetime.now(UTC) + timedelta(hours=_QUOTA_UTC_OFFSET_HOURS)).strftime("%Y-%m-%d")
 
 
+def day_of(utc_timestamp: str) -> str:
+    """把一个**库里存的 UTC 时间戳**换算成额度账本的"天"（决策 98）。
+
+    为什么需要它：返还必须记在**当初扣点的那一天**上。跨零点放弃一场面试时，按
+    "今天"退等于把昨天的账记到今天 —— 而额度按天重置，那会让今天凭空多出点数。
+
+    解析不了（列被写坏）就退回"今天"：方向是**安全的那一边** —— 最坏是退到错的一天，
+    而不是让"放弃"这件事本身失败（那会把用户锁在一场他不想答完的面试里）。
+    """
+    try:
+        stamp = datetime.strptime(utc_timestamp, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    except (TypeError, ValueError):
+        return today()
+    return (stamp + timedelta(hours=_QUOTA_UTC_OFFSET_HOURS)).strftime("%Y-%m-%d")
+
+
+
+def refund_units(session: Session, user_id: int, *, day: str, units: int) -> int:
+    """退额度点（决策 98 的"放弃时按轮数返还"要用它）。返回**实际退回**的点数。
+
+    `day` 必须是**当初扣点的那一天**（调用方用 `day_of()` 从面试的开始时间换算）——
+    额度按天重置，退到"今天"会让跨零点的那次放弃凭空多出点数。
+    """
+    return repository.refund_units(session, user_id, day=day, units=units)
+
 
 # ---------------------------------------------------------------------------
 # 注册与登录

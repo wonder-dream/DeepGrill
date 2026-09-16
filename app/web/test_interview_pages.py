@@ -336,7 +336,8 @@ def test_a_second_start_is_refused_with_a_way_out(client: TestClient) -> None:
     assert r.status_code == 400
     assert "还有一场面试没结束" in r.text
     assert 'action="/interview/1/abandon"' in r.text
-    assert "额度点不退还" in r.text
+    assert "已答 0 轮" in r.text
+    assert "退还 <strong>1</strong> 点" in r.text, "单题追问 1 点，一轮没答应当全额退"
 
 
 def test_abandoning_lets_a_new_one_start(client: TestClient) -> None:

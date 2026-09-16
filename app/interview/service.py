@@ -18,7 +18,7 @@ import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -46,6 +46,56 @@ UNFINISHED_MESSAGE = "你还有一场面试没结束 —— 先把它答完，�
 
 #: 已经放弃的面试里再提交一轮的提示（决策 97）。
 ABANDONED_MESSAGE = "这场面试已经放弃了 —— 它不会再继续"
+
+#: 放弃时按**已答轮数**返还额度点的档位（决策 98）：≤2 轮全额、3–6 轮一半、再往后不退。
+REFUND_FULL_WITHIN_ROUNDS = 2
+REFUND_HALF_WITHIN_ROUNDS = 6
+
+
+def refund_for_rounds(*, charged: int, rounds: int) -> int:
+    """现在放弃、且已答 `rounds` 轮时，该退回多少额度点（决策 98）。整数**向下取整**。
+
+    · ≤2 轮：全额 —— 手滑点开、试了一下不该丢掉 6 点；
+    · 3–6 轮：一半；
+    · >6 轮：不退（该问的都问了）。
+
+    ⚠️ **向下取整的后果要说清楚**：单题追问只有 1 点，"一半"是 0.5 → 退 0。它最多
+    只能答 3 轮（一题 × `max_rounds`），所以那一档只会落在"答满 3 轮"上 —— 用户真的
+    答了 3 轮，不退也说得过去。
+    """
+    if charged <= 0:
+        return 0
+    if rounds <= REFUND_FULL_WITHIN_ROUNDS:
+        return charged
+    if rounds <= REFUND_HALF_WITHIN_ROUNDS:
+        return charged // 2
+    return 0
+
+
+def rounds_of(session: Session, interview_id: int) -> int:
+    """这场面试已经答过**几轮**（`attempts` 行数）。
+
+    一轮 = 一次作答 = **一次真的模型调用**，所以它同时也是"这场面试花了多少"的
+    代理指标 —— 返还按它分档（决策 98）。
+    """
+    return int(
+        session.execute(
+            select(func.count())
+            .select_from(Attempt)
+            .join(InterviewSession, InterviewSession.id == Attempt.session_id)
+            .where(InterviewSession.interview_id == interview_id)
+        ).scalar_one()
+    )
+
+
+def refund_if_abandoned(session: Session, interview: Interview) -> tuple[int, int]:
+    """`(已答轮数, 现在放弃会退回的点数)` —— 按钮上面要把这个数字写出来。
+
+    **展示与实际退款走同一个函数**：两边各算一次迟早会分叉成两个数字（页面说退 3、
+    实际退 0），而这类不一致用户只会记成"它骗我"。
+    """
+    rounds = rounds_of(session, interview.id)
+    return rounds, refund_for_rounds(charged=interview.quota_charged, rounds=rounds)
 
 #: 存进 `attempts.llm_error` 的原因长度上限。模型侧的错误消息本身已经截断过一次
 #: （响应正文最多 200 字），这里再兜一道 —— 一列诊断信息不该能顶大一行。
@@ -729,20 +779,30 @@ def abandon_interview(session: Session, *, user_id: int, interview_id: int) -> I
 
     三件事刻意如此：
 
-    · **不退还额度点**：扣点发生在开场时（题目已抽出、题会话已建），放弃是用户自己的
-      选择。页面上的按钮必须把这句话写出来，否则就是静默的代价。
+    · **按已答轮数返还额度点**（决策 98）：≤2 轮全额、3–6 轮一半、再往后不退。
+      退到**当初扣点的那一天**的账上（`day_of`）—— 跨零点放弃时退到"今天"会让
+      今天凭空多出点数（额度按天重置）。页面上的按钮会把将退的点数写出来。
     · **不删记录**：它留在面试记录页上（决策 96）—— `abandoned` 是个状态，不是消失。
     · **幂等**：已经结束的（`finished` / `abandoned`）原样返回。双击、后退重放、
-      两个标签页同时点，都不该变成一堵错误页。
+      两个标签页同时点，都不该变成一堵错误页，**也不该退第二次钱**。
     """
     from app.account import repository as account_repository
+    from app.account import service as account_service
 
     interview = session.get(Interview, interview_id)
     if interview is None or interview.user_id != user_id:
         raise NotFound("这场面试不存在")
     if interview.status == "active":
+        _rounds, refund = refund_if_abandoned(session, interview)
         interview.status = "abandoned"
         interview.ended_at = account_repository.now_iso()
+        if refund:
+            account_service.refund_units(
+                session,
+                user_id,
+                day=account_service.day_of(interview.started_at),
+                units=refund,
+            )
     return interview
 
 

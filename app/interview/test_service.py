@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -117,19 +118,114 @@ def test_quota_exhaustion_refuses_and_leaves_no_half_interview(session: Session)
     from app.account import service as account
     from app.db.models import Interview
 
-    # 用常量算"还能开几场"，不写死次数：每日上限是标定出来的（决策 71）
+    # 用常量算"还能开几场"，不写死次数：每日上限是标定出来的（决策 71）。
+    # ⚠️ 直接记账、不建面试：决策 97 之后同一账号只能有一场未结束的面试，
+    # 而放弃会按轮数返还（决策 98）—— 两条加起来，"反复开场再放弃"根本花不掉额度。
     affordable = account.DAILY_UNITS // account.COST["interview"]
     assert affordable >= 1
     for _ in range(affordable):
-        row = service.start_interview(session, user_id=ME, question_ids=[1])
-        # 决策 97：一场没结束就开不了第二场 —— 所以每场开完立刻放弃，
-        # 这条路本身也顺带被覆盖到了。
-        service.abandon_interview(session, user_id=ME, interview_id=row.id)
+        account.spend_units(session, ME, "interview")
 
     before = len(session.query(Interview).all())
     with pytest.raises(QuotaExhausted):
         service.start_interview(session, user_id=ME, question_ids=[1])
     assert len(session.query(Interview).all()) == before, "额度不足不该留下面试行"
+
+
+# ---------------------------------------------------------------------------
+# 放弃时按轮数返还额度点（决策 98）
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("rounds", "charged", "expected"),
+    [
+        (0, 6, 6),  # 一轮没答：手滑点开而已
+        (1, 6, 6),
+        (2, 6, 6),  # ≤2 轮：全额
+        (3, 6, 3),  # 3–6 轮：一半
+        (6, 6, 3),
+        (7, 6, 0),  # 再往后：不退
+        (9, 6, 0),
+        (0, 1, 1),  # 单题追问 1 点，一轮没答
+        (3, 1, 0),  # 半点不存在 → 向下取整退 0
+        (0, 0, 0),  # 没扣过点（老数据 / 浏览）
+    ],
+)
+def test_refund_policy_table(rounds: int, charged: int, expected: int) -> None:
+    assert service.refund_for_rounds(charged=charged, rounds=rounds) == expected
+
+
+def test_abandoning_without_answering_refunds_in_full(session: Session) -> None:
+    """一轮没答就放弃 = 没真的用掉额度 —— 全额退回。"""
+    from app.account import service as account
+
+    row = service.start_interview(session, user_id=ME, question_ids=[1])
+    assert account.units_used_today(session, ME) == 6
+
+    service.abandon_interview(session, user_id=ME, interview_id=row.id)
+    assert account.units_used_today(session, ME) == 0, "一轮没答，应当全额退回"
+
+
+def test_the_refund_lands_on_the_day_the_points_were_charged(session: Session) -> None:
+    """跨零点放弃：必须退到**昨天**那一行，而不是今天的。
+
+    退到"今天"的话，今天会凭空多出点数 —— 而额度是按天重置的（决策 98）。
+    """
+    from sqlalchemy import update as sqlalchemy_update
+
+    from app.account import repository as account_repository
+    from app.account import service as account
+    from app.db.models import QuotaLedger
+
+    row = service.start_interview(session, user_id=ME, question_ids=[1])
+    # 把这场面试改成"昨天开的"：额度那一行也一起挪到昨天。
+    # ⚠️ 额度日按 **+8** 算，所以"UTC 20:00"其实已经是第二天的账了 —— 这个偏移
+    #    第一版就是踩在这里（退到的那一天和断言的那一天差了 8 小时）。
+    yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+    assert account.day_of(f"{yesterday} 20:00:00") == account.today(), "UTC 20:00 = 次日额度日"
+    row.started_at = f"{yesterday} 02:00:00"
+    assert account.day_of(row.started_at) == yesterday
+    session.execute(
+        sqlalchemy_update(QuotaLedger)
+        .where(QuotaLedger.user_id == ME, QuotaLedger.day == account.today())
+        .values(day=yesterday)
+    )
+    session.flush()
+    account_repository._refresh_quota_row(session, ME, account.today())
+    account_repository._refresh_quota_row(session, ME, yesterday)
+
+    service.abandon_interview(session, user_id=ME, interview_id=row.id)
+
+    assert account.units_used_today(session, ME) == 0, "今天的账上不该出现这笔"
+    old = account_repository.quota_row(session, ME, yesterday)
+    assert old is not None and old.units_used == 0, "退的是昨天扣的那 6 点"
+
+
+def test_abandoning_twice_refunds_only_once(session: Session) -> None:
+    """幂等不只是"不报错"：**也不能退第二次钱**。"""
+    from app.account import service as account
+
+    row = service.start_interview(session, user_id=ME, question_ids=[1])
+    service.abandon_interview(session, user_id=ME, interview_id=row.id)
+    assert account.units_used_today(session, ME) == 0
+
+    service.abandon_interview(session, user_id=ME, interview_id=row.id)
+    assert account.units_used_today(session, ME) == 0, "第二次不该把余额顶成负数"
+
+
+def test_refund_preview_matches_what_actually_happens(session: Session) -> None:
+    """页面上的"放弃会退 N 点"与实际退款走**同一个函数**。
+
+    两边各算一次迟早会分叉成两个数字（页面说退 3、实际退 0），而这类不一致
+    用户只会记成"它骗我"。
+    """
+    from app.account import service as account
+
+    row = service.start_interview(session, user_id=ME, question_ids=[1])
+    rounds, preview = service.refund_if_abandoned(session, row)
+    assert (rounds, preview) == (0, 6)
+
+    service.abandon_interview(session, user_id=ME, interview_id=row.id)
+    assert account.units_used_today(session, ME) == 6 - preview
 
 
 # ---------------------------------------------------------------------------

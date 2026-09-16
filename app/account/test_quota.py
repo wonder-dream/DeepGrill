@@ -174,3 +174,65 @@ def test_reads_after_a_sql_side_increment_are_not_stale(db: Path) -> None:
         assert service.remaining_units(s, ME) == service.DAILY_UNITS - 2 * first
         assert s.query(QuotaLedger).one().units_used == 2 * first
     engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# 返还（决策 98：放弃面试时按轮数退点）
+# ---------------------------------------------------------------------------
+def test_refund_gives_the_points_back(db: Path) -> None:
+    engine = create_db_engine(db)
+    with create_session_factory(engine)() as s:
+        service.spend_units(s, ME, "interview")
+        assert service.refund_units(s, ME, day=_day(), units=6) == 6
+        assert service.units_used_today(s, ME) == 0
+        assert service.remaining_units(s, ME) == service.DAILY_UNITS
+    engine.dispose()
+
+
+def test_refund_never_pushes_the_ledger_below_zero(db: Path) -> None:
+    """`units_used` 退成负数会让 `remaining` 超过日上限（页面上出现 `35/32`）。
+
+    条件不成立时**一行都不写**并返回 0 —— 也就是"这一天没有可退的账"。
+    """
+    engine = create_db_engine(db)
+    with create_session_factory(engine)() as s:
+        service.spend_units(s, ME, "drill")  # 只花了 1 点
+        assert service.refund_units(s, ME, day=_day(), units=6) == 0, "不该退比花掉的更多"
+        assert service.units_used_today(s, ME) == 1
+        assert service.remaining_units(s, ME) <= service.DAILY_UNITS
+    engine.dispose()
+
+
+def test_refund_on_a_day_with_no_charge_does_nothing(db: Path) -> None:
+    """没有那一行就什么都不做 —— **不凭空造出一行负数**（返还针对的是当初那次扣点）。"""
+    engine = create_db_engine(db)
+    with create_session_factory(engine)() as s:
+        assert service.refund_units(s, ME, day="2020-01-01", units=3) == 0
+        assert repository.quota_row(s, ME, "2020-01-01") is None
+    engine.dispose()
+
+
+def test_refund_is_exact_under_concurrency(db: Path) -> None:
+    """并发退点也不能丢更新 —— 与扣点同一个理由（决策 90 的同一课）。"""
+    engine = create_db_engine(db)
+    workers = 5
+    with create_session_factory(engine)() as s:
+        repository.add_usage(s, ME, day=_day(), units=workers * 2)
+        s.commit()
+
+    barrier = threading.Barrier(workers)
+
+    def refund(_i: int) -> int:
+        with create_session_factory(engine)() as s:
+            barrier.wait(timeout=10)
+            got = service.refund_units(s, ME, day=_day(), units=2)
+            s.commit()
+            return got
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        got = list(ex.map(refund, range(workers)))
+
+    assert got == [2] * workers
+    with create_session_factory(engine)() as s:
+        assert service.units_used_today(s, ME) == 0, "并发下丢了退款"
+    engine.dispose()

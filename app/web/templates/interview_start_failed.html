@@ -36,7 +36,9 @@
     <a class="button" href="/">去继续那场</a>
   </p>
   <form method="post" action="/interview/{{ unfinished.id }}/abandon">
-    <p class="muted">放弃之后<strong>额度点不退还</strong>（它在开场时就已经记账了）。</p>
+    <p class="muted">已答 {{ unfinished_rounds }} 轮。放弃会
+    {%- if unfinished_refund %}退还 <strong>{{ unfinished_refund }}</strong> 点（≤2 轮全额、3–6 轮一半、再往后不退）
+    {%- else %}不退还额度点{% endif %}。</p>
     <p><button class="button" type="submit">放弃那一场，开新的</button></p>
   </form>
   {% else %}

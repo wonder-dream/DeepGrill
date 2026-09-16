@@ -117,9 +117,14 @@ def start(
             status_code=e.status_code,
         )
     except AppError as e:
-        # 被"一场没结束不许开第二场"挡下时，错误页要能**指出是哪一场** —— 只有一句
-        # 话的墙会把用户晾在那里（决策 97）。
+        # 被"一场没结束不许开第二场"挡下时，错误页要能**指出是哪一场**，并把放弃
+        # 会退多少点写在按钮上（决策 97/98）—— 只有一句话的墙会把用户晾在那里。
         unfinished = interview.unfinished_interview(session, me.id)
+        rounds, refund = (
+            interview.refund_if_abandoned(session, unfinished)
+            if unfinished is not None
+            else (0, 0)
+        )
         return render(
             request,
             "interview_start_failed.html",
@@ -127,6 +132,8 @@ def start(
                 "message": e.message,
                 "exhausted": False,
                 "unfinished": unfinished,
+                "unfinished_rounds": rounds,
+                "unfinished_refund": refund,
                 "quota": account.quota_state(session, me.id),
             },
             status_code=e.status_code,

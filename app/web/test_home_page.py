@@ -132,7 +132,16 @@ def test_home_refuses_to_offer_a_second_interview(client: TestClient, db: Path) 
     assert "开始模拟面试" not in html, "还有没结束的面试时不该再出现开始按钮"
     assert f'href="/interview/{ts_id}"' in html, "没有指出未结束的那一场在哪"
     assert 'action="/interview/1/abandon"' in html
-    assert "额度点不退还" in html, "放弃的代价要写在按钮上面"
+    assert "已答 1 轮" in html, "放弃按钮上要写清已答几轮（返还档位看的就是它）"
+
+
+def test_home_says_how_much_abandoning_would_refund(client: TestClient) -> None:
+    """按钮上面要写出**将退多少点**（决策 98）—— 不写就是让用户在不知道代价的情况下点。"""
+    client.post("/interview/start", data={"mode": "interview"}, follow_redirects=False)
+
+    html = client.get("/").text
+    assert "已答 0 轮" in html
+    assert "退还 <strong>6</strong> 点" in html, "一轮没答应当全额退（6 点）"
 
 
 def test_home_offers_start_again_after_abandoning(client: TestClient, db: Path) -> None:

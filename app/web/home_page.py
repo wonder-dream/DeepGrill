@@ -112,7 +112,10 @@ def _for_member(session: Session, user: User) -> dict[str, object]:
     for interview_row in interview.active_interviews(session, user.id):
         ts = interview.next_active_session(session, interview_row.id)
         if ts is not None:
-            active.append({"interview": interview_row, "session_id": ts.id})
+            rounds, refund = interview.refund_if_abandoned(session, interview_row)
+            active.append(
+                {"interview": interview_row, "session_id": ts.id, "rounds": rounds, "refund": refund}
+            )
 
     return {
         "weak_points": weak,
