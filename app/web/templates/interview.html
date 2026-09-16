@@ -14,22 +14,6 @@
   <h1>{{ data.question.stem }}</h1>
 </section>
 
-{% if data.criteria %}
-<section class="card">
-  <h2>这道题考什么</h2>
-  <ol>
-    {% for c in data.criteria %}
-    <li>
-      {{ c }}
-      {% set st = data.snapshot.statuses.get(loop.index) %}
-      {% if st %}<span class="tag">{{ st }}</span>{% endif %}
-    </li>
-    {% endfor %}
-  </ol>
-  <p class="muted">「未涉及」= 这一轮没问到；「未命中」= 问了但没答到。两者不是一回事。</p>
-</section>
-{% endif %}
-
 {% if data.rounds %}
 <section class="card">
   <h2>对话</h2>
@@ -80,7 +64,7 @@
   <p class="muted">
     <label><input type="radio" name="answer-mode" value="voice" checked> 语音作答（默认）</label>
     <label><input type="radio" name="answer-mode" value="text"> 打字作答</label>
-    <span class="muted">语音转写直接进判分，没有"核对一遍再交"这一步（决策 33）。</span>
+    <span class="muted">语音转写直接进判分，没有"核对一遍再交"这一步。</span>
   </p>
 
   <div id="voice-pane">

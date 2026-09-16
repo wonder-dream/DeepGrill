@@ -70,7 +70,7 @@ def owner_client(app):
 
 def test_bank_detail_has_a_feedback_form(user_client: TestClient) -> None:
     body = user_client.get("/bank/1").text
-    assert "报问题" in body
+    assert "反馈" in body
     assert "答案或评分标准有错" in body
 
 

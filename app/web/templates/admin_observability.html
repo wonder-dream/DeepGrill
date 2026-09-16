@@ -37,8 +37,8 @@
   <p>
     <strong>{{ o.library.unmounted }}</strong> 道公共题还没挂到知识点上。
   </p>
-  <p class="muted">挂不上的题就留在这里 —— <strong>绝不自动新建知识点</strong>（决策 46：
-  骨架的判定权在人手上）。挂载命令：<code>python -m app.cli mount</code></p>
+  <p class="muted">挂不上的题就留在这里 —— <strong>绝不自动新建知识点</strong>（骨架的判定权在人手上）。
+     挂载命令：<code>python -m app.cli mount</code></p>
 </section>
 
 <section class="card">
@@ -135,7 +135,7 @@
 </section>
 
 <section class="card">
-  <h2>进程内限流（决策 66）</h2>
+  <h2>进程内限流</h2>
   {% if not rate_limit.enabled %}
   <p class="muted">已关闭（<code>DEEPGRILL_RATELIMIT_ENABLED=false</code>）。</p>
   {% else %}

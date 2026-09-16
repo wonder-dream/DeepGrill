@@ -1,18 +1,18 @@
 {% extends "base.html" %}
 {% block title %}知识层人审 · DeepGrill{% endblock %}
 {% block content %}
-{# 这一页要比别处宽：默认容器是 46rem（≈736px），五列加长文本在那里会挤成一团 ——
+{# 这一页要比别处宽：默认容器上限是 --content-w，五列加长文本在那里会挤成一团 ——
    左边大片留白、右边「决定」列放不下。它是内部工具页，用页面内 <style> 放宽容器与列宽，
    不动全局样式（其它页面的行宽是有意收窄的，读起来更舒服）。 #}
 <style>
-  main { max-width: 84rem; }
+  main { --content-w: 84rem; max-width: 84rem; }
   .review-table { table-layout: fixed; }
   .review-table th, .review-table td { vertical-align: top; overflow-wrap: anywhere; }
   .review-table input[type="text"] { width: 100%; box-sizing: border-box; }
 </style>
 <section class="card">
   <h1>知识层人审</h1>
-  <p class="muted">对应决策 47 的「一次性最小审核页」：候选逐条通过 / 否决 / 合并，批量提交。
+  <p class="muted">「一次性最小审核页」：候选逐条通过 / 否决 / 合并，批量提交。
   只有 owner 能做 —— 这一步是全局装配，改动会影响所有人的掌握度坐标系。</p>
   {% if proposal and not proposal.llm_failed %}
   <p>共 {{ proposal.candidates | length }} 条候选。默认全部「通过」—— 不想建的点改成「否决」即可。</p>
@@ -35,7 +35,7 @@
   <section class="card">
     <h2>这批知识点属于哪个领域</h2>
     <p><label>领域名 <input type="text" name="domain_name" required placeholder="如：Java 并发"></label></p>
-    <p class="muted">知识地图是森林（决策 52）：领域之间没有父子关系。
+    <p class="muted">知识地图是森林：领域之间没有父子关系。
     **每一行都能单独指定领域**（留空则用上面这个）—— 于是混合的提案不必先拆批再审。</p>
   </section>
 

@@ -153,11 +153,11 @@ def test_full_drill_flow_through_http(app, client: TestClient) -> None:
     _login(client)
     location = _start_drill(client)
 
-    # 答题页：题干、知识点、考察点都在
+    # 答题页：题干、知识点在；考察点不再展示给考生（避免照着点答）
     body = client.get(location).text
     assert "说说 volatile 的作用" in body
     assert "volatile" in body
-    assert "底层内存屏障" in body
+    assert "底层内存屏障" not in body
 
     # 第 1 轮
     r = client.post(f"{location}/answer", data={"answer_text": "保证可见性"}, follow_redirects=False)
