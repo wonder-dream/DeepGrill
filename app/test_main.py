@@ -55,10 +55,15 @@ def test_create_app_uses_the_injected_settings(client: TestClient, settings: Set
 
 
 def test_healthz_does_not_touch_the_database(client: TestClient) -> None:
-    """存活探针与"库通不通"分开：它必须在没有库的情况下也是 200。"""
+    """存活探针与"库通不通"分开：它必须在没有库的情况下也是 200。
+
+    ⚠️ 而且它**不许被缓存**：探针前面通常站着 CDN / 反向代理，一个被缓存的健康
+    检查会永远回答"上次是好的" —— 进程挂了也显示健康（实测 bug 37）。
+    """
     r = client.get("/healthz")
     assert r.status_code == 200
     assert r.json() == {"status": "ok"}
+    assert r.headers["cache-control"] == "no-store"
 
 
 def test_home_says_how_to_initialize_an_empty_database(client: TestClient, settings: Settings) -> None:

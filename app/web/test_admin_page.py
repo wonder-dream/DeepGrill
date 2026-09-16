@@ -135,6 +135,34 @@ def test_apply_creates_confirmed_points_from_the_form(
         assert s.get(Question, 1).primary_point_id == points[0].id
 
 
+def test_apply_runs_the_heavy_part_in_a_threadpool(
+    owner_client: TestClient, proposal_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**回归测试**（bug 23）：重活不许在事件循环里跑。
+
+    这是全项目唯一的 `async` 路由（要 `await request.form()` 收动态条数的表单），
+    而它做的全是同步 DB 操作 —— 几百条候选那一次实测把同一时刻的 `/healthz` 卡了
+    **1759ms**（§3.3 禁的正是"在 async 上下文里做同步 DB 查询"）。
+    断言点是"重活真的经过了 `run_in_threadpool`"，不靠计时（计时测试会飘）。
+    """
+    from app.web import admin_page
+
+    seen: list[str] = []
+    real = admin_page.run_in_threadpool
+
+    async def spy(func, *args, **kwargs):
+        seen.append(getattr(func, "__name__", str(func)))
+        return await real(func, *args, **kwargs)
+
+    monkeypatch.setattr(admin_page, "run_in_threadpool", spy)
+    r = owner_client.post(
+        "/admin/review/apply",
+        data={"domain_name": "Java 并发", "action-0": "approve", "name-0": "volatile"},
+    )
+    assert r.status_code == 200
+    assert "apply_review" in seen, f"落库那一步没进线程池：{seen}"
+
+
 def test_apply_reject_and_merge(
     owner_client: TestClient, db: Path, proposal_file: Path
 ) -> None:

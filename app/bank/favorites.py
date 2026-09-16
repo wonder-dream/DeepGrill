@@ -11,9 +11,10 @@
    判据用 `repository.find_question(..., viewer_id=我)` —— 也就是**同一条可见性
    规则**，不另写一套。
 
-② **幂等由两条一起保证**：库里 `UNIQUE(user_id, question_id)`（并发的第二下会撞
-   约束），以及这里先查一次（正常路径下的第二下不该产生一次数据库异常）。
-   收藏按钮会被人连点，这不是边界情况。
+② **幂等由一条语句保证**：库里 `UNIQUE(user_id, question_id)` 加上
+   `INSERT … ON CONFLICT DO NOTHING`（并发下的第二下什么都不做，而不是撞约束报错）。
+   收藏按钮会被人连点 —— "点两下收藏得到 500"是最容易被用户撞到的那种错。
+   原来这里是"先查一次再写"，那条路在并发下照样撞唯一约束（按钮双击、两个标签页）。
 
 ③ **取消收藏不带可见性条件**（见 `repository.remove_favorite`）：题被标 `hidden`
    之后用户仍然要能清掉自己那根指针，否则收藏夹里会留一行点不进去的东西。
@@ -42,14 +43,16 @@ def _card(session: Session, rows: list) -> list[QuestionCard]:
 
 
 def add(session: Session, *, user_id: int, question_id: int) -> bool:
-    """收藏。返回"这次是不是真的新增了"（重复点 → False，**不报错**）。"""
+    """收藏。返回"这次是不是真的新增了"（重复点 → False，**不报错**）。
+
+    幂等**只靠一条语句**：`repository.add_favorite` 是 `ON CONFLICT DO NOTHING`
+    （见它的 docstring）。原来这里还先查一次，等于把幂等寄托在"先查再写"上 ——
+    并发下第二条照样撞唯一约束 → 500（按钮双击、两个标签页都能触发）。
+    """
     if repository.find_question(session, question_id, user_id) is None:
         # 不可见与不存在同一种回应（见模块头 ①）
         raise NotFound(f"题目 {question_id} 不存在或不可见")
-    if repository.find_favorite(session, user_id, question_id) is not None:
-        return False
-    repository.add_favorite(session, user_id, question_id)
-    return True
+    return repository.add_favorite(session, user_id, question_id)
 
 
 def remove(session: Session, *, user_id: int, question_id: int) -> bool:

@@ -255,11 +255,24 @@ class ProseFilter:
         return out
 
     def finish(self) -> str:
-        """流结束：把按住的那一小段放出来（除非已经见过分隔行）。"""
+        """流结束：把按住的那一小段放出来（除非已经见过分隔行）。
+
+        ⚠️ **结尾那半截分隔行要丢掉**：`feed()` 每次按住末尾 `_MARKER_KEEP` 个字符
+        防的是"分隔行被切成几块"，而流**被截断**时（网络断、`max_tokens` 到顶）那一段
+        的结尾正好是分隔行的一个前缀 —— 放出去用户就会在面试官的话里看到 `===JS`
+        （实测 probe18 的 `cut_stream`）。
+
+        判据是"**结尾**是分隔行的前缀"，而不是"整段等于前缀"：按住的尾巴里通常前半
+        是正文（`那我们说说内存屏障。\n\n===JS`）—— 只该砍掉最后那几个字符。
+        也不能写成"以 `=` 结尾就丢"：正文里的 `=` 是正常的，只有"正好构成前缀"才可疑。
+        """
         if self._done:
             self._buffer = ""
             return ""
         out, self._buffer = self._buffer, ""
+        for n in range(min(len(out), len(self.marker) - 1), 0, -1):
+            if self.marker.startswith(out[-n:]):
+                return out[:-n]
         return out
 
 

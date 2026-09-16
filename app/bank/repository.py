@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 from sqlalchemy import Select, delete, func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.db.models import Criterion, KnowledgePoint, Question, QuestionPoint, UserFavorite
@@ -432,11 +433,22 @@ def find_favorite(session: Session, user_id: int, question_id: int) -> UserFavor
     ).scalar_one_or_none()
 
 
-def add_favorite(session: Session, user_id: int, question_id: int) -> UserFavorite:
-    row = UserFavorite(user_id=user_id, question_id=question_id)
-    session.add(row)
+def add_favorite(session: Session, user_id: int, question_id: int) -> bool:
+    """收下一行收藏，返回"这次真的插进去了吗"。**并发下也不报错**。
+
+    ⚠️ 用 `INSERT … ON CONFLICT DO NOTHING`（一条语句）而不是"先查再写"：后者在并发
+    下第二条会撞 `UNIQUE(user_id, question_id)` → `IntegrityError` → **500**，而
+    "点两下收藏"是最容易被用户撞到的那种并发（按钮双击、两个标签页）。表内的
+    `UNIQUE (user_id, question_id)` 就是 ON CONFLICT 的目标。
+    """
+    stmt = (
+        sqlite_insert(UserFavorite)
+        .values(user_id=user_id, question_id=question_id)
+        .on_conflict_do_nothing(index_elements=["user_id", "question_id"])
+    )
+    result = session.execute(stmt)
     session.flush()
-    return row
+    return bool(result.rowcount)
 
 
 def remove_favorite(session: Session, user_id: int, question_id: int) -> bool:

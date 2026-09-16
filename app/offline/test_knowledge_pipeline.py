@@ -149,6 +149,39 @@ def test_apply_review_can_rename_and_merge(session: Session) -> None:
     assert session.get(Question, 2).primary_point_id == point.id
 
 
+def test_merge_count_only_counts_what_landed(session: Session) -> None:
+    """**回归测试**（bug 32）：`merged` 只数**真的落地**的合并。
+
+    实测：`merge_into` 的决定被读到的当口就 `+1` 了，于是三种"没落地"的情形
+    （并到自己、并进一个被否决的候选、并进一个名下没有题的候选）全都算进了人审
+    结果页的"合并 N 条" —— 那个数字比实际做的事多，而没做的事**没人知道**。
+    """
+    candidates = [
+        kp.Candidate(name="volatile", criteria=["可见性", "内存屏障"], question_ids=[1]),
+        kp.Candidate(name="volatile 语义", criteria=["可见性", "不保证原子性"], question_ids=[2]),
+        kp.Candidate(name="happens-before", criteria=["可见性", "有序性"], question_ids=[3]),
+        # 名下没有题：合过来也落不了地
+        kp.Candidate(name="内存屏障", criteria=["可见性", "有序性"], question_ids=[]),
+    ]
+    result = kp.apply_review(
+        session,
+        candidates=candidates,
+        decisions=[
+            kp.Decision(0, "approve", name="volatile"),
+            kp.Decision(1, "merge_into", merge_into=1),   # 并到自己
+            kp.Decision(2, "merge_into", merge_into=1),   # 目标的那个决定是"并到自己"，没通过
+            kp.Decision(3, "merge_into", merge_into=0),   # 目标通过了，但它名下没有题
+        ],
+        domain_name="Java 并发",
+    )
+    session.commit()
+
+    assert result.created_points == 1
+    assert result.merged == 0, f"没落地的合并被算成了成功：{result.skipped}"
+    assert len(result.skipped) == 3, f"三种没落地都要有交代：{result.skipped}"
+    assert all("没有落地" in s for s in result.skipped), result.skipped
+
+
 def test_apply_review_reject_creates_nothing(session: Session) -> None:
     candidates = [kp.Candidate(name="volatile", criteria=["可见性", "内存屏障"], question_ids=[1])]
     result = kp.apply_review(

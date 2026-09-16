@@ -189,6 +189,16 @@ def propose_points(questions: Sequence[Question], *, llm) -> ProposalResult:
             )
         )
     result.candidates = fold_duplicates(result.candidates)
+    if not result.candidates:
+        # ⚠️ **解析成功但零候选**要说出来（实测 bug 27）：模型回了合法 JSON 却没有
+        # `points` 键（或它是空的）时，`llm_failed` 是 False、候选是空的 —— 上层只会
+        # 打印"候选 0 条"，没人知道"这一步什么都没产出"。它不是"调用失败"（没抛异常），
+        # 所以走 `note` 而不是 `llm_failed`；退出码由 CLI 决定（那里才看得见"零候选"）。
+        result.note = (
+            f"模型返回了 JSON 但没有可用候选（缺 `points` 键或它是空的）："
+            f"顶层键 {sorted(payload_obj)[:5]}"
+        )
+        logger.warning("%s", result.note)
     return result
 
 
@@ -286,7 +296,10 @@ def apply_review(
             result.rejected += 1
             continue
         if decision.action == "merge_into":
-            result.merged += 1
+            # ⚠️ 这里**不**计数：合并到底有没有落地要等"目标建没建出来"（下面那个
+            # 循环才知道）。原来在这里就 +1，于是"合并到自己""并进一个被否决的
+            # 候选""并进一个被机器规则挡下的候选"全都算进了"合并 N 条" ——
+            # 人审结果页的数字比实际做的事多（实测 bug 32）。
             continue
         if decision.action != "approve":
             result.skipped.append(f"候选 {decision.index}：未知动作 {decision.action!r}")
@@ -301,8 +314,9 @@ def apply_review(
             continue
         approved.append((decision.index, _renamed(cand, decision.name)))
 
-    if not approved:
-        return result
+    # ⚠️ 这里**不早退**：一条都没通过时，那些 `merge_into` 决定同样要有个交代
+    # （下面的循环会按"目标没有通过"记进 `skipped`）。早退会让它们既不在
+    # `merged` 里、也不在 `skipped` 里 —— 那就是"静默丢弃"（§3.1）。
 
     # 按行解析领域：同名共用同一个域（`_get_or_create_domain` 本身是幂等的）
     domains: dict[str, int] = {}
@@ -320,13 +334,25 @@ def apply_review(
 
     # 合并：把被合并的候选的**题目**并到目标知识点上（考察点不并 ——
     # 归并哪几条考察点属于人审第 3 步的判断，这里只保证题目不丢）
+    #
+    # ⚠️ `merged` 只数**真的落地**的：没落地的进 `skipped` 并写明原因。
+    # 三种落不了地的情形实测都有（bug 32）：并到自己、并进一个没通过的候选、
+    # 并进一个名下没有题的候选 —— 它们原来都被算成"合并成功"。
     for index, target in resolved.items():
+        if target == index:
+            result.skipped.append(f"候选 {index}：合并到自己 —— 没有落地")
+            continue
         if target not in by_index:
+            result.skipped.append(
+                f"候选 {index}：合并的目标（候选 {target}）没有通过 —— 没有落地"
+            )
             continue
         cand = candidates[index]
         if not cand.question_ids:
+            result.skipped.append(f"候选 {index}：它名下没有题可并 —— 没有落地")
             continue
         _attach_questions(session, point_id=by_index[target], question_ids=cand.question_ids)
+        result.merged += 1
 
     return result
 

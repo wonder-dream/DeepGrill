@@ -20,6 +20,7 @@ import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app.config import REPO_ROOT
@@ -56,6 +57,18 @@ def load_proposal() -> kp.ProposalResult | None:
         return None
 
 
+def _archive_proposal() -> None:
+    """审完把提案改名留痕（`.applied.json`）。改名而不是删除 —— 便于复盘。
+
+    ⚠️ 它是同步文件 I/O，而唯一的调用方是 `async` 路由 —— 所以由
+    `run_in_threadpool` 调它（见 `apply_review` 的 docstring）。
+    """
+    try:
+        PROPOSAL_PATH.replace(PROPOSAL_PATH.with_suffix(".applied.json"))
+    except OSError:
+        pass
+
+
 @router.get("/admin/review")
 def review_page(request: Request, user: CurrentUserDep) -> object:
     owner = _require_owner(user)
@@ -75,8 +88,12 @@ def review_page(request: Request, user: CurrentUserDep) -> object:
 async def apply_review(request: Request, session: SessionDep, user: CurrentUserDep) -> object:
     """批量提交人的决定。
 
-    表单是**动态条数**的，所以这里收原始表单而不是逐个声明参数 ——
-    FastAPI 的 `Form(...)` 需要固定参数名，而候选数量由提案文件决定。
+    ⚠️ **重活丢进线程池**：这是全项目唯一的 `async` 路由（因为它要 `await request.form()`
+    收动态条数的表单），而未审的提案可能有几百条候选 —— 每条都要建知识点、挂题、
+    写考察点，全是同步 DB 操作。直接在事件循环里跑它们的后果实测过：同一时刻的
+    `/healthz` 卡了 **1759ms**（而 §3.3 禁的正是"在 async 上下文里做同步 DB 查询"）。
+    `run_in_threadpool` 是那条禁令在这条路上的正解：handler 仍然是 async 的（要用
+    await 收表单），只有重活被搬走。
     """
     owner = _require_owner(user)
     proposal = load_proposal()
@@ -85,7 +102,6 @@ async def apply_review(request: Request, session: SessionDep, user: CurrentUserD
 
     form = await request.form()
     domain_name = str(form.get("domain_name") or "").strip() or "未命名领域"
-
     decisions: list[kp.Decision] = []
     domain_of: dict[int, str] = {}
     for index, cand in enumerate(proposal.candidates):
@@ -112,7 +128,8 @@ async def apply_review(request: Request, session: SessionDep, user: CurrentUserD
         else:
             decisions.append(kp.Decision(index, "reject"))
 
-    result = kp.apply_review(
+    result = await run_in_threadpool(
+        kp.apply_review,
         session,
         candidates=proposal.candidates,
         decisions=decisions,
@@ -124,10 +141,9 @@ async def apply_review(request: Request, session: SessionDep, user: CurrentUserD
 
     # 审完就把提案挪走：留着它会让"再审一次"重复建点（虽然 _commit_point 幂等，
     # 但状态会变得难以解释）。改名而不是删除 —— 保留这次的痕迹，便于复盘。
-    try:
-        PROPOSAL_PATH.replace(PROPOSAL_PATH.with_suffix(".applied.json"))
-    except OSError:
-        pass
+    #
+    # ⚠️ 文件搬运也是同步 I/O：几百条候选的 JSON 重命名在大文件系统上会卡住事件循环
+    await run_in_threadpool(_archive_proposal)
 
     return render(
         request,

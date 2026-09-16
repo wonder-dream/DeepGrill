@@ -85,6 +85,26 @@ def test_prose_filter_marks_done_after_the_marker() -> None:
     assert f.finish() == ""
 
 
+def test_prose_filter_drops_a_truncated_marker() -> None:
+    """**回归测试**（bug 18）：流被截断时不许把半截分隔行吐给用户。
+
+    流式那条路每次按住末尾若干字符（防的是"分隔行被切成几块"），而网络断掉或
+    `max_tokens` 到顶时，按住的那一段正好是分隔行的前缀 —— 原样放出去，用户就会在
+    面试官的话里看到 `===JS`（实测 probe18 的 `cut_stream`）。
+    """
+    prose = "那我们说说内存屏障。"
+    cut = f"{prose}\n\n===JS"   # 分隔行只写出了一半，流就断了
+    out = _drain([cut])
+    assert out.strip() == prose, f"半截分隔行漏给了用户：{out!r}"
+    assert "===" not in out
+
+
+def test_prose_filter_still_emits_a_legitimate_trailing_char() -> None:
+    """别把正文里正常的字符也吃掉 —— `=` 出现在句中不该被当成标记。"""
+    assert _drain(["a = b"]) == "a = b"
+    assert _drain(["1+1=2"]) == "1+1=2"
+
+
 # ---------------------------------------------------------------------------
 # split_prose_and_json：同步路径用同一个边界
 # ---------------------------------------------------------------------------

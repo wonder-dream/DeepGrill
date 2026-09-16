@@ -60,6 +60,49 @@ def test_add_is_idempotent(session: Session) -> None:
     assert favorites.count(session, user_id=2) == 1
 
 
+def test_concurrent_add_does_not_raise(tmp_dir: Path) -> None:
+    """**回归测试**：两个连接同时收藏同一道题 —— 一个 True、一个 False，**都不报错**。
+
+    实测形状（"先查再写"那条路）：并发下第二条会撞 `UNIQUE(user_id, question_id)` →
+    `IntegrityError` → 500，而"点两下收藏"是最容易被用户撞到的并发（按钮双击、
+    两个标签页）。现在幂等由**一条语句**保证（`ON CONFLICT DO NOTHING`），
+    所以这里断言的是"两次调用都正常返回，且库里只有一行"。
+    """
+    import threading
+
+    db = tmp_dir / "fav_concurrent.db"
+    migrate(db)
+    engine = create_db_engine(db)
+    with create_session_factory(engine)() as s:
+        s.add(User(id=2, email="me@local", username="me", password_hash="x", role="user"))
+        s.add(Question(id=1, kind="knowledge", stem="公共题", difficulty=3,
+                       origin="seed", visibility="public"))
+        s.commit()
+
+    results: list[bool] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(2)
+
+    def grab() -> None:
+        with create_session_factory(engine)() as s:
+            barrier.wait(timeout=10)
+            first = favorites.add(s, user_id=2, question_id=1)
+            s.commit()
+            with lock:
+                results.append(first)
+
+    threads = [threading.Thread(target=grab) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert sorted(results) == [False, True], f"并发收藏的结果应当是「一次新增一次重复」：{results}"
+    with create_session_factory(engine)() as s:
+        assert favorites.count(s, user_id=2) == 1, "库里只能有一行"
+    engine.dispose()
+
+
 def test_remove_is_idempotent(session: Session) -> None:
     favorites.add(session, user_id=2, question_id=1)
     assert favorites.remove(session, user_id=2, question_id=1) is True

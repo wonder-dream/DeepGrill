@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -125,6 +125,12 @@ def _for_member(session: Session, user: User) -> dict[str, object]:
 
 
 @router.get("/healthz")
-def healthz() -> dict[str, str]:
-    """存活探针。它**不查库** —— 用途是"进程还在吗"，与"库通不通"分开。"""
+def healthz(response: Response) -> dict[str, str]:
+    """存活探针。它**不查库** —— 用途是"进程还在吗"，与"库通不通"分开。
+
+    ⚠️ 带 `Cache-Control: no-store`：**探针的响应绝不能被缓存**。它前面通常站着
+    CDN / 反向代理，而一个被缓存的健康检查会永远回答"上次是好的" —— 进程挂了也
+    显示健康（这正是健康检查最坏的失效方式：它让人不去看）。
+    """
+    response.headers["Cache-Control"] = "no-store"
     return {"status": "ok"}

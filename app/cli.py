@@ -20,6 +20,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.config import Settings
 from app.db import create_db_engine, create_session_factory
 
+#: SQLite 绑定参数能表示的整数上限（64 位有符号）。越界的 id 会在驱动里抛
+#: `OverflowError` —— 命令行要**当场**说清楚，而不是把一条 Python 栈甩给用户。
+SQLITE_MAX_INT = 2**63 - 1
+
 
 def _ensure_migrated(session) -> None:
     """库没迁移过就明确失败 —— 不替用户跑迁移（那是另一条命令，见 ADR-0011）。"""
@@ -142,6 +146,13 @@ def cmd_propose(
     if result.llm_failed:
         print(f"（提候选失败：{result.note}）", file=sys.stderr)
         return 1
+    if not result.candidates:
+        # ⚠️ **零候选也是失败**（实测 bug 27）：模型回了合法 JSON 但没有 `points` 键
+        # 时，原来打印"候选 0 条"、退出码 0、一句 note 都没有 —— 脚本与人都看不出
+        # "这一步什么都没产出"。退出码是唯一能让 `&&` / CI 发现它的东西。
+        print(f"（没有产出任何候选：{result.note or '模型没给出可用候选'}）", file=sys.stderr)
+        print("也许：题量太少 / 题都还没挂知识点（先跑 assemble）", file=sys.stderr)
+        return 1
     print("下一步：起服务后打开 /admin/review 逐条审")
     return 0
 
@@ -155,6 +166,17 @@ def cmd_merge_points(
     搬考察点会改变历史归属（掌握度矩阵跟着变），这一步必须让人看见。
     """
     from app.offline.knowledge_pipeline import merge_points
+
+    # ⚠️ 先挡住越界的 id（实测 probe33：`merge-points 9223372036854775808 1` 抛
+    # `OverflowError: Python int too large to convert to SQLite INTEGER` —— 一条 Python
+    # 栈追到人脸上，谁也不知道是自己敲错了数字）。SQLite 的绑定参数是 64 位。
+    for label, value in (("源", source), ("目标", target)):
+        if not (0 < value <= SQLITE_MAX_INT):
+            print(f"{label} id 超出范围：{value}（合法范围 1 ~ {SQLITE_MAX_INT}）", file=sys.stderr)
+            return 2
+    if source == target:
+        print("源与目标是同一个知识点 —— 没什么可并的", file=sys.stderr)
+        return 2
 
     engine = create_db_engine(settings.resolved_database_path())
     with create_session_factory(engine)() as session:

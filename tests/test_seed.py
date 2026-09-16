@@ -99,6 +99,56 @@ def test_cli_seed_refuses_when_not_migrated(tmp_dir: Path) -> None:
     assert e.value.code == 2
 
 
+def test_cli_propose_exits_non_zero_on_zero_candidates(
+    tmp_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """**回归测试**（bug 27）：模型回了合法 JSON 但没有 `points` 键时，`propose` 要
+    非零退出并说清楚 —— 原来它打印"候选 0 条"、rc=0、一句 note 都没有，
+    脚本与人都看不出"这一步什么都没产出"。
+    """
+    from app.cli import cmd_propose
+    from app.db import create_db_engine, create_session_factory
+    from app.db.models import Question
+    from app.offline import knowledge_pipeline as kp
+    from app.web import admin_page
+
+    db = tmp_dir / "propose.db"
+    migrate(db)
+    with create_session_factory(create_db_engine(db))() as s:
+        s.add(
+            Question(id=1, kind="knowledge", stem="说说 volatile 的作用", difficulty=3,
+                     origin="seed", visibility="public")
+        )
+        s.commit()
+
+    monkeypatch.setattr(admin_page, "PROPOSAL_PATH", tmp_dir / "proposal.json")
+    # 模型"回了个合法 JSON 但没有 points 键"：不是调用失败，所以 llm_failed 是 False
+    monkeypatch.setattr(
+        kp, "propose_points",
+        lambda questions, llm: kp.ProposalResult(note="模型返回了 JSON 但没有可用候选"),
+    )
+
+    rc = cmd_propose(
+        Settings(database_path=db, llm_api_key="fake-key"), "Java 并发", batched=False
+    )
+    assert rc == 1, "零候选必须非零退出（否则 && 与 CI 都发现不了）"
+    assert "没有产出任何候选" in capsys.readouterr().err
+
+
+def test_cli_merge_points_refuses_an_out_of_range_id(tmp_dir: Path, capsys) -> None:
+    """`merge-points 2**63` 要给人话，不是一条 Python 栈（实测 probe33）。
+
+    越界 id 会在驱动里抛 `OverflowError: Python int too large to convert to SQLite
+    INTEGER` —— 谁也不知道是自己敲错了数字。合法范围是 SQLite 的 64 位整数。
+    """
+    from app.cli import cmd_merge_points
+
+    settings = Settings(database_path=tmp_dir / "nope.db")
+    assert cmd_merge_points(settings, 2**63, 1) == 2
+    assert "超出范围" in capsys.readouterr().err
+    assert cmd_merge_points(settings, 1, 1) == 2, "源与目标相同也要当场拒绝"
+
+
 def test_cli_seed_and_status(tmp_dir: Path, capsys) -> None:
     from app.cli import cmd_seed, cmd_status
 
