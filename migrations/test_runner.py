@@ -242,6 +242,67 @@ def test_one_evaluation_per_session_and_the_dedupe_keeps_the_good_row(tmp_dir: P
         conn.close()
 
 
+def test_migration_0007_backfills_the_owner_of_existing_private_anchors(
+    tmp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**回归测试**：迁移之前建的私有锚点也要被认到 owner（决策 91）。
+
+    `owner_user_id` 是新加的一列，而"注销时按 owner 删干净"这条承诺必须覆盖**已经
+    存在**的数据 —— 那些行的名字是 `私有题集（用户 {id}）`，是它们唯一稳定可认的特征。
+
+    做法：先把"迁移目录"换成一个只有 0001–0006 的副本（模拟迁移之前的库），插几行
+    锚点，再把目录换回来跑完剩下的迁移。**不匹配的行必须一个都不动** —— 特别注意
+    `私有题集（用户 42 的）`：`CAST('42 的' AS INTEGER)` 在 SQLite 里会得到 42，
+    少了"中间那段全是数字"这一条就会把别人的锚点算到这个用户名下。
+    """
+    from migrations._runner import MIGRATIONS_DIR, _migration_files, migrate
+
+    partial = tmp_dir / "partial"
+    partial.mkdir()
+    for path in _migration_files():
+        if path.name[:4] <= "0006":   # 只放 0001–0006（字符串前缀比较，别拿全名比）
+            (partial / path.name).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    db = tmp_dir / "old.db"
+    monkeypatch.setattr("migrations._runner.MIGRATIONS_DIR", partial)
+    assert migrate(db) == 6
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO users (id, email, username, password_hash) VALUES (42, 'a@b.c', 'a', 'h')"
+        )
+        conn.execute("INSERT INTO domains (id, name) VALUES (1, '私有题集')")
+        for pid, name in (
+            (1, "私有题集（用户 42）"),
+            (2, "私有题集（用户 42 的）"),
+            (3, "私有题集（用户 不是数字）"),
+            (4, "volatile"),
+        ):
+            conn.execute(
+                "INSERT INTO knowledge_points (id, domain_id, name, status, origin) "
+                "VALUES (?, 1, ?, 'draft', 'manual')",
+                (pid, name),
+            )
+    finally:
+        conn.close()
+
+    monkeypatch.setattr("migrations._runner.MIGRATIONS_DIR", MIGRATIONS_DIR)
+    assert migrate(db) == 2, "剩下的 0007 / 0008 应当被执行"
+
+    conn = sqlite3.connect(str(db))
+    try:
+        owners = dict(
+            conn.execute("SELECT id, owner_user_id FROM knowledge_points").fetchall()
+        )
+    finally:
+        conn.close()
+    assert owners[1] == 42, "迁移之前的私有锚点要补上 owner"
+    assert owners[2] is None and owners[3] is None, "名字不严格匹配的行一个都不许动"
+    assert owners[4] is None, "公共知识点不该有 owner"
+
+
 def test_second_run_is_idempotent(tmp_dir: Path) -> None:
     """跑第二遍不做事、不报错 —— 否则 pipeline 的第一步就不可重跑。"""
     db = tmp_dir / "t.db"

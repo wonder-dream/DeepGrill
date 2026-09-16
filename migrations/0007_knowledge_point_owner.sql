@@ -17,6 +17,31 @@
 
 ALTER TABLE knowledge_points ADD COLUMN owner_user_id INTEGER REFERENCES users(id);
 
+-- 把**迁移之前**就存在的私有锚点补上 owner：它们的名字是
+-- `私有题集（用户 {id}）`（`offline/profile_pipeline.py::_private_anchor` 拼的），
+-- 是那一批数据里唯一稳定可认的特征。不回填的话，"按 owner 删"在那批数据上等于
+-- 什么都没删 —— 而这条迁移的全部意义就是让注销能删干净。
+--
+-- ⚠️ 只认**完整匹配**这个前后缀、且中间那段**全是数字**的行（`NOT GLOB '*[^0-9]*'`）——
+-- 少了后一条，`私有题集（用户 42 的）` 这种名字会被 `CAST` 成 42（SQLite 取数字前缀），
+-- 于是把别人的锚点算到这个用户名下。一条行都不匹配时它是个 no-op
+-- （线上库实测就是这种：0 个私有锚点）。
+UPDATE knowledge_points
+SET owner_user_id = CAST(
+        substr(
+            name,
+            length('私有题集（用户 ') + 1,
+            length(name) - length('私有题集（用户 ') - 1
+        ) AS INTEGER
+    )
+WHERE name LIKE '私有题集（用户 %）'
+  AND owner_user_id IS NULL
+  AND substr(
+          name,
+          length('私有题集（用户 ') + 1,
+          length(name) - length('私有题集（用户 ') - 1
+      ) NOT GLOB '*[^0-9]*';
+
 -- 注销时要"按 owner 找出全部私有锚点"：没有这个索引就是全表扫。
 -- （`knowledge_points` 在 2C2G 上不会大，但这条索引与查询形状一一对应，零成本。）
 CREATE INDEX IF NOT EXISTS idx_kp_owner ON knowledge_points(owner_user_id);
