@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ "今天先到这儿" if exhausted else "无法开始" }} · DeepGrill{% endblock %}
+{% block title %}{{ "今天先到这儿" if exhausted else ("这场面试已经放弃" if abandoned else "无法开始") }} · DeepGrill{% endblock %}
 {% block content %}
 {% if exhausted %}
 <section class="card">
@@ -13,12 +13,36 @@
     <a class="button" href="/me">看我的记录</a>
   </p>
 </section>
+{% elif abandoned %}
+<section class="card">
+  <h1>这场面试已经放弃</h1>
+  <p class="warn">{{ message }}</p>
+  <p class="muted">它不会再计分，也不会出现在「继续未完成」里 —— 但记录还在，
+  去<a href="/me/interviews">面试记录</a>里能看到它。</p>
+  <p>
+    <a class="button" href="/">去开一场新的</a>
+    <a class="button" href="/bank">回题库</a>
+  </p>
+</section>
 {% else %}
 <section class="card">
   <h1>这场面试没能开始</h1>
   <p class="warn">{{ message }}</p>
+  {% if unfinished %}
+  {# 被"一场没结束不许开第二场"挡下时，必须指出**是哪一场**并给出两条出路 #}
+  <p class="muted">未结束的是 <strong>{{ "模拟面试" if unfinished.mode == "interview" else "单题追问" }}
+  #{{ unfinished.id }}</strong>（{{ unfinished.started_at }} 开始）。</p>
+  <p>
+    <a class="button" href="/">去继续那场</a>
+  </p>
+  <form method="post" action="/interview/{{ unfinished.id }}/abandon">
+    <p class="muted">放弃之后<strong>额度点不退还</strong>（它在开场时就已经记账了）。</p>
+    <p><button class="button" type="submit">放弃那一场，开新的</button></p>
+  </form>
+  {% else %}
   <p class="muted">这一条不是额度问题 —— 额度照旧，换一道题或稍后再试都可以。</p>
   <p><a class="button" href="/bank">回题库</a></p>
+  {% endif %}
 </section>
 {% endif %}
 {% endblock %}

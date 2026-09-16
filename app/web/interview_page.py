@@ -46,7 +46,7 @@ from starlette.background import BackgroundTask
 
 from app.account import service as account
 from app.db import create_session_factory
-from app.db.models import User
+from app.db.models import Interview, User
 from app.deps import (
     get_current_user,
     get_engine,
@@ -117,8 +117,18 @@ def start(
             status_code=e.status_code,
         )
     except AppError as e:
+        # 被"一场没结束不许开第二场"挡下时，错误页要能**指出是哪一场** —— 只有一句
+        # 话的墙会把用户晾在那里（决策 97）。
+        unfinished = interview.unfinished_interview(session, me.id)
         return render(
-            request, "interview_start_failed.html", {"message": e.message, "exhausted": False},
+            request,
+            "interview_start_failed.html",
+            {
+                "message": e.message,
+                "exhausted": False,
+                "unfinished": unfinished,
+                "quota": account.quota_state(session, me.id),
+            },
             status_code=e.status_code,
         )
 
@@ -128,10 +138,39 @@ def start(
     return RedirectResponse(f"/interview/{ts.id}", status_code=302)
 
 
+@router.post("/interview/{interview_id}/abandon")
+def abandon(
+    request: Request,
+    interview_id: int,
+    session: SessionDep,
+    user: UserDep,
+) -> object:
+    """放弃一场还没结束的面试（决策 97）。
+
+    POST + 302（ADR-0004：状态住 URL 与服务端）—— 刷新不会重复提交，而"放弃"
+    本来就是个写动作。幂等：已经结束的那一场照样 302 回首页，不报错。
+    """
+    me = _require(user, session)
+    interview.abandon_interview(session, user_id=me.id, interview_id=interview_id)
+    session.commit()  # 302 之前必须提交（同 `start`）
+    return RedirectResponse("/", status_code=302)
+
+
 @router.get("/interview/{session_id}")
 def show(request: Request, session_id: int, session: SessionDep, user: UserDep) -> object:
     me = _require(user, session)
     ts = interview.get_session_row(session, session_id, me.id)
+    row = session.get(Interview, ts.interview_id)
+    if row is not None and row.status != "active":
+        # 放弃之后旧标签页/历史记录里那个链接还会被点开。**不能**把答题界面再摆出来：
+        # 表单提交上去只会换来一句"这场面试已经放弃了"，而看起来像是还能答。
+        return render(
+            request,
+            "interview_start_failed.html",
+            {"message": interview.ABANDONED_MESSAGE, "exhausted": False, "unfinished": None,
+             "abandoned": True, "quota": None},
+            status_code=409,
+        )
     data = report_service.interview_page_data(session, ts=ts, user_id=me.id)
     return render(request, "interview.html", {"data": data})
 
@@ -152,7 +191,7 @@ def answer(
     me = _require(user, session)
     ts = interview.get_session_row(session, session_id, me.id)
     # 收尾后的重放要在**花钱之前**拦：这条路会调模型（语音那条还会先调转写）
-    interview.require_active(ts)
+    interview.require_active(session, ts)
     return _submit_round(
         request, session, me, ts, answer_text=answer_text.strip(), llm=llm, input_mode="text"
     )
@@ -171,7 +210,7 @@ def answer_stream(
     """打字作答的流式那条路。**越权校验在请求里做**（流开始之后就改不了状态码了）。"""
     me = _require(user, session)
     ts = interview.get_session_row(session, session_id, me.id)
-    guard = _stream_guard(ts)
+    guard = _stream_guard(session, ts)
     if guard is not None:
         return guard
     return _stream_response(
@@ -199,7 +238,7 @@ def answer_voice(
     """
     me = _require(user, session)
     ts = interview.get_session_row(session, session_id, me.id)
-    interview.require_active(ts)  # 同上：别为一场答完的面试付转写的钱
+    interview.require_active(session, ts)  # 同上：别为一场答完的面试付转写的钱
     data = report_service.interview_page_data(session, ts=ts, user_id=me.id)
 
     transcript, error = _transcribe(stt, audio)
@@ -239,7 +278,7 @@ def answer_voice_stream(
     """
     me = _require(user, session)
     ts = interview.get_session_row(session, session_id, me.id)
-    guard = _stream_guard(ts)
+    guard = _stream_guard(session, ts)
     if guard is not None:
         return guard
 
@@ -365,7 +404,7 @@ def _submit_round(
     )
 
 
-def _stream_guard(ts) -> object | None:
+def _stream_guard(session: Session, ts) -> object | None:
     """流式那两条路的预检：这一轮还能不能答？
 
     必须在**开始流之前**做 —— 流一旦开始，状态码就改不了了（那时候只能发一帧
@@ -373,7 +412,7 @@ def _stream_guard(ts) -> object | None:
     回 JSON 而不是 HTML：这条路的消费者是 `interview.js`，它认 `{"error": …}`。
     """
     try:
-        interview.require_active(ts)
+        interview.require_active(session, ts)
     except AppError as e:
         return JSONResponse({"error": e.message, "kind": "input"}, status_code=e.status_code)
     return None

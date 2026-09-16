@@ -121,12 +121,90 @@ def test_quota_exhaustion_refuses_and_leaves_no_half_interview(session: Session)
     affordable = account.DAILY_UNITS // account.COST["interview"]
     assert affordable >= 1
     for _ in range(affordable):
-        service.start_interview(session, user_id=ME, question_ids=[1])
+        row = service.start_interview(session, user_id=ME, question_ids=[1])
+        # 决策 97：一场没结束就开不了第二场 —— 所以每场开完立刻放弃，
+        # 这条路本身也顺带被覆盖到了。
+        service.abandon_interview(session, user_id=ME, interview_id=row.id)
 
     before = len(session.query(Interview).all())
     with pytest.raises(QuotaExhausted):
         service.start_interview(session, user_id=ME, question_ids=[1])
     assert len(session.query(Interview).all()) == before, "额度不足不该留下面试行"
+
+
+# ---------------------------------------------------------------------------
+# 一场没结束，不许开第二场（决策 97）
+# ---------------------------------------------------------------------------
+def test_a_second_interview_is_refused_while_one_is_unfinished(session: Session) -> None:
+    """两种开场路都被挡住 —— 闸放在两条路唯一的汇合点 `_create_interview` 上。"""
+    service.start_interview(session, user_id=ME, question_ids=[1])
+
+    with pytest.raises(InvalidInput) as e:
+        service.start_interview(session, user_id=ME, question_ids=[1])
+    assert service.UNFINISHED_MESSAGE in str(e.value)
+
+    with pytest.raises(InvalidInput):
+        service.start_drill(session, user_id=ME, question_id=1)
+
+
+def test_the_refusal_does_not_charge_quota(session: Session) -> None:
+    """**闸必须在扣点之前**：否则"没开成还扣了 6 点"是第二种坏结果。"""
+    from app.account import service as account
+
+    service.start_interview(session, user_id=ME, question_ids=[1])
+    charged = account.units_used_today(session, ME)
+
+    with pytest.raises(InvalidInput):
+        service.start_interview(session, user_id=ME, question_ids=[1])
+    assert account.units_used_today(session, ME) == charged, "被拒的那次不该扣点"
+
+
+def test_abandoning_frees_the_slot_and_keeps_the_record(session: Session) -> None:
+    """放弃 = 松闸，但**不删记录**（决策 96 的记录页上照样看得见）。"""
+    from app.db.models import Interview
+
+    first = service.start_interview(session, user_id=ME, question_ids=[1])
+    service.abandon_interview(session, user_id=ME, interview_id=first.id)
+
+    assert service.unfinished_interview(session, ME) is None
+    assert session.get(Interview, first.id).status == "abandoned"
+    assert session.get(Interview, first.id).ended_at is not None
+    assert [row.id for row in service.list_interviews(session, ME)] == [first.id]
+
+    second = service.start_interview(session, user_id=ME, question_ids=[1])
+    assert second.id != first.id, "放弃之后应该能开新的一场"
+
+
+def test_abandon_is_idempotent(session: Session) -> None:
+    """双击 / 后退重放 / 两个标签页同时点，都不该变成一堵错误页。"""
+
+    row = service.start_drill(session, user_id=ME, question_id=1)
+    first = service.abandon_interview(session, user_id=ME, interview_id=row.interview_id)
+    ended = first.ended_at
+    again = service.abandon_interview(session, user_id=ME, interview_id=row.interview_id)
+    assert again.status == "abandoned"
+    assert again.ended_at == ended, "第二次不该改写时间戳"
+
+
+def test_abandoning_someone_elses_interview_is_not_found(session: Session) -> None:
+    from app.db.models import Interview
+
+    session.add(Interview(id=77, user_id=OTHER, mode="drill", status="active", quota_charged=1))
+    session.commit()
+    with pytest.raises(NotFound):
+        service.abandon_interview(session, user_id=ME, interview_id=77)
+
+
+def test_answering_an_abandoned_interview_is_refused(session: Session) -> None:
+    """只看 `sessions.status` 不够：放弃之后旧标签页仍然能接着答（每轮都调模型）。"""
+
+    ts = service.start_drill(session, user_id=ME, question_id=1)
+    service.abandon_interview(session, user_id=ME, interview_id=ts.interview_id)
+    assert ts.status == "active", "放弃整场不该顺手改题会话状态（那是另一层）"
+
+    with pytest.raises(InvalidInput) as e:
+        service.require_active(session, ts)
+    assert service.ABANDONED_MESSAGE in str(e.value)
 
 
 def test_the_daily_ration_never_blocks_a_single_interview(session: Session) -> None:

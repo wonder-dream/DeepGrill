@@ -41,12 +41,18 @@ DEFAULT_MAX_ROUNDS = 3
 #: 迟早会分叉成"两个意思"）。
 SESSION_FINISHED_MESSAGE = "这道题已经答完了 —— 刷新页面看看结果"
 
+#: 还有一场没结束的面试时，第二次开场的拒绝文案（决策 97）。
+UNFINISHED_MESSAGE = "你还有一场面试没结束 —— 先把它答完，或者放弃它"
+
+#: 已经放弃的面试里再提交一轮的提示（决策 97）。
+ABANDONED_MESSAGE = "这场面试已经放弃了 —— 它不会再继续"
+
 #: 存进 `attempts.llm_error` 的原因长度上限。模型侧的错误消息本身已经截断过一次
 #: （响应正文最多 200 字），这里再兜一道 —— 一列诊断信息不该能顶大一行。
 _FAILURE_REASON_MAX = 500
 
 
-def require_active(ts: InterviewSession) -> None:
+def require_active(session: Session, ts: InterviewSession) -> None:
     """这一轮还能不能答。不能就抛 `InvalidInput`（预期内，不是 500）。
 
     为什么需要这道闸：`sessions.status` 收尾之后，页面上的表单**照样能再提交**
@@ -54,11 +60,18 @@ def require_active(ts: InterviewSession) -> None:
     都是**一次真的模型调用** —— 既花钱，又让"这场面试问了几轮"变成不可信的数字。
     控制流在代码手里（ADR-0001）：达没达成"结束"，不该由按钮还在不在决定。
 
+    ⚠️ **两道闸缺一不可**（决策 97）：`sessions.status` 管"这道题答完了"，
+    `interviews.status` 管"整场被放弃了"。只看前者的话，放弃一场之后旧标签页仍然
+    能接着答 —— 每一轮照样是一次真的模型调用，而用户以为自己已经放弃了它。
+
     ⚠️ 权威判定在 `run_round()` 自己（服务层）。流式那两条路额外**在开始流之前**
     调一次，因为状态码在流开始之后就改不了了。
     """
     if ts.status != "active":
         raise InvalidInput(SESSION_FINISHED_MESSAGE)
+    interview = session.get(Interview, ts.interview_id)
+    if interview is not None and interview.status != "active":
+        raise InvalidInput(ABANDONED_MESSAGE)
 
 
 @dataclass
@@ -128,6 +141,12 @@ def _create_interview(
     session: Session, *, user_id: int, mode: str, question_ids: list[int]
 ) -> Interview:
     from app.account import service as account
+
+    # 一场没结束就不许开第二场（决策 97）。**必须在这里拦**：它是两条开场路
+    # （`start_interview` / `start_drill`）唯一的汇合点，而漏掉任何一条 = 规则形同
+    # 不存在。也要在**扣点之前**拦 —— 否则"没开成还扣了 6 点"是第二种坏结果。
+    if unfinished_interview(session, user_id) is not None:
+        raise InvalidInput(UNFINISHED_MESSAGE)
 
     cost = account.spend_units(session, user_id, mode)  # 额度不足会抛 QuotaExhausted
     interview = Interview(
@@ -211,7 +230,7 @@ def run_round(
 
     ⚠️ **先取上一轮快照，再写本轮**（§3.6 的具体 bug，重写极易再犯）。
     """
-    require_active(ts)
+    require_active(session, ts)
     previous = current_snapshot(session, ts.id)  # ← 必须在写库之前
     round_no = next_round_no(session, ts.id)
 
@@ -689,6 +708,42 @@ def resume_target(session: Session, user_id: int) -> tuple[Interview, InterviewS
     if row is None:
         return None
     return row[1], row[0]
+
+
+def unfinished_interview(session: Session, user_id: int) -> Interview | None:
+    """这个人**还没结束**的那一场面试（没有就 None）。用于"一场没结束不许开第二场"。
+
+    与 `active_interviews(limit=1)` 是同一件事，只是调用点要的是一个对象或 None，
+    而不是一个列表 —— 开场前的闸、错误页上的「继续 / 放弃」两个按钮都想知道它。
+    """
+    rows = active_interviews(session, user_id, limit=1)
+    return rows[0] if rows else None
+
+
+def abandon_interview(session: Session, *, user_id: int, interview_id: int) -> Interview:
+    """放弃一场还没结束的面试（决策 97）。
+
+    为什么必须有这条路：决策 97 只堵不疏的话，用户会被锁在一场他不想答完的面试里，
+    而**每一轮追问都是一次真的模型调用** —— 那是花钱买罪受。放弃 = 把 `status` 置成
+    `abandoned`：它不再出现在「继续未完成」里，「一场没结束不许开第二场」也随之松开。
+
+    三件事刻意如此：
+
+    · **不退还额度点**：扣点发生在开场时（题目已抽出、题会话已建），放弃是用户自己的
+      选择。页面上的按钮必须把这句话写出来，否则就是静默的代价。
+    · **不删记录**：它留在面试记录页上（决策 96）—— `abandoned` 是个状态，不是消失。
+    · **幂等**：已经结束的（`finished` / `abandoned`）原样返回。双击、后退重放、
+      两个标签页同时点，都不该变成一堵错误页。
+    """
+    from app.account import repository as account_repository
+
+    interview = session.get(Interview, interview_id)
+    if interview is None or interview.user_id != user_id:
+        raise NotFound("这场面试不存在")
+    if interview.status == "active":
+        interview.status = "abandoned"
+        interview.ended_at = account_repository.now_iso()
+    return interview
 
 
 def next_active_session(session: Session, interview_id: int) -> InterviewSession | None:

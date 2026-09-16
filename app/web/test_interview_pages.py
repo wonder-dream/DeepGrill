@@ -318,3 +318,56 @@ def test_missing_api_key_degrades_instead_of_crashing(tmp_dir: Path) -> None:
         assert c.get("/").status_code == 200
         c.post("/login", data={"email": "n@local", "password": "secret123"})
         assert c.get("/me").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# 一场没结束，不许开第二场（决策 97）
+# ---------------------------------------------------------------------------
+def test_a_second_start_is_refused_with_a_way_out(client: TestClient) -> None:
+    """被挡下时页面必须指出**是哪一场**，并给出"继续 / 放弃"两条路。
+
+    只摆一句"你还有一场面试没结束"等于把用户晾在墙前面 —— 而"放弃"正是这次
+    一起补上的那条路（决策 97）。放弃的代价（额度点不退）也必须写在按钮上面。
+    """
+    _login(client)
+    _start_drill(client)
+
+    r = client.post("/interview/start", data={"mode": "drill", "question_id": "1"})
+    assert r.status_code == 400
+    assert "还有一场面试没结束" in r.text
+    assert 'action="/interview/1/abandon"' in r.text
+    assert "额度点不退还" in r.text
+
+
+def test_abandoning_lets_a_new_one_start(client: TestClient) -> None:
+    _login(client)
+    _start_drill(client)
+
+    r = client.post("/interview/1/abandon", follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "/"
+    assert client.post(
+        "/interview/start", data={"mode": "drill", "question_id": "1"}, follow_redirects=False
+    ).status_code == 302, "放弃之后应该能开新的一场"
+
+
+def test_abandoned_interview_page_says_so_instead_of_showing_the_form(client: TestClient) -> None:
+    """放弃之后旧标签页/历史记录里的链接还会被点开 —— 不能再把答题界面摆出来。
+
+    否则表单照样能提交，用户以为自己还能答，实际只会撞一句"已经放弃了"。
+    """
+    _login(client)
+    location = _start_drill(client)
+    client.post("/interview/1/abandon")
+
+    r = client.get(location)
+    assert r.status_code == 409
+    assert "这场面试已经放弃" in r.text
+    assert 'name="answer_text"' not in r.text, "放弃之后的页面上不该还有答题框"
+
+
+def test_abandoning_is_idempotent_from_the_page(client: TestClient) -> None:
+    """双击"放弃"、后退重放，都该回到首页，而不是一堵错误页。"""
+    _login(client)
+    _start_drill(client)
+    assert client.post("/interview/1/abandon", follow_redirects=False).status_code == 302
+    assert client.post("/interview/1/abandon", follow_redirects=False).status_code == 302

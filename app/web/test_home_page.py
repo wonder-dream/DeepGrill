@@ -120,6 +120,29 @@ def _answer(
         return ts.id
 
 
+def test_home_refuses_to_offer_a_second_interview(client: TestClient, db: Path) -> None:
+    """一场没结束就**不给"开始"按钮**，而是给"继续 / 放弃"两条路（决策 97）。
+
+    首页是主要入口，所以这条规则在页面上必须是**看得见的**，而不是等到用户点了
+    开始、撞上一堵错误页才知道。
+    """
+    ts_id = _answer(db, question_id=1, hits={1: "命中"})
+
+    html = client.get("/").text
+    assert "开始模拟面试" not in html, "还有没结束的面试时不该再出现开始按钮"
+    assert f'href="/interview/{ts_id}"' in html, "没有指出未结束的那一场在哪"
+    assert 'action="/interview/1/abandon"' in html
+    assert "额度点不退还" in html, "放弃的代价要写在按钮上面"
+
+
+def test_home_offers_start_again_after_abandoning(client: TestClient, db: Path) -> None:
+    _answer(db, question_id=1, hits={1: "命中"})
+
+    r = client.post("/interview/1/abandon", follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "/"
+    assert "开始模拟面试" in client.get("/").text
+
+
 # ---------------------------------------------------------------------------
 # 推荐跟着掌握度走
 # ---------------------------------------------------------------------------

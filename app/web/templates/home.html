@@ -50,7 +50,26 @@
 
 <section class="card" id="start">
   <h2>开始</h2>
-  {% if user and quota and not quota.library_only %}
+  {% if user and active %}
+  {# 一场没结束就不许开第二场（决策 97）—— 所以这里**不再是**开始按钮，
+     而是"回到那一场 / 放弃那一场"两条路，并把放弃的代价写在按钮上面 #}
+  <p class="warn">你还有一场面试没结束 —— 先把它答完，或者放弃它。</p>
+  <ul>
+    {% for a in active %}
+    <li>
+      <a href="/interview/{{ a.session_id }}">
+        {{ "模拟面试" if a.interview.mode == "interview" else "单题追问" }} #{{ a.interview.id }}
+      </a>
+      <span class="muted">开始于 {{ a.interview.started_at }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="/interview/{{ active[0].interview.id }}/abandon">
+    <p class="muted">放弃之后<strong>额度点不退还</strong>（它在开场时就已经记账了），
+    那场面试会留在<a href="/me/interviews">面试记录</a>里。</p>
+    <p><button class="button" type="submit">放弃这一场</button></p>
+  </form>
+  {% elif user and quota and not quota.library_only %}
   <form method="post" action="/interview/start">
     <button class="button" name="mode" value="interview" type="submit">开始模拟面试（6 点）</button>
   </form>
