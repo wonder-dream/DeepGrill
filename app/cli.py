@@ -230,18 +230,23 @@ def cmd_mount(settings: Settings) -> int:
     return 0
 
 
-def cmd_backup(settings: Settings, dest: str, keep: int) -> int:
+def cmd_backup(settings: Settings, dest: str, keep: int, mirror: str = "") -> int:
     """做一份备份并**当场验证它能不能恢复**（ADR-0008）。
 
-    退出码就是答案：0 = 这份备份现在能恢复；非 0 = 不能（cron 因此会报警）。
-    异地那一跳交给部署侧的 rclone/aws-cli —— 这一层不引云 SDK。
+    退出码就是答案：0 = 这份备份（**含异地那一份**）现在能恢复；非 0 = 不能
+    （cron / systemd 因此会报警）。
+
+    异地目录来自 `--mirror`，否则取 `DEEPGRILL_BACKUP_MIRROR`（`.env` 里配一次，
+    定时器就自动带上）。它可以是挂载上来的目录 / 另一块盘 / `rclone mount` 的远端 ——
+    这一层不引任何云 SDK，只做"复制 + 校验和 + 失败让退出码非零"。
     """
     from app.backup import backup, record
     from app.config import REPO_ROOT
 
     db_path = settings.resolved_database_path()
     dest_dir = Path(dest) if dest else REPO_ROOT / "data" / "backups"
-    result = backup(db_path, dest_dir, keep=keep)
+    mirror_dir = Path(mirror or settings.backup_mirror) if (mirror or settings.backup_mirror) else None
+    result = backup(db_path, dest_dir, keep=keep, mirror_dir=mirror_dir)
 
     engine = create_db_engine(db_path)
     with create_session_factory(engine)() as session:
@@ -258,10 +263,17 @@ def cmd_backup(settings: Settings, dest: str, keep: int) -> int:
         print(f"  [{'ok  ' if passed else 'FAIL'}] {name}：{why}")
     if result.pruned:
         print(f"按保留策略删掉 {len(result.pruned)} 个文件")
+    if result.mirrored:
+        print(f"异地：已复制 {len(result.mirrored)} 个文件 → {result.mirrored[0].parent}")
+    elif mirror_dir is None:
+        print("异地：没配（DEEPGRILL_BACKUP_MIRROR 为空）—— 只有本地这一份")
     if not result.ok:
+        # 异地失败要单独说出来：它和"本地这份坏了"是两件事，处置也不同
+        if result.mirror_error:
+            print(result.mirror_error, file=sys.stderr)
         print(result.error or result.report.summary(), file=sys.stderr)
         return 1
-    print("这份备份已验证可恢复")
+    print("这份备份已验证可恢复" + ("（含异地那一份）" if result.mirrored else ""))
     return 0
 
 
@@ -495,6 +507,11 @@ def main(argv: list[str] | None = None) -> int:
     backup = sub.add_parser("backup", help="做一份备份并当场验证可恢复（ADR-0008）")
     backup.add_argument("--dest", default="", help="备份目录（默认 data/backups）")
     backup.add_argument("--keep", type=int, default=14, help="保留最近几份（默认 14）")
+    backup.add_argument(
+        "--mirror",
+        default="",
+        help="异地目录（第二份）；留空则用 DEEPGRILL_BACKUP_MIRROR。异地失败会让退出码非零",
+    )
     verify = sub.add_parser("verify-backup", help="只做恢复验证（演练用）")
     verify.add_argument("path", help="备份文件（.db.gz）")
     generate = sub.add_parser(
@@ -534,7 +551,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "worker":
         return cmd_worker(settings, args.once)
     if args.command == "backup":
-        return cmd_backup(settings, args.dest, args.keep)
+        return cmd_backup(settings, args.dest, args.keep, args.mirror)
     if args.command == "verify-backup":
         return cmd_verify_backup(args.path)
     if args.command == "generate":

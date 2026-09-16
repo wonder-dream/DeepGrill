@@ -195,6 +195,16 @@ def test_nginx_only_speaks_modern_tls() -> None:
     assert "ssl_certificate " in text
 
 
+def test_the_offsite_backup_hook_is_wired() -> None:
+    """异地备份要么走 `DEEPGRILL_BACKUP_MIRROR`（代码里做），要么走本机来拉 ——
+    两条路都必须在仓库里留痕，否则下一个人只会看到"备份成功"的绿灯。"""
+    unit = _unit_text(DEPLOY / "deepgrill-backup.service")
+    assert "DEEPGRILL_BACKUP_MIRROR" in unit, "单元里没提异地目录这个开关"
+    assert (DEPLOY / "pull-backups.ps1").is_file(), "没有「本机来拉」那个脚本"
+    readme = (DEPLOY / "README.md").read_text(encoding="utf-8")
+    assert "DEEPGRILL_BACKUP_MIRROR" in readme and "pull-backups.ps1" in readme
+
+
 def test_nginx_locks_down_the_admin_area() -> None:
     """`/admin/**` 必须有一道反代层的白名单，且**失败方向是安全的那一边**。
 

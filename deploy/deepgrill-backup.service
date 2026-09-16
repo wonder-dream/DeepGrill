@@ -11,9 +11,17 @@ EnvironmentFile=/srv/deepgrill/.env
 # `--keep` 是保留份数：本地只留最近几份（磁盘就这么大）。
 # 它做的是**快照 + 清单 + 当场自验**（`app/backup.py`），失败会让整个单元失败，
 # 而失败会进观测页与退出码（ADR-0008：备份"成功"但恢复不了，只在需要它的那一天暴露）。
+# 异地那一份由 DEEPGRILL_BACKUP_MIRROR（.env）指定，**它的失败同样让本单元失败**。
 ExecStart=/srv/deepgrill/.venv/bin/python -m app.cli backup --dest /srv/deepgrill/backups --keep 7
-# ⚠️ **异地那一跳是部署侧的事，不在仓库里**（ADR-0008 明说频率与保留策略待定）。
-# 接法就是在这里加一行，让上传失败也把整个单元标红：
+# ⚠️ 两种异地拓扑（ADR-0008 把"传到哪"留给部署侧决定）：
+#   ① 机器够得着一个目录/NAS/rclone mount → 在 .env 里写
+#        DEEPGRILL_BACKUP_MIRROR=/mnt/offsite/deepgrill
+#      代码会把已自验过的那一份复制过去并核对校验和（`app/backup.py::mirror`）。
+#   ② 机器够不着你的本机（家用宽带大多如此）→ **让本机定期来拉**：
+#        deploy/pull-backups.ps1（Windows 任务计划程序），见 deploy/README.md §三。
+#      这种情况下不需要 rclone。
+# 想用对象存储也可以，它等价于 ①：先 rclone mount，再指向那个挂载点；
+# 或者在这里加一行（同样让失败标红）：
 #   ExecStartPost=/usr/bin/rclone copy /srv/deepgrill/backups remote:deepgrill-backups
 
 NoNewPrivileges=true

@@ -137,6 +137,12 @@ class Settings(BaseSettings):
     #: 用固定偏移而不是时区名：Windows 上 `zoneinfo` 要另装 tzdata，而中国无夏令时。
     quota_utc_offset_hours: float = 8.0
 
+    #: 备份的**异地目录**（第二份）。空 = 只留本地那一份。
+    #: 它可以是挂载上来的目录、另一块盘、或者 `rclone mount` 出来的远端 —— 见
+    #: `app/backup.py::mirror()`：那一步失败会让 `app.cli backup` 的退出码非零，
+    #: 于是 systemd 单元标红（"备份成功但没传出去"的绿色状态比没有备份更危险）。
+    backup_mirror: str = ""
+
     def resolved_database_path(self) -> Path:
         """把相对路径解析到仓库根下。"""
         p = self.database_path

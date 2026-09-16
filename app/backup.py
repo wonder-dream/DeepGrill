@@ -338,18 +338,77 @@ class BackupResult:
     report: VerifyReport
     pruned: list[Path] = field(default_factory=list)
     error: str = ""
+    #: 异地（第二份）落地的路径。空 = 没配异地，或异地那一步失败了（看 `mirror_error`）
+    mirrored: list[Path] = field(default_factory=list)
+    mirror_error: str = ""
 
     @property
     def ok(self) -> bool:
-        return self.archive is not None and self.report.ok and not self.error
+        return (
+            self.archive is not None
+            and self.report.ok
+            and not self.error
+            and not self.mirror_error
+        )
 
 
-def backup(db_path: Path, dest_dir: Path, *, keep: int = DEFAULT_KEEP) -> BackupResult:
+def mirror(
+    archive: Path, manifest: Manifest, dest_dir: Path, *, keep: int = DEFAULT_KEEP
+) -> list[Path]:
+    """把**已经验证过**的那一份复制到第二个目录（异地/另一块盘）。
+
+    ## 为什么它算进退出码
+
+    部署文档里那句话是这条函数的全部理由：**"备份成功但没传出去"的绿色状态比没有
+    备份更危险**。所以这里任何一步失败（目录不存在、写不进去、复制后校验和不一致）
+    都记进 `mirror_error`，而 `BackupResult.ok` 因此为假 —— systemd 单元会标红。
+
+    ## 它只做"复制 + 校验"，不做传输
+
+    异地可以是挂载上来的目录（NFS / SMB / 移动硬盘 / rclone mount），也可以是
+    `DEEPGRILL_BACKUP_MIRROR` 指向的任何本地路径。**跨机器那一跳由部署侧决定**
+    （见 `deploy/README.md` 的两种拓扑）—— 仓库里不替你选一家对象存储。
+
+    校验做两件事：复制后的字节数与 sha256 与清单一致。前者抓"盘满了写了一半"，
+    后者抓"复制过程中串了内容"。
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if not dest_dir.is_dir():
+        raise OSError(f"异地目录不是一个目录：{dest_dir}")
+
+    copied: list[Path] = []
+    for src in (archive, archive.with_suffix(archive.suffix + ".json")):
+        target = dest_dir / src.name
+        shutil.copy2(src, target)
+        copied.append(target)
+
+    target_archive = dest_dir / archive.name
+    if target_archive.stat().st_size != manifest.size_bytes:
+        raise OSError(
+            f"异地那份的大小对不上：{target_archive.stat().st_size} != {manifest.size_bytes}"
+        )
+    actual = _sha256(target_archive)
+    if actual != manifest.sha256:
+        raise OSError(f"异地那份的校验和对不上：{actual[:12]}… != {manifest.sha256[:12]}…")
+
+    prune(dest_dir, keep=keep)
+    return copied
+
+
+def backup(
+    db_path: Path,
+    dest_dir: Path,
+    *,
+    keep: int = DEFAULT_KEEP,
+    mirror_dir: Path | None = None,
+) -> BackupResult:
     """**做一份备份，并且当场验证它能不能恢复。**
 
     这个函数存在的理由就是那句话：备份"成功"但恢复不了是最难发现的失败 ——
     它只在需要它的那一天暴露。所以退出码（`BackupResult.ok`）回答的是
     "这份备份现在能不能用"，而不是"文件写出来了没有"。
+
+    `mirror_dir` 给了就再复制一份到那里（见 `mirror()`：那一步失败同样让 `ok` 为假）。
     """
     try:
         archive, manifest = snapshot(db_path, dest_dir)
@@ -357,7 +416,16 @@ def backup(db_path: Path, dest_dir: Path, *, keep: int = DEFAULT_KEEP) -> Backup
         return BackupResult(None, None, VerifyReport(ok=False), error=f"快照失败：{e}")
 
     report = verify(archive, manifest=manifest)
-    return BackupResult(archive, manifest, report, pruned=prune(dest_dir, keep=keep))
+    result = BackupResult(archive, manifest, report, pruned=prune(dest_dir, keep=keep))
+
+    # 异地那一步只在**本地这份已经验证可恢复**时才做：把一份坏的复制出去，
+    # 只是把"坏"变成"两处都坏"。
+    if mirror_dir is not None and result.ok:
+        try:
+            result.mirrored = mirror(archive, manifest, mirror_dir, keep=keep)
+        except OSError as e:
+            result.mirror_error = f"异地那一份没落地：{e}"
+    return result
 
 
 def record(session: Session, result: BackupResult) -> TaskLog:

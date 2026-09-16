@@ -102,9 +102,32 @@ Origin Certificate**。"Flexible SSL"（CF→源站明文）会让令牌在公�
 .venv/bin/python -m app.cli verify-backup ./backups/xxx.db.gz  # 只验证（演练用）
 ```
 
-**异地那一跳不在仓库里**（ADR-0008 明说频率与保留策略待定）：它是部署侧的一行
-`ExecStartPost`，见 `deploy/deepgrill-backup.service` 里注释掉的那行。要点是
-**让上传失败把整个单元标红** —— 一个"备份成功但没传出去"的绿色状态比没有备份更危险。
+**异地那一跳**有两种拓扑，按"服务器够不够得着异地"选：
+
+**① 服务器够得着（挂载上来的目录 / NAS / 另一块盘 / `rclone mount`）** ——
+在 `.env` 里配一行，剩下的代码做：
+
+```bash
+DEEPGRILL_BACKUP_MIRROR=/mnt/offsite/deepgrill
+```
+
+`app.cli backup` 会把**已经自验过**的那一份复制过去，核对大小与 sha256，
+并按保留份数清理。**那一步失败会让整个单元失败**（退出码包含异地那一步）——
+"备份成功但没传出去"的绿色状态比没有备份更危险。
+
+**② 服务器够不着你的本机（家用宽带大多如此）** —— **让本机定期来拉**：
+
+```powershell
+# 先手动跑一次确认能通（需要免密 SSH：把本机公钥加进服务端 deepgrill 的 authorized_keys）
+pwsh -File deploy\pull-backups.ps1 -Server deepgrill@<你的服务器> -Dest D:\document\DeepGrill-back
+
+# 挂到任务计划程序：每天 04:30（服务器 03:30 备份之后）
+schtasks /create /tn "DeepGrill 拉备份" /sc daily /st 04:30 /tr ^
+  "pwsh -NoProfile -File <仓库>\deploy\pull-backups.ps1 -Server deepgrill@<你的服务器>"
+```
+
+脚本会**只拉新增的**、复制完**在本机再核一遍 sha256**（不一致就删掉并非零退出：
+"拉了一半的备份"比没有备份更危险）、并按份数保留最近若干份。
 
 演练要求：**至少每季度真的恢复一次**（`verify-backup` 会解包、校验校验和、
 跑 `PRAGMA integrity_check`、对表与行数、核对迁移版本）。没有演练过的备份不算备份。
