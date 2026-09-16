@@ -26,7 +26,7 @@
 | `DEEPGRILL_TRUST_PROXY_HEADERS=true` | 请求经过 nginx（以后还经过 Cloudflare）转发，不信任转发头会让**所有请求看起来来自同一个 IP**，按 IP 的限流就此失效（应用还有一道按**账号**的，见决策 92）|
 | 首件事是**替换 owner 口令** | `python -m app.cli set-password --email owner@local`（交互输入，或 `DEEPGRILL_NEW_PASSWORD='…'`；命令会同时撤销该账号的旧令牌）。**再用同一条命令改掉 `demo@local`** —— 它的口令 `deepgrill-demo` 明写在 `app/offline/seed.py` 里，是公开值 |
 | **（走 CF 就必须做）装 realip：`sudo sh deploy/refresh-cloudflare-ips.sh`** | `allow`/`deny` 和 `$binary_remote_addr` 看的都是 **TCP 对端地址**，而经 CF 进来的连接对端是 CF 边缘节点 —— 不装 realip，`/admin` 白名单里写谁的 IP 都会被 403（**管理员自己也进不去**），按 IP 的限流也会把全站算成一个来源。脚本只信任 CF 网段，所以伪造 `CF-Connecting-IP` 没有意义 |
-| **`/admin` 的 allow 要填「CF 看到的」那个 IP，而且 IPv4/IPv6 都要填** | ① 多出口的宽带下，`api.ipify.org` 报的 IP 和 CF 看到的**可以不是同一个**（实测差了一整个网段）；② **双栈网络里浏览器优先走 IPv6** —— 只放行 IPv4 的症状是"我这台机器 curl 能进、浏览器里却 403 Forbidden nginx"（实测踩过这一轮）。查法：**用浏览器打开** `https://<域名>/cdn-cgi/trace` 看 `ip=`。IPv6 建议放行 `/64` 前缀（隐私扩展会换掉主机位，放行单个地址会周期性失效）|
+| **`/admin` 的第二道门 = nginx Basic 认证**（决策 94） | 反代这一层**独立于**应用里的 owner 登录再收一道，失败方向是"进不去"。**刻意不用 IP 白名单**：`allow`/`deny` 比的是 TCP 对端地址（经 CF 进来的是边缘节点，得先装 realip）；即便装了 realip，"多出口 + 双栈 + 校园网共享 /64"的网络里白名单会周期性把**管理员自己**关在门外 —— 上线当天连撞三次。口令文件 `/etc/nginx/.htpasswd-admin`：生成 `sudo htpasswd -c /etc/nginx/.htpasswd-admin admin`，重设 `sudo htpasswd /etc/nginx/.htpasswd-admin admin`（**没有 `-c`**）|
 | **（切 CF 之后必做）源站只允许 Cloudflare 回源** | 反代把访客 IP 取自 `CF-Connecting-IP`。端口若对全网开放，任何人都能绕过 CF 直连源站（realip 只信 CF 网段，所以限流骗不过去，但直连仍然能绕开 CF 的 WAF/缓存）。CF 一生效就用防火墙只放 CF 的出口网段（域名直连阶段做不了这一步，那时访客就是直连来的）|
 | **`/admin` 的白名单** | `nginx.conf` 里 `location ^~ /admin` 段留了 `deny all` + 一行注释掉的 `allow`。**上线前把你的出口 IP 填进去**（或改用 Cloudflare Access，那种做法下这一段可以删）|
 | `mkdir -p backups` | systemd 的 `ReadWritePaths` 要求目录**存在**；不存在时 backup 单元直接起不来（`ProtectSystem=strict` 的经典坑）|
@@ -92,13 +92,20 @@ sudo certbot certonly --webroot -w /var/www/certbot \
 # 续期时源站已经有 443 了，所以 Full (strict) 下也能过 —— 前提是 nginx.conf 的
 # **443 那块**里也有 /.well-known/acme-challenge/（它确实有）。
 
-# ② 换成正式配置（TLS + 限流 + 安全头 + /admin 白名单）
+# ② 换成正式配置（TLS + 限流 + 安全头 + /admin 的第二道门）
 sudo cp deploy/nginx.conf /etc/nginx/sites-available/deepgrill.conf
-# ⚠️ 再把 `location ^~ /admin` 段里那行注释掉的 allow 改成你自己的出口 IP
-sudo nano /etc/nginx/sites-available/deepgrill.conf
 sudo nginx -t && sudo systemctl reload nginx
 
-# ③ 走 Cloudflare 的话，装上 realip（**不装的话 /admin 白名单必然 403**）
+# ③ /admin 的第二道门：一个**与网络/IP 无关**的口令（决策 94）
+#    它独立于应用里的 owner 登录 —— 那道门是"万一 owner 口令还是占位值"时的兜底
+sudo apt-get install -y apache2-utils
+sudo htpasswd -c /etc/nginx/.htpasswd-admin admin      # 交互输入口令
+sudo chown root:www-data /etc/nginx/.htpasswd-admin
+sudo chmod 640 /etc/nginx/.htpasswd-admin
+# 忘了口令就重设（注意**没有 -c**，有 -c 会把整个文件重建）：
+#   sudo htpasswd /etc/nginx/.htpasswd-admin admin
+
+# ④ 走 Cloudflare 的话，装上 realip（不装的话限流会全站共用一个桶）
 sudo sh deploy/refresh-cloudflare-ips.sh
 # 列表会变，一周刷一次就够（可挂 timer/cron）：
 #   0 4 * * 1 root sh /srv/deepgrill/deploy/refresh-cloudflare-ips.sh

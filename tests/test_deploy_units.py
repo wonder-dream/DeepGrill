@@ -237,19 +237,27 @@ def test_the_offsite_backup_hook_is_wired() -> None:
 
 
 def test_nginx_locks_down_the_admin_area() -> None:
-    """`/admin/**` 必须有一道反代层的白名单，且**失败方向是安全的那一边**。
+    """`/admin/**` 必须有一道反代层的门，且**失败方向是安全的那一边**。
 
     它是唯一能改全局装配的地方（知识层人审、账号、邀请码），而此前它与首页一样对
     全网开放 —— 唯一挡着的是 owner 那一份口令，而那份口令在迁移里是明文可读的占位值。
-    `deny all` 必须留着：忘填自己的 IP 时，后果是"自己也进不去后台"，
-    而不是"后台对所有人开放"。
+
+    这道门**刻意不用 IP 白名单**（决策 94，曾经就是 `allow`/`deny`）：经 Cloudflare
+    进来的连接对端永远是 CF 边缘节点，得先装 realip 才有意义；而即便装了 realip，
+    "多出口 + 双栈 + 校园网共享 /64"的网络里白名单会周期性把**管理员自己**关在门外
+    （上线当天实测连撞三次）。Basic 认证与网络无关，失败方向同样是"进不去"。
     """
     text = _nginx()
-    assert "location ^~ /admin" in text, "nginx 里没有 /admin 的白名单段"
+    assert "location ^~ /admin" in text, "nginx 里没有 /admin 的门"
     block = text.split("location ^~ /admin", 1)[1].split("\n    }", 1)[0]
-    assert "deny all;" in block, "/admin 段里没有 `deny all`（失败方向必须安全）"
-    assert "allow " in block, "/admin 段里没有 allow（那它自己也进不去）"
+    assert "auth_basic " in block, "/admin 段没有认证"
+    assert "auth_basic_user_file /etc/nginx/.htpasswd-admin;" in block, (
+        "/admin 段的认证文件不是约定的那一个"
+    )
+    assert "deny all;" not in block, (
+        "IP 白名单已经废止（决策 94）：它会把管理员自己关在门外"
+    )
     assert "proxy_pass" in block, "/admin 段忘了转发给应用"
-    # 文档要说清"上线前必须改成自己的 IP"，否则那段注释会被当成装饰
+    # 文档要说清"那道门怎么设、怎么重设"，否则它会被当成装饰
     readme = (DEPLOY / "README.md").read_text(encoding="utf-8")
-    assert "/admin" in readme, "部署文档没提 /admin 的白名单要改"
+    assert "htpasswd" in readme, "部署文档没写 /admin 的口令怎么设"
