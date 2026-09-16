@@ -25,7 +25,8 @@
 | `DEEPGRILL_SESSION_COOKIE_SECURE=true` | 本机 http 开发留 false，线上必须 true |
 | `DEEPGRILL_TRUST_PROXY_HEADERS=true` | 请求经过 nginx（以后还经过 Cloudflare）转发，不信任转发头会让**所有请求看起来来自同一个 IP**，按 IP 的限流就此失效（应用还有一道按**账号**的，见决策 92）|
 | 首件事是**替换 owner 口令** | `python -m app.cli set-password --email owner@local`（交互输入，或 `DEEPGRILL_NEW_PASSWORD='…'`；命令会同时撤销该账号的旧令牌）。**再用同一条命令改掉 `demo@local`** —— 它的口令 `deepgrill-demo` 明写在 `app/offline/seed.py` 里，是公开值 |
-| **（切 CF 之后必做）源站只允许 Cloudflare 回源** | 反代把访客 IP 取自 `CF-Connecting-IP`。端口若对全网开放，任何人都能伪造这个头 → 按 IP 的限流形同不存在。所以 CF 一生效就用防火墙只放 CF 的出口网段（域名直连阶段做不了这一步，那时访客就是直连来的）|
+| **（走 CF 就必须做）装 realip：`sudo sh deploy/refresh-cloudflare-ips.sh`** | `allow`/`deny` 和 `$binary_remote_addr` 看的都是 **TCP 对端地址**，而经 CF 进来的连接对端是 CF 边缘节点 —— 不装 realip，`/admin` 白名单里写谁的 IP 都会被 403（**管理员自己也进不去**），按 IP 的限流也会把全站算成一个来源。脚本只信任 CF 网段，所以伪造 `CF-Connecting-IP` 没有意义 |
+| **（切 CF 之后必做）源站只允许 Cloudflare 回源** | 反代把访客 IP 取自 `CF-Connecting-IP`。端口若对全网开放，任何人都能绕过 CF 直连源站（realip 只信 CF 网段，所以限流骗不过去，但直连仍然能绕开 CF 的 WAF/缓存）。CF 一生效就用防火墙只放 CF 的出口网段（域名直连阶段做不了这一步，那时访客就是直连来的）|
 | **`/admin` 的白名单** | `nginx.conf` 里 `location ^~ /admin` 段留了 `deny all` + 一行注释掉的 `allow`。**上线前把你的出口 IP 填进去**（或改用 Cloudflare Access，那种做法下这一段可以删）|
 | `mkdir -p backups` | systemd 的 `ReadWritePaths` 要求目录**存在**；不存在时 backup 单元直接起不来（`ProtectSystem=strict` 的经典坑）|
 
@@ -95,6 +96,11 @@ sudo cp deploy/nginx.conf /etc/nginx/sites-available/deepgrill.conf
 # ⚠️ 再把 `location ^~ /admin` 段里那行注释掉的 allow 改成你自己的出口 IP
 sudo nano /etc/nginx/sites-available/deepgrill.conf
 sudo nginx -t && sudo systemctl reload nginx
+
+# ③ 走 Cloudflare 的话，装上 realip（**不装的话 /admin 白名单必然 403**）
+sudo sh deploy/refresh-cloudflare-ips.sh
+# 列表会变，一周刷一次就够（可挂 timer/cron）：
+#   0 4 * * 1 root sh /srv/deepgrill/deploy/refresh-cloudflare-ips.sh
 
 # ⑦ 验证
 curl -fsS http://127.0.0.1:8000/healthz          # 应用自身

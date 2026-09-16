@@ -210,6 +210,22 @@ def test_nginx_only_speaks_modern_tls() -> None:
     assert "ssl_certificate " in text
 
 
+def test_the_cloudflare_realip_refresh_is_wired() -> None:
+    """走 CDN 时 `allow`/`deny` 与 `$binary_remote_addr` 看的都是 **TCP 对端地址**
+    （= CF 边缘节点），所以必须有一步把 CF 网段喂给 realip 模块 —— 否则 `/admin`
+    的白名单写谁的 IP 都进不去，**管理员自己也是 403**（这个坑真发生过）。
+
+    列表会变，所以它得是**可重复跑**的脚本，而不是抄进仓库的一份死名单。
+    """
+    script = DEPLOY / "refresh-cloudflare-ips.sh"
+    assert script.is_file(), "没有刷新 CF 网段的脚本"
+    text = script.read_text(encoding="utf-8")
+    assert "set_real_ip_from" in text and "real_ip_header CF-Connecting-IP" in text
+    assert "ips-v4" in text and "ips-v6" in text, "脚本没有从 CF 官方接口取列表"
+    readme = (DEPLOY / "README.md").read_text(encoding="utf-8")
+    assert "refresh-cloudflare-ips.sh" in readme, "部署文档没提这一步"
+
+
 def test_the_offsite_backup_hook_is_wired() -> None:
     """异地备份要么走 `DEEPGRILL_BACKUP_MIRROR`（代码里做），要么走本机来拉 ——
     两条路都必须在仓库里留痕，否则下一个人只会看到"备份成功"的绿灯。"""
