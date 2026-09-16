@@ -162,7 +162,7 @@ DEEPGRILL_BACKUP_MIRROR=/mnt/offsite/deepgrill
 **② 服务器够不着你的本机（家用宽带大多如此）** —— **让本机定期来拉**：
 
 ```powershell
-# 本机先备一把专用钥匙（无口令：计划任务没法交互输入）
+# 本机先备一把专用钥匙（无口令：自动任务没法交互输入）
 ssh-keygen -t ed25519 -f $env:USERPROFILE\.ssh\deepgrill-backup -N '""'
 # 把这把钥匙的公钥加到服务器的 /root/.ssh/authorized_keys —— 用 root 而不是
 # deepgrill：那是服务账号，shell 是 nologin，SSH 进去会被立刻踢出来
@@ -170,11 +170,47 @@ ssh-keygen -t ed25519 -f $env:USERPROFILE\.ssh\deepgrill-backup -N '""'
 # 先手动跑一次确认能通
 powershell -NoProfile -File deploy\pull-backups.ps1 -Server root@<你的服务器> `
     -SshKey $env:USERPROFILE\.ssh\deepgrill-backup -Dest D:\document\DeepGrill-back
-
-# 挂到任务计划程序：每天 04:30（服务器 04:22 备份之后）
-schtasks /create /tn "DeepGrill 拉备份" /sc daily /st 04:30 /tr ^
-  "powershell -NoProfile -File <仓库>\deploy\pull-backups.ps1 -Server root@<你的服务器> -SshKey %USERPROFILE%\.ssh\deepgrill-backup"
 ```
+
+然后选一种自动触发方式：
+
+**方案 A（推荐：不需要管理员，登录时跑）** —— 启动文件夹里放一个隐藏窗口的 `.vbs`：
+
+```vbs
+' %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\DeepGrill 拉备份.vbs
+' 用启动文件夹而不是任务计划程序：ONLOGON 触发器**必须管理员**才能建（见下），
+' 而这个不需要任何提权。日志写在 D:\document\DeepGrill-back\pull.log —— 失败不静默。
+Dim sh, cmd
+Set sh = CreateObject("WScript.Shell")
+cmd = "cmd /c powershell -NoProfile -ExecutionPolicy Bypass -File ""<仓库>\deploy\pull-backups.ps1""" _
+    & " -Server root@<你的服务器>" _
+    & " -SshKey """ & sh.ExpandEnvironmentStrings("%USERPROFILE%") & "\.ssh\deepgrill-backup""" _
+    & " -Dest ""D:\document\DeepGrill-back""" _
+    & " >> ""D:\document\DeepGrill-back\pull.log"" 2>&1"
+sh.Run cmd, 0, True     ' 0 = 不显示窗口；True = 等它跑完
+```
+
+**方案 B（需要管理员：任务计划程序，有「上次结果」可查）**：
+
+```powershell
+# ⚠️ 下面这条**必须**在「以管理员身份运行」的 PowerShell 里执行 ——
+#    /sc onlogon 与 /xml 注册都被非管理员拒（实测 Access is denied）。
+schtasks /create /tn "DeepGrill 拉备份" /sc onlogon /tr ^
+  "powershell -NoProfile -File <仓库>\deploy\pull-backups.ps1 -Server root@<你的服务器> -SshKey %USERPROFILE%\.ssh\deepgrill-backup" /f
+```
+
+⚠️ **`schtasks` 默认建出来的任务有三个开关会让它整天不跑**（实测踩过：任务建了、状态
+Ready、`LastTaskResult=267011`「从未运行」）—— 用固定时间触发时尤其致命：
+
+| 开关 | 默认 | 后果 |
+|---|---|---|
+| `DisallowStartIfOnBatteries` | **true** | 笔记本用电池时根本不启动 |
+| `StopIfGoingOnBatteries` | **true** | 跑到一半切电池就中断 |
+| `StartWhenAvailable` | **false** | 错过那一刻就**跳过这一天**，不补跑 |
+
+这三项在任务计划程序 GUI 里对应「条件」与「设置」两个选项卡；`schtasks /change` 改不了，
+`/xml` 注册又需要管理员 —— 所以如果你要的是"机器不一定开着，但每次开机都拉一次"，
+直接用方案 A 更省事。
 
 用 `powershell`（5.1，每台 Windows 都有）而不是 `pwsh`（7，未必装）。**脚本必须保留
 UTF-8 BOM**：5.1 在没有 BOM 时按 ANSI/GBK 解码 `.ps1`，中文注释会被解成乱码、把脚本
