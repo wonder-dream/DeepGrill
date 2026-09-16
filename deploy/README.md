@@ -19,12 +19,13 @@
 
 | 前置 | 为什么 |
 |---|---|
-| **TLS 可用**（Cloudflare 做访客 TLS，源站只监听回环） | TLS 是**上线前置条件，不是待办**（决策 64）。明文生产 = 令牌与会话在公网上裸奔 |
+| **TLS 可用**（对外只有 nginx 的 80/443，uvicorn 只监听回环） | TLS 是**上线前置条件，不是待办**（决策 64）。明文生产 = 令牌与会话在公网上裸奔 |
+| **证书**：`certbot certonly --webroot`（Let's Encrypt） | 一张公开可信的证书同时覆盖两种形态：域名**直连源站**时浏览器要它，Cloudflare **Full (strict)** 回源时也接受它 —— 所以切 CF 那天不用换证书。**Origin Certificate 直连阶段不能用**（浏览器不信任它，站点会打不开） |
 | `DEEPGRILL_REQUIRE_SECURE_DB=true` | 迁移会种一个 `owner@local`，口令哈希是明文可读的 `PLACEHOLDER__…`。不替换就能被任何人拿到 owner 权限，所以**进程会拒绝启动**（决策 58） |
 | `DEEPGRILL_SESSION_COOKIE_SECURE=true` | 本机 http 开发留 false，线上必须 true |
-| `DEEPGRILL_TRUST_PROXY_HEADERS=true` | 跑在 Cloudflare 后面时，不信任转发头会让**所有请求看起来来自同一个 IP**，按 IP 的限流就此失效（应用还有一道按**账号**的，见决策 92）|
+| `DEEPGRILL_TRUST_PROXY_HEADERS=true` | 请求经过 nginx（以后还经过 Cloudflare）转发，不信任转发头会让**所有请求看起来来自同一个 IP**，按 IP 的限流就此失效（应用还有一道按**账号**的，见决策 92）|
 | 首件事是**替换 owner 口令** | `python -m app.cli set-password --email owner@local`（交互输入，或 `DEEPGRILL_NEW_PASSWORD='…'`；命令会同时撤销该账号的旧令牌）。**再用同一条命令改掉 `demo@local`** —— 它的口令 `deepgrill-demo` 明写在 `app/offline/seed.py` 里，是公开值 |
-| **源站只允许 Cloudflare 回源** | 反代把访客 IP 取自 `CF-Connecting-IP`（见 nginx.conf 第 18–20 行的注释）。端口若对全网开放，任何人都能伪造这个头 → 按 IP 的限流形同不存在。用防火墙只放 CF 的出口网段 |
+| **（切 CF 之后必做）源站只允许 Cloudflare 回源** | 反代把访客 IP 取自 `CF-Connecting-IP`。端口若对全网开放，任何人都能伪造这个头 → 按 IP 的限流形同不存在。所以 CF 一生效就用防火墙只放 CF 的出口网段（域名直连阶段做不了这一步，那时访客就是直连来的）|
 | **`/admin` 的白名单** | `nginx.conf` 里 `location ^~ /admin` 段留了 `deny all` + 一行注释掉的 `allow`。**上线前把你的出口 IP 填进去**（或改用 Cloudflare Access，那种做法下这一段可以删）|
 | `mkdir -p backups` | systemd 的 `ReadWritePaths` 要求目录**存在**；不存在时 backup 单元直接起不来（`ProtectSystem=strict` 的经典坑）|
 
@@ -61,22 +62,45 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now deepgrill-web deepgrill-worker
 sudo systemctl enable --now deepgrill-backup.timer deepgrill-maintenance.timer
 
-sudo mkdir -p /etc/ssl/cloudflare
-sudo cp <你的 Origin Certificate>.pem /etc/ssl/cloudflare/deepgrill.pem
-sudo cp <你的 Origin Certificate>.key /etc/ssl/cloudflare/deepgrill.key
-sudo chmod 600 /etc/ssl/cloudflare/deepgrill.key
+sudo mkdir -p /var/www/certbot
+sudo apt-get install -y certbot
+
+# ① 先签证书，**再**放正式配置 —— 正式配置里的 ssl_certificate 指向还不存在的
+#    文件时 `nginx -t` 会直接失败。签证书只需要 80 端口能对外回一个目录：
+sudo tee /etc/nginx/sites-available/deepgrill.conf >/dev/null <<'EOF'
+server {
+    listen 80;
+    server_name deepgrill.asia www.deepgrill.asia;
+    location ^~ /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 301 https://$host$request_uri; }
+}
+EOF
+sudo ln -sf /etc/nginx/sites-available/deepgrill.conf /etc/nginx/sites-enabled/deepgrill
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl reload nginx
+# ⚠️ 域名已经走 Cloudflare 时（橙云），**第一次**签发必须先让 CF 用 HTTP 回源：
+#    把 SSL/TLS 模式临时设成 **Flexible**，签完再切回 Full (strict)。
+#    原因：Full/Full(strict) 下 CF **始终**用 HTTPS 回源（访客走 http 也一样），
+#    而这时源站还没有 443 —— CF 直接回 522，挑战文件根本取不到。
+sudo certbot certonly --webroot -w /var/www/certbot \
+  -d deepgrill.asia -d www.deepgrill.asia \
+  --agree-tos -m <你的邮箱> --no-eff-email \
+  --deploy-hook "systemctl reload nginx"
+# 续期由 certbot 装的 systemd timer 自动跑：systemctl list-timers 'certbot*'
+# 续期时源站已经有 443 了，所以 Full (strict) 下也能过 —— 前提是 nginx.conf 的
+# **443 那块**里也有 /.well-known/acme-challenge/（它确实有）。
+
+# ② 换成正式配置（TLS + 限流 + 安全头 + /admin 白名单）
 sudo cp deploy/nginx.conf /etc/nginx/sites-available/deepgrill.conf
-sudo sed -i 's/deepgrill.example.com/<你的域名>/g' /etc/nginx/sites-available/deepgrill.conf
 # ⚠️ 再把 `location ^~ /admin` 段里那行注释掉的 allow 改成你自己的出口 IP
 sudo nano /etc/nginx/sites-available/deepgrill.conf
-sudo ln -sf /etc/nginx/sites-available/deepgrill.conf /etc/nginx/sites-enabled/deepgrill
 sudo nginx -t && sudo systemctl reload nginx
 
 # ⑦ 验证
 curl -fsS http://127.0.0.1:8000/healthz          # 应用自身
-curl -fsS https://<你的域名>/healthz             # 走完 CF + nginx 那一整条
+curl -fsSI https://deepgrill.asia/healthz        # 走完 nginx 那一整条（CF 生效后再加上 CF 一段）
 systemctl status deepgrill-web deepgrill-worker --no-pager
-systemctl list-timers 'deepgrill-*'
+systemctl list-timers 'deepgrill-*' 'certbot*'
 ```
 
 `/healthz` 只回一个 200 + JSON，**不查库**（限流也豁免它）—— 它是给外部探活用的，
@@ -89,9 +113,15 @@ systemctl list-timers 'deepgrill-*'
 是 uvicorn，**这一层根本不存在，本地怎么测都测不出来**。`tests/test_deploy_units.py`
 把这个数字与应用的常量对上了（还有 SSE 不许被缓冲、探活不许被限流、源站只许 TLS1.2+）。
 
-TLS 的两段都要加密：访客 → Cloudflare 由 CF 负责；**Cloudflare → 源站这一段用
-Origin Certificate**。"Flexible SSL"（CF→源站明文）会让令牌在公网上裸奔一段，
+TLS 的两段都要加密：访客 → nginx（阶段二时是访客 → Cloudflare）由 Let's Encrypt
+那张证书负责；**Cloudflare → 源站这一段**用 CF 的 **Full (strict)** 模式，它回源时
+校验的就是同一张 LE 证书。"Flexible SSL"（CF→源站明文）会让令牌在公网上裸奔一段，
 而这一段在链路上看起来像内网。
+
+反代还有一个只在"有 CDN 在前面"时才发作的坑：`limit_req_zone` 的键如果是
+`$binary_remote_addr`，阶段二里这个地址是 **CF 边缘节点**，等于全站访客共用
+一个桶（10r/s）—— 正常流量会被一起挡掉，现象是"偶发 503"。所以键取 `$real_client_ip`，
+`tests/test_deploy_units.py` 钉住了这一点。
 
 ## 三、备份：做的那一半与**不做**的那一半
 

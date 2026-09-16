@@ -187,6 +187,21 @@ def test_nginx_keeps_the_health_check_out_of_the_rate_limiter() -> None:
     assert "limit_req" not in health.split("}")[0]
 
 
+def test_nginx_rate_limit_bucket_is_per_visitor_not_per_edge_node() -> None:
+    """限流桶的键必须是**访客**的 IP，而不是 nginx 看到的对端地址。
+
+    阶段二（走 Cloudflare）时 `$binary_remote_addr` 是 CF 的边缘节点 —— 拿它当键
+    等于全站访客共用一个桶（10r/s），正常流量会被一起挡成 503。它只在"前面挂了
+    CDN"时发作：开发机上 uvicorn 直连，这个现象永远复现不出来。
+    """
+    text = _nginx()
+    keys = re.findall(r"limit_req_zone\s+(\S+)\s+zone=", text)
+    assert keys, "nginx 配置里没有 limit_req_zone"
+    assert set(keys) == {"$real_client_ip"}, f"限流键不对：{keys}"
+    # 键变量必须真的被 map 定义，否则 nginx -t 直接失败
+    assert "map $http_cf_connecting_ip $real_client_ip" in text
+
+
 def test_nginx_only_speaks_modern_tls() -> None:
     """源站也要 TLS（不靠 CF 的 Flexible SSL），且不留 TLS 1.0/1.1。"""
     text = _nginx()
