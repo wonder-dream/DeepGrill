@@ -416,6 +416,24 @@ def test_per_user_limit_blocks_the_interviewer_actions(db: Path) -> None:
         assert "太频繁" in r.text
 
 
+def test_resume_submission_is_on_the_cost_limit(db: Path) -> None:
+    """`/me/resume` 必须挂在按用户的成本档上 —— 它是全项目唯一漏掉的那个 LLM 端点。
+
+    它一次请求跑**两次**模型调用（解析简历 + 出题），实测 25 连发 0 个 429：
+    页面上的"生成"按钮是唯一能被反复点着烧钱的入口。
+    """
+    app = _app(db, ratelimit_requests=100, ratelimit_llm_requests=1)
+    # 队列空的替身 ⇒ 模型失败 ⇒ 路由回 502（5xx 不释放预留格子，限流计数留得住）
+    app.dependency_overrides[get_llm] = lambda: FakeLLM()
+    resume = {"resume_text": "张三，后端三年，做过订单系统。" * 10}
+    with TestClient(app) as c:
+        c.post("/login", data={"email": "r@local", "password": PASSWORD})
+        assert c.post("/me/resume", data=resume).status_code == 502, (
+            "第一次要真的走到模型那一步，否则这条测试没测到限流"
+        )
+        assert c.post("/me/resume", data=resume).status_code == 429
+
+
 def test_disabled_leaves_everything_alone(db: Path) -> None:
     app = _app(db, ratelimit_enabled=False, ratelimit_requests=1)
     with TestClient(app) as c:

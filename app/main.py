@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -42,6 +44,8 @@ from app.web import (
     report_page,
 )
 from app.web.templating import WEB_DIR, render
+
+logger = logging.getLogger(__name__)
 
 #: 限流**不覆盖**的路径。探针不该被限流（它要能一直回答"进程还活着吗"），
 #: 静态资源也不该（一个页面会拉好几个，限流会把页面本身弄坏）。
@@ -230,6 +234,22 @@ def _install_error_handlers(app: FastAPI) -> None:
         return render(
             request, "error.html", {"message": exc.message}, status_code=exc.status_code
         )
+
+    @app.exception_handler(OverflowError)
+    def _overflow(request: Request, exc: OverflowError) -> object:
+        """数值越界是**输入错误**，不是服务端错误（兜底的那一层）。
+
+        SQLite 的绑定参数是 64 位：`/admin/users/2**63/password`、`/bank/2**63`、
+        `days=10**20` 这类请求会在驱动/`datetime` 里抛 `OverflowError`，原来直接
+        变成 500（第 1/3/6 轮共 7 处实测）。分页那条路已经在 `bank.service.offset_for`
+        里明确拒绝了；这一层管的是剩下的"路由参数直接当 id 用"的地方。
+
+        ⚠️ 它是**兜底**，不是许可：新增的整数参数该有显式上界（消息更准）。这里
+        只保证"至少不是 500"，而 `OverflowError` 在业务代码里几乎只可能来自
+        参数绑定越界（全项目没有一处会溢出的数值运算）。
+        """
+        logger.warning("参数越界：%s %s", request.method, request.url.path, exc_info=exc)
+        return render(request, "error.html", {"message": "参数超出范围"}, status_code=400)
 
     @app.exception_handler(404)
     def _not_found(request: Request, exc: object) -> JSONResponse:

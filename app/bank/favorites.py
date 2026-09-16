@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.bank import repository
+from app.bank import repository, service
 from app.bank.service import QuestionCard, to_card
 from app.errors import NotFound
 
@@ -73,9 +73,13 @@ def count(session: Session, *, user_id: int) -> int:
 def browse(
     session: Session, *, user_id: int, page: int = 1
 ) -> tuple[list[QuestionCard], int]:
-    """我的收藏（分页）。返回 `(卡片, 总条数)`。"""
+    """我的收藏（分页）。返回 `(卡片, 总条数)`。
+
+    `offset_for`（而不是自己算）是刻意的：越界页码必须变成 400，而不是让
+    SQLite 的参数绑定抛 `OverflowError` → 500（见 `service.MAX_OFFSET`）。
+    """
     page = max(1, page)
     rows, total = repository.list_favorites(
-        session, user_id, offset=(page - 1) * PAGE_SIZE, limit=PAGE_SIZE
+        session, user_id, offset=service.offset_for(page, page_size=PAGE_SIZE), limit=PAGE_SIZE
     )
     return _card(session, rows), total

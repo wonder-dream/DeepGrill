@@ -218,10 +218,16 @@ def test_cannot_promote_an_already_public_question(session: Session) -> None:
 
 
 def test_promotion_is_idempotent_in_effect(session: Session) -> None:
-    """第一次晋升成功；第二次被拒（它已经不是"我的私有题"了），题库状态不变。"""
+    """第一次晋升成功；第二次被拒（它已经不在"我的私有题"这一档了），题库状态不变。
+
+    ⚠️ 第二次的**理由**在修 bug 时变了：现在先判 visibility，所以拒绝的是
+    "已经在公共池里了"（`InvalidInput`），而不是原来那句对不上的"只能晋升你自己的题"
+    （晋升之后 `owner_user_id` 已被清空，于是所有者的判断先命中了 —— 用户看到的
+    是一句与事实无关的话）。被钉住的性质没变：**第二次拒绝、且题库一个字节不动**。
+    """
     promotion.promote(session, question=_q(session), user_id=ME)
     snapshot = _q(session).to_dict()
-    with pytest.raises(Forbidden):
+    with pytest.raises(InvalidInput):
         promotion.promote(session, question=_q(session), user_id=ME)
     assert _q(session).to_dict() == snapshot
 

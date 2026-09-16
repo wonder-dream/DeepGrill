@@ -172,13 +172,18 @@ def promote(session: Session, *, question: Question, user_id: int) -> GateResult
     · `origin = 'promoted'` —— 来源三类之一（决策 4）
 
     ⚠️ 它**不扣额度点**：晋升是一次纯数据库写入，没有任何 LLM 调用。
+
+    两个拒绝的**顺序**是有意的（实测）：先判 visibility，再判 owner。反过来的话，
+    一道**已经晋升过**的题（`owner_user_id` 已被清空）会走到 owner 那一支，
+    于是用户看到的是"只能晋升你自己的题"—— 一句与事实无关的话，够不着下面那句
+    准确的"已经在公共池里了"。
     """
+    if question.visibility not in ("private", "pending"):
+        raise InvalidInput(f"这道题已经在公共池里了（visibility={question.visibility}）")
     if question.owner_user_id != user_id:
         # 越权与"不存在"在这里分开：这道题对自己可见（否则调用方拿不到它），
         # 所以"不是你的"是一个明确的拒绝，不需要伪装成 404。
         raise Forbidden("只能晋升你自己的题")
-    if question.visibility not in ("private", "pending"):
-        raise InvalidInput(f"这道题已经在公共池里了（visibility={question.visibility}）")
 
     result = run_gate(session, question=question, user_id=user_id)
     if not result.passed:

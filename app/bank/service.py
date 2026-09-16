@@ -16,10 +16,28 @@ from sqlalchemy.orm import Session
 
 from app.bank import repository
 from app.db.models import Question
-from app.errors import NotFound
+from app.errors import InvalidInput, NotFound
 
 #: 题库列表每页条数。分页不是装饰（AGENTS.md §3.6）。
 PAGE_SIZE = 20
+
+#: 分页偏移量的上界 = SQLite 绑定参数能表示的 64 位有符号整数上限。
+#: ⚠️ 这不是产品限制，是**表示能力**的边界：实测 `/bank?page=2**63`、
+#: `/me/favorites?page=2**63` 会在驱动里抛 `OverflowError` → 500（第 1/3/6 轮共 7 处）。
+#: 越界该被**明确拒绝**，而不是 500，也不是静默返回一页空列表 —— 后者看起来像分页坏了。
+MAX_OFFSET = 2**63 - 1
+
+
+def offset_for(page: int, *, page_size: int = PAGE_SIZE) -> int:
+    """页码 → `OFFSET`。越界抛 `InvalidInput`（400），不抛 `OverflowError`（500）。
+
+    所有分页入口都走它：多一处自己算 `(page - 1) * PAGE_SIZE` 就多一处会把
+    越界页码变成 500 的地方。
+    """
+    offset = (max(1, page) - 1) * page_size
+    if offset > MAX_OFFSET:
+        raise InvalidInput(f"页号超出范围（{page}）")
+    return offset
 
 
 @dataclass
@@ -84,7 +102,7 @@ def browse(
         kind=kind,
         point_id=point_id,
         owner_only=owner_only,
-        offset=(page - 1) * PAGE_SIZE,
+        offset=offset_for(page),
         limit=PAGE_SIZE,
     )
     names = repository.point_names(

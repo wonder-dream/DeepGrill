@@ -143,6 +143,22 @@ def test_close_unknown_flag_is_404(session: Session) -> None:
         quality.close(session, flag_id=999)
 
 
+def test_an_already_closed_flag_cannot_be_re_judged(session: Session) -> None:
+    """已处理的标记不能被**静默改判**（与 `bank/feedback.resolve` 对齐）。
+
+    实测：resolve → resolve → dismiss 三次都成功，最后一条"已解决"被改成"误报" ——
+    于是"这道题到底修没修"没人答得出来（反馈那条路早就拒绝重复处理了，只有这里漏了）。
+    """
+    quality.flag_duplicate_questions(session)
+    flag_id = _flags(session)[0].id
+    quality.close(session, flag_id=flag_id, status=quality.RESOLVED)
+
+    with pytest.raises(InvalidInput):
+        quality.close(session, flag_id=flag_id, status=quality.DISMISSED)
+
+    assert session.get(QuestionFlag, flag_id).status == quality.RESOLVED
+
+
 def test_hide_takes_the_question_out_of_the_pool_and_closes_all_its_flags(
     session: Session,
 ) -> None:

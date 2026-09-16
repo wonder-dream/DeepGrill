@@ -18,7 +18,13 @@ from sqlalchemy.orm import Session
 from app.account import service as account
 from app.bank import repository as bank_repository
 from app.db.models import Interview, User
-from app.deps import SESSION_COOKIE, get_current_user, get_llm, get_session
+from app.deps import (
+    SESSION_COOKIE,
+    get_current_user,
+    get_llm,
+    get_session,
+    rate_limit_interviewer,
+)
 from app.errors import AppError, Forbidden, InvalidInput
 from app.knowledge import service as knowledge
 from app.llm import LLMError
@@ -87,6 +93,10 @@ def resume_submit(
     session: SessionDep,
     user: CurrentUserDep,
     llm=Depends(get_llm),
+    # 这一次请求要跑**两次** LLM 调用（解析简历 + 出题），而全项目只有它没挂
+    # 按用户的成本限流（第 5 轮实测：25 连发 0 个 429）—— 它是唯一能被
+    # "反复点提交"拿去烧钱的端点。
+    _rate_limit: None = Depends(rate_limit_interviewer),
     resume_text: Annotated[str, Form()] = "",
     note: Annotated[str, Form()] = "",
 ) -> object:

@@ -110,6 +110,13 @@ def test_unfavorite_without_being_favorited_is_not_an_error(client: TestClient) 
     assert client.post("/bank/1/favorite/remove", follow_redirects=False).status_code == 302
 
 
+def test_an_out_of_range_page_is_a_400_not_a_500(client: TestClient) -> None:
+    """收藏夹也分页：`?page=2**63` 修之前是 500（SQLite 的绑定参数是 64 位）。"""
+    r = client.get(f"/me/favorites?page={2**63}")
+    assert r.status_code == 400
+    assert "页号超出范围" in r.text
+
+
 def test_anonymous_favorite_goes_to_login_instead_of_403(app) -> None:
     """未登录点收藏 = 正常误触 → 送登录页。**不是** 403 一堵墙。"""
     with TestClient(app) as c:

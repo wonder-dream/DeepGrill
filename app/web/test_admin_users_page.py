@@ -171,6 +171,37 @@ def test_password_reset_unknown_user(owner_client: TestClient) -> None:
     assert r.status_code == 404
 
 
+def test_create_invite_refuses_a_bogus_validity(owner_client: TestClient, db: Path) -> None:
+    """有效期的非法值要**明确拒绝**，不能静默变成"永久有效"。
+
+    原来写的是 `int(days) if days.isdigit() else None`：于是 `-1`、`abc`、`3.5`
+    全都变成 None（= 永久）—— 一个输入错误换来一张永不过期的邀请码，而页面上
+    什么都不说。留空**仍然**是永久（那是表单的默认，有测试钉着）。
+    """
+    for bogus in ("-1", "abc", "3.5", "0"):
+        r = owner_client.post("/admin/invites", data={"days": bogus}, follow_redirects=False)
+        assert r.status_code == 400, f"days={bogus!r} 被接受了"
+
+    with create_session_factory(create_db_engine(db))() as s:
+        codes = [c.code for c in s.execute(select(InviteCode)).scalars()]
+    assert codes == ["DG-UNUSED", "DG-USED", "DG-EXPIRED"], "非法输入不该留下邀请码"
+
+
+def test_an_out_of_range_id_is_a_400_not_a_500(owner_client: TestClient) -> None:
+    """越界 id 传给驱动会抛 `OverflowError`（SQLite 的绑定参数是 64 位）。
+
+    `/admin/users/2**63/password` 修之前是 500 —— 这是输入错误，不是服务端错误。
+    """
+    r = owner_client.post(
+        f"/admin/users/{2**63}/password", data={"new_password": "long-enough-pw"}
+    )
+    assert r.status_code == 400
+    assert "参数超出范围" in r.text
+
+    r = owner_client.post(f"/admin/quality/{2**63}/resolve", follow_redirects=False)
+    assert r.status_code == 400
+
+
 def test_dashboard_shows_token_usage(owner_client: TestClient, db: Path) -> None:
     """决策 14 的第二道安全网要**看得见** —— 否则它等于没记。"""
     from app.account import service as account_service

@@ -128,6 +128,11 @@ def close(session: Session, *, flag_id: int, status: str = RESOLVED) -> Question
     if status not in (RESOLVED, DISMISSED):
         raise InvalidInput(f"status 只能是 {RESOLVED} / {DISMISSED}（收到 {status}）")
     flag = _get(session, flag_id)
+    if flag.status != "open":
+        # 与 `bank/feedback.resolve` 对齐（那条路早就这么做了）：**已经处理过的标记
+        # 不该被静默改判**。实测 resolve → resolve → dismiss 三次都成功，最后一条
+        # "已解决"被悄悄改成"误报" —— 于是"这条题到底修没修"没人答得出来。
+        raise InvalidInput(f"这条标记已经处理过了（{flag.status}）")
     flag.status = status
     session.flush()
     return flag

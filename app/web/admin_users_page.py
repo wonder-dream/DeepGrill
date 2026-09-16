@@ -21,7 +21,7 @@ from app.account import service as account
 from app.bank import feedback as feedback_service
 from app.db.models import User
 from app.deps import get_current_user, get_session
-from app.errors import Forbidden
+from app.errors import Forbidden, InvalidInput
 from app.web.templating import render
 
 router = APIRouter()
@@ -82,7 +82,16 @@ def create_invite(
     days: Annotated[str, Form()] = "",
 ) -> RedirectResponse:
     owner = _require_owner(user)
-    days_valid = int(days) if days.strip().isdigit() else None
+    # 留空 = 永久有效（表单的默认）；给了就必须是**正整数天数**。
+    # 原来写的是 `int(days) if days.isdigit() else None`：于是 `-1`、`abc`、`3.5`
+    # 全都静默变成"永久有效" —— 一个输入错误换来的是一张永不过期的邀请码。
+    raw = days.strip()
+    if raw == "":
+        days_valid = None
+    elif raw.isdigit() and int(raw) > 0:
+        days_valid = int(raw)
+    else:
+        raise InvalidInput(f"有效期只能是正整数天数（收到 {days!r}）")
     account.new_invite(session, created_by=owner.id, days_valid=days_valid)
     return RedirectResponse("/admin/invites", status_code=302)
 

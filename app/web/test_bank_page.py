@@ -88,3 +88,23 @@ def test_hidden_question_detail_is_404_not_leaked(client: TestClient) -> None:
 
 def test_unknown_question_is_404(client: TestClient) -> None:
     assert client.get("/bank/9999").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 越界的整数参数（第 1/3/6 轮实测：7 处 500）
+# ---------------------------------------------------------------------------
+def test_an_out_of_range_question_id_is_a_400_not_a_500(client: TestClient) -> None:
+    """`/bank/2**63` 是**输入错误**，不是服务端错误。
+
+    SQLite 的绑定参数是 64 位，驱动会抛 `OverflowError` —— 修之前它是 500。
+    """
+    r = client.get(f"/bank/{2**63}")
+    assert r.status_code == 400
+    assert "参数超出范围" in r.text
+
+
+def test_an_out_of_range_page_is_a_400_not_a_500(client: TestClient) -> None:
+    """页号越界同理，而且这一条在 `bank.service.offset_for` 里就挡住了（消息更准）。"""
+    r = client.get(f"/bank?page={2**63}")
+    assert r.status_code == 400
+    assert "页号超出范围" in r.text
