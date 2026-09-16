@@ -256,3 +256,31 @@ def test_stream_sends_include_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "response_format" not in seen, (
         "两段式回复不是纯 JSON —— 不能要求 json_object（那是整段必须 JSON）"
     )
+
+
+def test_reasoning_is_kept_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """推理文本**必须有界**（AGENTS.md §3.2：进内存的东西要有回收者）。
+
+    原来只 `append` 从不回收：一个请求里几次流式调用就能攒出几十 KB 的进程内垃圾
+    （实测一轮 1037 个 completion token 里 934 是推理）。这里灌 5 倍上限的推理，
+    断言留下的不超过上限、而**见过的总量照实记**（回收不等于没发生过）。
+    """
+    from app.llm import REASONING_KEEP_CHARS
+
+    monkeypatch.setattr("app.llm.time.sleep", lambda _s: None)
+    chunk = "推理" * 50  # 100 字
+    rounds = (REASONING_KEEP_CHARS // len(chunk)) * 5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        lines = [
+            "data: " + json.dumps({"choices": [{"delta": {"reasoning_content": chunk}}]})
+            for _ in range(rounds)
+        ]
+        lines.append("data: [DONE]")
+        return httpx.Response(200, text="\n\n".join(lines) + "\n\n")
+
+    client = _stream_client(handler)
+    assert list(client.stream([{"role": "user", "content": "x"}])) == []
+    kept = sum(len(c) for c in client._reasoning_buffer)
+    assert kept <= REASONING_KEEP_CHARS + len(chunk), f"缓冲区没回收，留着 {kept} 字"
+    assert client.reasoning_chars == len(chunk) * rounds, "见过的总量要照实记（回收 ≠ 没发生）"

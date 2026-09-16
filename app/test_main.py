@@ -100,3 +100,47 @@ def test_home_counts_rows_once_migrated(client: TestClient, settings: Settings) 
 
 def test_unknown_path_returns_404_json(client: TestClient) -> None:
     assert client.get("/no-such-page").status_code == 404
+
+
+def test_the_llm_client_is_closed_after_every_request(
+    tmp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """每请求一个 LLM 客户端，就必须**每请求关掉它**（AGENTS.md §3.2）。
+
+    `LLMClient` 里握着一个 `httpx.Client`（连接池 + socket）。`get_llm` 原来是普通
+    返回值、没有任何 teardown —— CPython 靠引用计数**碰巧**收得掉，换个解释器
+    （PyPy）或多一处引用就是真泄漏。现在它是生成器依赖，回收者挂在依赖退出栈上。
+
+    断言点选在"关了几次"上，而不是"有没有 close 方法"：替身记下每一次 close，
+    两个请求就该有两次。
+    """
+    from app import deps
+    from app.db import create_db_engine, create_session_factory
+    from app.llm import LLMError
+    from migrations._runner import migrate
+
+    migrate(tmp_dir / "main.db")
+    closed: list[str] = []
+
+    class SpyClient:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+        def close(self) -> None:
+            closed.append("closed")
+
+        def chat(self, *args: object, **kwargs: object) -> object:
+            raise LLMError("这个替身不该被真的调用")
+
+    monkeypatch.setattr(deps, "LLMClient", SpyClient)
+    app = create_app(Settings(database_path=tmp_dir / "main.db", llm_api_key="k"))
+    with TestClient(app) as c:
+        # 匿名访问也会解析 `llm` 依赖（依赖在处理器之前就解析完了），
+        # 所以不需要登录、也不需要题库里有题。断言只看"关了几次"。
+        c.post("/bank/1/explain")
+        assert closed == ["closed"], "请求结束必须关掉那个客户端"
+        c.post("/bank/1/explain")
+        assert closed == ["closed", "closed"], "每个请求各有各的客户端，各有各的回收"
+
+    # 顺带确认替身没被真的用来调模型（否则这条测试测的是别的东西）
+    assert create_session_factory(create_db_engine(tmp_dir / "main.db")) is not None

@@ -392,6 +392,43 @@ def _stream_response(
     事件只有三种，前端只认三种：`prose`（增量文字）、`done`（去哪一页）、
     `error`（出事了，页面上说一句）。
 
+    ⚠️ 生成器本身在 `_round_stream()` 里 —— **与响应对象分开**。理由是那条路最重要
+    的一个行为（客户端断开）只有把生成器**单独驱动并 `close()`** 才测得到：
+    `StreamingResponse` 会把它包成异步生成器，而那个包装**不会**显式关闭底层
+    同步生成器（`starlette/concurrency.py::iterate_in_threadpool` 里没有 try/finally），
+    于是"断开"在测试里只能靠 GC 时机，测不稳。
+    """
+    return StreamingResponse(
+        _round_stream(
+            engine=engine,
+            llm=llm,
+            me=me,
+            session_id=session_id,
+            answer_text=answer_text,
+            input_mode=input_mode,
+            stt_text=stt_text,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            # 反向代理（Cloudflare / nginx）默认会缓冲整个响应 —— 那样流式就没了
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _round_stream(
+    *,
+    engine: Engine,
+    llm,
+    me: User,
+    session_id: int,
+    answer_text: str,
+    input_mode: str = "text",
+    stt_text: str | None = None,
+) -> Iterator[str]:
+    """一轮的 SSE 帧生成器（**同步生成器**：`close()` 就是"客户端断开"）。
+
     ## 为什么流自己开一个会话
 
     请求依赖的那个会话要到**响应结束之后**才提交，而我们在流的末尾就要发 `done`
@@ -409,52 +446,70 @@ def _stream_response(
     factory = create_session_factory(engine)
     before = _usage_snapshot(llm)
 
-    def event_stream() -> Iterator[str]:
+    def record_aborted_usage() -> None:
+        """客户端中途离开时补记账 —— 模型的钱已经花了（§3.8 / 决策 14）。
+
+        实测（第 1 轮 probe16，真模型）：收到第一段 prose 后关掉连接 → 这一轮没落库、
+        `tokens_used` **一点没动**。断开时生成器被 `GeneratorExit` 关掉，它不是
+        `Exception`，所以原来那个 `except Exception` 抓不到 —— 记账必须挂在 `finally` 上。
+
+        ⚠️ 用**新会话**：上面那个已经随 `with` 关掉了（而且它正要回滚）。
+
+        ⚠️ 记账失败只记日志：这条路上没有任何还能写库的地方。§3.1 要的"可查询记录"
+        由正常路径的账本承担；这里退化成服务端日志（至少留下痕迹，不是无声无息）。
+        """
         try:
             with factory() as s:
-                ts = interview.get_session_row(s, session_id, me.id)
-                result = None
-                for event in interview.run_round(
-                    s,
-                    ts=ts,
-                    answer_text=answer_text,
-                    llm=llm,
-                    input_mode=input_mode,
-                    stt_text=stt_text,
-                    stream=True,
-                ):
-                    if isinstance(event, interview.RoundResult):
-                        result = event
-                    else:
-                        yield _sse("prose", {"delta": event})
-                if result is None:  # run_round 的契约：它必须以 RoundResult 收尾
-                    raise RuntimeError("这一轮没有产出结果")
-
-                target = (
-                    _finish_target(s, ts, llm)
-                    if result.finished
-                    else f"/interview/{session_id}"
-                )
                 _record_usage(s, me.id, llm, before)
-                # ⚠️ 必须在发 done **之前**提交：浏览器收到 done 就跳转，而那次渲染
-                # 是另一个请求 —— 提交晚一步它就读不到这一轮。
                 s.commit()
-                yield _sse("done", {"redirect": target, "llm_failed": result.llm_failed})
-        except Exception as e:  # noqa: BLE001
-            # 流已经开始，状态码改不了了 —— 那就**说出来**（§3.1：降级不静默），
-            # 让前端提示一句、重新加载页面看真实状态。
-            logger.exception("流式这一轮失败")
-            yield _sse("error", {"message": f"{type(e).__name__}: {e}"})
+        except Exception:  # noqa: BLE001
+            logger.warning("客户端断开之后补记 token 失败", exc_info=True)
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-store",
-            # 反向代理（Cloudflare / nginx）默认会缓冲整个响应 —— 那样流式就没了
-            "X-Accel-Buffering": "no",
-        },
-    )
+    recorded = False
+    try:
+        with factory() as s:
+            ts = interview.get_session_row(s, session_id, me.id)
+            result = None
+            for event in interview.run_round(
+                s,
+                ts=ts,
+                answer_text=answer_text,
+                llm=llm,
+                input_mode=input_mode,
+                stt_text=stt_text,
+                stream=True,
+            ):
+                if isinstance(event, interview.RoundResult):
+                    result = event
+                else:
+                    yield _sse("prose", {"delta": event})
+            if result is None:  # run_round 的契约：它必须以 RoundResult 收尾
+                raise RuntimeError("这一轮没有产出结果")
+
+            target = (
+                _finish_target(s, ts, llm)
+                if result.finished
+                else f"/interview/{session_id}"
+            )
+            _record_usage(s, me.id, llm, before)
+            # ⚠️ 必须在发 done **之前**提交：浏览器收到 done 就跳转，而那次渲染
+            # 是另一个请求 —— 提交晚一步它就读不到这一轮。
+            s.commit()
+            recorded = True
+            yield _sse("done", {"redirect": target, "llm_failed": result.llm_failed})
+    except Exception:  # noqa: BLE001
+        # 流已经开始，状态码改不了了 —— 那就**说出来**（§3.1：降级不静默），
+        # 让前端提示一句、重新加载页面看真实状态。
+        #
+        # ⚠️ 帧里**只给人话**：原来发的是 `f"{type(e).__name__}: {e}"`，于是
+        # `AttributeError: '_MissingKeyLLM' object has no attribute 'stream'`
+        # 这种内部细节直接进了浏览器（实测 probe5）。栈与原因进日志。
+        logger.exception("流式这一轮失败")
+        yield _sse("error", {"message": "服务端出错了"})
+    finally:
+        # 正常走完（recorded=True）时什么都不做；断开 / 中途异常时补一笔账
+        if not recorded:
+            record_aborted_usage()
 
 
 def _finish_target(session: Session, ts, llm) -> str:

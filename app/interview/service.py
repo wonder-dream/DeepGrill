@@ -41,6 +41,10 @@ DEFAULT_MAX_ROUNDS = 3
 #: 迟早会分叉成"两个意思"）。
 SESSION_FINISHED_MESSAGE = "这道题已经答完了 —— 刷新页面看看结果"
 
+#: 存进 `attempts.llm_error` 的原因长度上限。模型侧的错误消息本身已经截断过一次
+#: （响应正文最多 200 字），这里再兜一道 —— 一列诊断信息不该能顶大一行。
+_FAILURE_REASON_MAX = 500
+
 
 def require_active(ts: InterviewSession) -> None:
     """这一轮还能不能答。不能就抛 `InvalidInput`（预期内，不是 500）。
@@ -226,6 +230,8 @@ def run_round(
     )
 
     decision_failed = False
+    #: 判定失败的原因（迁移 0006）。**只进库、不进 prompt** —— 它是给排查用的。
+    failure_reason: str | None = None
     prose = ""
     try:
         if stream:
@@ -253,8 +259,12 @@ def run_round(
         # ⚠️ 这里必须**显式把全部考察点写进快照**，不能只留一个空 updates：
         # 空字典合并进累积快照等于"这一轮什么都没记"，而"考了没答"必须能被
         # 表达（掌握度矩阵的分母靠它，见 rules.HitSnapshot 的注释）。
+        #
+        # 原因**同时**写进 `attempts.llm_error`（迁移 0006）：只写日志的话，这一行
+        # 与"模型正常但一条都没答到"在库里长得一模一样（§3.1 要可查询的记录）。
         logger.warning("第 %d 轮判定失败：%s", round_no, e)
         decision_failed = True
+        failure_reason = str(e)[:_FAILURE_REASON_MAX]
         updates = {c.id: rules.NOT_COVERED for c in criteria}
         prose = "（面试官这轮没接上，继续说你的思路就好）"
         model_finish = False
@@ -275,6 +285,7 @@ def run_round(
         answer_text=answer_text,
         feedback_text=prose,
         hits=snapshot.to_json(),
+        llm_error=failure_reason,
     )
     session.add(attempt)
     try:

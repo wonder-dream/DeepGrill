@@ -146,20 +146,33 @@ def require_user(user: User | None = Depends(get_current_user)) -> User:
     return user
 
 
-def get_llm(settings: Settings = Depends(get_settings)) -> object:
+def get_llm(settings: Settings = Depends(get_settings)) -> Iterator[object]:
     """LLM 客户端（每请求一个）。**没有 key 时返回一个"明确失败"的替身**。
 
     这样建这个客户端本身不会让应用起不来（本机开发常常没有 key），而一旦真的
     要用它就会拿到一条清楚的错误 —— 而不是悄悄用假数据糊过去
     （AGENTS.md §3.1：降级可以，静默不行）。
+
+    ⚠️ 它是**生成器依赖**：`LLMClient` 里握着一个 `httpx.Client`（连接池 + socket），
+    不关就是每请求泄漏一个连接池 —— CPython 靠引用计数**碰巧**收得掉，换解释器
+    （PyPy）或加以引用就变成真泄漏（AGENTS.md §3.2：进内存的东西要有回收者）。
+    用 `try/finally` 而不是普通返回值：回收者就挂在依赖退出栈上。
+
+    退出栈在**响应发完之后**才退出（见 `get_session` 的注释），所以流式那条路
+    整个生成器跑完时客户端还活着 —— 这正是我们想要的。
     """
     if not settings.llm_api_key:
-        return _MissingKeyLLM()
-    return LLMClient(
+        yield _MissingKeyLLM()
+        return
+    client = LLMClient(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
         model=settings.model_interviewer,
     )
+    try:
+        yield client
+    finally:
+        client.close()
 
 
 def get_stt(settings: Settings = Depends(get_settings)) -> SpeechToText:
@@ -229,13 +242,24 @@ class _MissingKeyLLM:
 
     它让"判定失败"走既有的降级路径（会话不中断、这一轮记为未涉及、页面提示），
     所以没配 key 的机器上整条链仍然能跑通并被人工看到问题。
+
+    ⚠️ `stream` 必须也有：流式那条路（面试页的 SSE）直接调 `llm.stream(...)`，
+    少了这个方法会抛 `AttributeError` —— 它**不是** `LLMError`，所以
+    `run_round` 里的降级分支抓不到，最后变成一帧"内部异常原文"发给浏览器
+    （实测：`AttributeError: '_MissingKeyLLM' object has no attribute 'stream'`）。
     """
 
+    _NO_KEY = "没有配置 DEEPGRILL_LLM_API_KEY —— 无法调用模型"
+
     def chat(self, messages, **kwargs):
-        raise LLMCallError("没有配置 DEEPGRILL_LLM_API_KEY —— 无法调用模型")
+        raise LLMCallError(self._NO_KEY)
 
     def chat_json(self, messages, **kwargs):
-        raise LLMCallError("没有配置 DEEPGRILL_LLM_API_KEY —— 无法调用模型")
+        raise LLMCallError(self._NO_KEY)
+
+    def stream(self, messages, **kwargs):
+        """与 `chat` 同一句错误 —— 降级路径是**按异常类型**分岔的，不是按入口。"""
+        raise LLMCallError(self._NO_KEY)
 
     def close(self) -> None:
         pass

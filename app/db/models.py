@@ -284,6 +284,8 @@ attempts = Table(
     Column("feedback_text", Text),
     # 累积快照：criterion_id → 命中 / 未命中 / 未涉及（决策 28）
     Column("hits", JsonText),
+    # 本轮判分失败的原因（迁移 0006，§3.1：失败要有可查询的记录）。成功时为 NULL。
+    Column("llm_error", Text),
 )
 
 evaluations = Table(

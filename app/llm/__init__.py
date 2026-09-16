@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 #: 退避基数：第 N 次失败后等 `2**attempt` 秒（1s → 2s）。
 _BACKOFF_BASE = 1.0
 
+#: 保留的推理文本上限（字符）。推理不展示给用户，只用于排查，所以留最近一段就够；
+#: 关键是它**有界**（§3.2）。实测一轮 `completion_tokens=1037` 里 934 是推理 ——
+#: 一次请求若连着几次流式调用，不设上限就是几十 KB 的进程内垃圾。
+REASONING_KEEP_CHARS = 8000
+
 
 class LLMError(Exception):
     """LLM 层的失败基类。调用方**必须**区分下面两个子类。"""
@@ -317,7 +322,13 @@ class LLMClient:
         }
         #: 流式调用里累计的推理文本。**不展示给用户**（基线：思考过程不展示），
         #: 但服务端留着用于排查 —— 与 `LLMReply.reasoning_text` 同一个用途。
+        #: ⚠️ **只保留最近 `REASONING_KEEP_CHARS` 个字符**（见 `_keep_reasoning`）：
+        #: 原来只 append、从不回收，一个请求里几次流式调用就能攒出几十 KB 的
+        #: 进程内垃圾，而 §3.2 要求"进内存的东西必须有回收者"。
         self._reasoning_buffer: list[str] = []
+        self._reasoning_kept = 0
+        #: 见过的推理文本总字符数（含已经被回收的）—— 回收不等于没发生过。
+        self.reasoning_chars = 0
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             timeout=timeout,
@@ -327,6 +338,18 @@ class LLMClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def _keep_reasoning(self, chunk: str) -> None:
+        """留下这段推理文本，并保证缓冲区**有界**（AGENTS.md §3.2）。
+
+        `reasoning_chars` 记的是**见过多少**（含已回收的），所以"回收"不会把
+        事实改掉：要判断一次调用想得多少，读它而不是读缓冲区长度。
+        """
+        self.reasoning_chars += len(chunk)
+        self._reasoning_buffer.append(chunk)
+        self._reasoning_kept += len(chunk)
+        while self._reasoning_kept > REASONING_KEEP_CHARS and len(self._reasoning_buffer) > 1:
+            self._reasoning_kept -= len(self._reasoning_buffer.pop(0))
 
     def __enter__(self) -> LLMClient:
         return self
@@ -588,7 +611,7 @@ class LLMClient:
             delta = choices[0].get("delta") or {}
             reasoning = delta.get("reasoning_content")
             if reasoning:
-                self._reasoning_buffer.append(reasoning)
+                self._keep_reasoning(reasoning)
             content = delta.get("content")
             if content:
                 yield content

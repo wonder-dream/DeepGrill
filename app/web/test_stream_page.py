@@ -235,6 +235,121 @@ def test_stream_without_the_marker_degrades_visibly(app, client: TestClient, db:
     assert [p for e, p in frames(body) if e == "done"][0]["llm_failed"] is True
 
 
+def test_stream_error_frame_keeps_internals_out_of_the_browser(
+    app, client: TestClient, db: Path
+) -> None:
+    """流中途炸掉时，帧里只许有**人话**。
+
+    实测（probe5，没配 key 的实例）：浏览器收到的帧是
+    `{"message": "AttributeError: '_MissingKeyLLM' object has no attribute 'stream'"}` ——
+    内部类型名与属性名都漏给了用户。`except Exception` 那句 `f"{type(e).__name__}: {e}"`
+    是这类泄漏的通用形状；原因与栈该进日志。
+    """
+
+    class Exploding:
+        """任何调用都炸，且错误文案里带着"内部细节"。"""
+
+        def stream(self, messages, **kwargs):
+            raise RuntimeError("内部细节：/srv/secret/path.py 第 42 行")
+
+        def chat(self, messages, **kwargs):
+            raise RuntimeError("内部细节：/srv/secret/path.py 第 42 行")
+
+    app.dependency_overrides[get_llm] = Exploding
+    location = _start(client)
+
+    body = client.post(f"{location}/answer/stream", data={"answer_text": "a"}).text
+    events = frames(body)
+    assert events[-1][0] == "error", f"应当以 error 帧收尾：{events}"
+    message = events[-1][1]["message"]
+    assert "内部细节" not in message and "RuntimeError" not in message, (
+        f"帧里漏了内部细节：{message!r}"
+    )
+    assert "服务端" in message, "但也不能什么都不说（§3.1：降级不静默）"
+
+
+def test_stream_without_an_api_key_degrades_instead_of_crashing(
+    db: Path,
+) -> None:
+    """没配 key 时流式那条路要**走降级**，不是崩成 AttributeError。
+
+    实测（probe5 / BUGREPORT 1.7）：`_MissingKeyLLM` 只实现了 `chat`/`chat_json`，
+    而面试页的流式路直接调 `llm.stream(...)` —— 抛出的 `AttributeError` 不是
+    `LLMError`，于是 `run_round` 的降级分支抓不到，最后变成一帧内部异常原文。
+    这里用的是**真的替身**（不 override），因为要测的正是它。
+    """
+    application = create_app(Settings(database_path=db, stt_provider="none", llm_api_key=""))
+    with TestClient(application) as c:
+        c.post("/login", data={"email": "s@local", "password": PASSWORD})
+        location = _start(c)
+        body = c.post(f"{location}/answer/stream", data={"answer_text": "a"}).text
+
+    events = frames(body)
+    assert "AttributeError" not in body
+    assert events[-1][0] == "done", f"应当是「没接上」的正常降级，而不是错误帧：{events}"
+    assert "面试官这轮没接上" in prose_of(body)
+    assert events[-1][1]["llm_failed"] is True
+    attempts = _attempts(db)
+    assert len(attempts) == 1, "失败的那一轮仍然要落库（§3.1）"
+    assert attempts[0].llm_error, "失败原因要可查询（迁移 0006）"
+
+
+def test_a_client_disconnect_still_records_the_cost(app, client: TestClient, db: Path) -> None:
+    """客户端中途关掉页面时，**这一轮花的钱也要留下痕迹**（§3.8 / 决策 14）。
+
+    实测（probe16，真模型，18.1s）：收到第一段 prose 之后断开 → `attempts` 为空、
+    `tokens_used` 一点没动。断开时生成器被 `GeneratorExit` 关掉，而它不是
+    `Exception` —— 那个 `except Exception` 抓不到它，记账必须挂在 `finally` 上。
+
+    这里不走 TestClient 发请求，而是**直接对着生成器**：拿到第一帧之后 `close()`
+    ——那就是"浏览器把连接关了"在服务端看到的东西（deterministic，不靠时序）。
+    """
+    from app.account import repository as account_repository
+    from app.account import service as account
+    from app.db.models import User
+    from app.web.interview_page import _round_stream
+
+    class Metered(FakeLLM):
+        def __init__(self, **kw) -> None:
+            super().__init__(**kw)
+            self.usage_total = {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "reasoning_tokens": 0,
+                "calls": 0,
+                "missing_usage_calls": 0,
+            }
+
+        def chat(self, *args, **kwargs):
+            reply = super().chat(*args, **kwargs)
+            self.usage_total["prompt_tokens"] += 700
+            self.usage_total["completion_tokens"] += 300
+            self.usage_total["calls"] += 1
+            return reply
+
+    fake = Metered().queue(round_reply(hits=[(1, "命中")], prose="继续说说。"))
+    location = _start(client)
+    session_id = int(location.rsplit("/", 1)[1])
+    engine = create_db_engine(db)
+    with create_session_factory(engine)() as s:
+        me = s.get(User, 2)
+        assert me is not None
+
+    stream = _round_stream(
+        engine=engine, llm=fake, me=me, session_id=session_id, answer_text="保证可见性"
+    )
+    first = next(stream)
+    assert "event: prose" in first, f"第一帧应当是面试官的话：{first!r}"
+    stream.close()  # ← 等价于客户端断开连接
+
+    with create_session_factory(engine)() as s:
+        row = account_repository.quota_row(s, 2, account.today())
+    assert row is not None and row.tokens_used == 1000, (
+        "断开之后那一轮的钱必须记账（模型已经生成过内容了）"
+    )
+    engine.dispose()
+
+
 def test_stream_requires_login(app, db: Path) -> None:
     with TestClient(app) as c:
         r = c.post("/interview/1/answer/stream", data={"answer_text": "a"})
