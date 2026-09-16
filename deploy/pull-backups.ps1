@@ -1,19 +1,32 @@
-<#
+﻿<#
 把服务器上的备份**拉到本机**的那个目录（默认 `D:\document\DeepGrill-back`）。
 
     用法（先手动跑一次确认能通）：
-        pwsh -File deploy\pull-backups.ps1 -Server deepgrill@203.0.113.7
-        pwsh -File deploy\pull-backups.ps1 -Server deepgrill@203.0.113.7 -Dest D:\document\DeepGrill-back
+        powershell -NoProfile -File deploy\pull-backups.ps1 -Server root@203.0.113.7
+        powershell -NoProfile -File deploy\pull-backups.ps1 -Server root@203.0.113.7 -Dest D:\document\DeepGrill-back
 
-    挂到任务计划程序（每天 04:30，服务器 03:30 备份之后）：
+    挂到任务计划程序（每天 04:30，服务器 04:22 备份之后）：
         schtasks /create /tn "DeepGrill 拉备份" /sc daily /st 04:30 ^
-            /tr "pwsh -NoProfile -File D:\document\DeepGrill-next\deploy\pull-backups.ps1 -Server deepgrill@203.0.113.7"
+            /tr "powershell -NoProfile -File D:\document\DeepGrill-next\deploy\pull-backups.ps1 -Server root@203.0.113.7 -SshKey %USERPROFILE%\.ssh\deepgrill-backup"
 
 ## 为什么是"本机拉"而不是"服务器推"
 
 家用宽带上的机器通常没有被公网可达的地址（NAT 后面），服务器推不过来；而本机连
 服务器是出站连接，一定通。方向反过来之后，"备份到底有没有到达异地"这个问题的答案
 就不再依赖家里的网络拓扑。
+
+## 为什么用 root 而不是 deepgrill
+
+`deepgrill` 是服务账号，shell 是 `nologin` —— SSH 进去会立刻被踢。所以拉取用 root，
+并且**用一把专用钥匙**（`ssh-keygen -f ~/.ssh/deepgrill-backup`），出问题时可以单独吊销，
+不必动你日常登录的那把。
+
+## 编码（这个文件为什么带 UTF-8 BOM）
+
+Windows PowerShell **5.1**（每台 Windows 都有，`pwsh` 7 反而未必装）在没有 BOM 时
+按 **ANSI/GBK** 解码 `.ps1`，中文注释会被解成乱码，**把脚本解析坏**（症状是
+`Missing ')' in function parameter list` —— 看起来像语法错，其实是编码错）。
+所以这个文件必须留着 UTF-8 BOM；用编辑器改它时别把 BOM 去掉。
 
 ## 它怎么保证"真的到了"
 
@@ -28,7 +41,7 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$Server,          # 例如 deepgrill@203.0.113.7
+    [Parameter(Mandatory = $true)][string]$Server,          # 例如 root@203.0.113.7
     [string]$Dest = "D:\document\DeepGrill-back",
     [string]$Remote = "/srv/deepgrill/backups",
     [int]$Keep = 14,

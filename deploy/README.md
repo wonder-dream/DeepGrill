@@ -162,13 +162,23 @@ DEEPGRILL_BACKUP_MIRROR=/mnt/offsite/deepgrill
 **② 服务器够不着你的本机（家用宽带大多如此）** —— **让本机定期来拉**：
 
 ```powershell
-# 先手动跑一次确认能通（需要免密 SSH：把本机公钥加进服务端 deepgrill 的 authorized_keys）
-pwsh -File deploy\pull-backups.ps1 -Server deepgrill@<你的服务器> -Dest D:\document\DeepGrill-back
+# 本机先备一把专用钥匙（无口令：计划任务没法交互输入）
+ssh-keygen -t ed25519 -f $env:USERPROFILE\.ssh\deepgrill-backup -N '""'
+# 把这把钥匙的公钥加到服务器的 /root/.ssh/authorized_keys —— 用 root 而不是
+# deepgrill：那是服务账号，shell 是 nologin，SSH 进去会被立刻踢出来
 
-# 挂到任务计划程序：每天 04:30（服务器 03:30 备份之后）
+# 先手动跑一次确认能通
+powershell -NoProfile -File deploy\pull-backups.ps1 -Server root@<你的服务器> `
+    -SshKey $env:USERPROFILE\.ssh\deepgrill-backup -Dest D:\document\DeepGrill-back
+
+# 挂到任务计划程序：每天 04:30（服务器 04:22 备份之后）
 schtasks /create /tn "DeepGrill 拉备份" /sc daily /st 04:30 /tr ^
-  "pwsh -NoProfile -File <仓库>\deploy\pull-backups.ps1 -Server deepgrill@<你的服务器>"
+  "powershell -NoProfile -File <仓库>\deploy\pull-backups.ps1 -Server root@<你的服务器> -SshKey %USERPROFILE%\.ssh\deepgrill-backup"
 ```
+
+用 `powershell`（5.1，每台 Windows 都有）而不是 `pwsh`（7，未必装）。**脚本必须保留
+UTF-8 BOM**：5.1 在没有 BOM 时按 ANSI/GBK 解码 `.ps1`，中文注释会被解成乱码、把脚本
+解析坏（症状是 `Missing ')' in function parameter list`，看着像语法错）。
 
 脚本会**只拉新增的**、复制完**在本机再核一遍 sha256**（不一致就删掉并非零退出：
 "拉了一半的备份"比没有备份更危险）、并按份数保留最近若干份。
