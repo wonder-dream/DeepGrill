@@ -70,7 +70,7 @@ def test_home_knows_who_is_logged_in_even_though_it_never_passed_user(
     """
     _login(client)
     body = client.get("/").text
-    assert "<span class=\"muted\">who</span>" in body
+    assert "class=\"rail-user\">who<" in body
     assert ">退出<" in body
     assert ">登录<" not in body
 
@@ -92,7 +92,7 @@ def test_error_page_keeps_the_navigation_intact(client: TestClient) -> None:
     r = client.post("/me/delete", data={"confirm": "no", "password": "x"})
     assert r.status_code == 400
     assert "确认短语不正确" in r.text
-    assert "<span class=\"muted\">who</span>" in r.text, "错误页的导航栏也该知道当前是谁"
+    assert "class=\"rail-user\">who<" in r.text, "错误页的导航栏也该知道当前是谁"
 
 
 def test_a_page_that_renders_inside_the_route_still_knows_who(
@@ -106,17 +106,17 @@ def test_a_page_that_renders_inside_the_route_still_knows_who(
     r = client.post("/interview/start", data={"mode": "drill"})
     assert r.status_code == 400
     assert "这场面试没能开始" in r.text
-    assert "<span class=\"muted\">who</span>" in r.text
+    assert "class=\"rail-user\">who<" in r.text
 
 
 def test_login_failure_renders_the_form_back_without_a_username(client: TestClient) -> None:
     """登录失败**渲染回同一页**（不重定向、也不给错误码），且不把用户名漏进导航栏。
 
     表单会把已填的邮箱带回去，所以"页面上没有 who"是错的断言 —— 要断言的是
-    **导航栏那一段**没有用户名（`<span class="muted">who</span>`）。
+    **导航栏那一段**没有用户名（`rail-user` 那一行）。
     """
     r = client.post("/login", data={"email": "who@local", "password": "wrong"})
     assert r.status_code == 200, "失败重渲染同一页是刻意的（刷新不丢提示）"
     assert "邮箱或口令不正确" in r.text
-    assert "<span class=\"muted\">who</span>" not in r.text
+    assert "class=\"rail-user\">who<" not in r.text
     assert ">登录<" in r.text

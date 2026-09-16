@@ -21,9 +21,10 @@
   --success: #4ade80;
   --info: #6ee7f4;
   --panel: #15120e;
-  --rail: 17rem;            /* 左侧边栏展开宽度；收起态与窄屏在下方覆盖 */
+  /* 展开宽度可被拖拽覆盖（--rail-drag 由 layout.js 以像素写入；收起态与窄屏直接覆盖 --rail） */
+  --rail: var(--rail-drag, 14rem);
   --rail-fold: 5.1rem;
-  --content-w: 70rem;       /* 主内容区最大宽度 */
+  --content-w: var(--content-w-drag, 70rem);  /* 主内容区最大宽度，可被主框句柄以像素覆盖 */
   --font-mono: ui-monospace, "Cascadia Code", "JetBrains Mono", "Fira Code",
                "SF Mono", SFMono-Regular, Menlo, Consolas,
                "Microsoft YaHei", monospace;
@@ -91,17 +92,26 @@ body {
   gap: 12px;
   padding: 9px 16px 10px;
   border-radius: 22px;
-  font-size: 15.5px;
+  font-size: 17px;
+  font-weight: 600;
   line-height: 1.3;
-  color: var(--fg);
+  color: var(--accent);
   text-decoration: none;
   border: 1px solid transparent;
   white-space: nowrap;
   transition: background .12s, color .12s;
 }
-.pill .g { width: 1.3em; text-align: center; color: var(--accent); flex: none; }
+/* 单字图标默认隐形但**占位**（展开态文字右移保持对齐）；收起态才显形 */
+.pill .g { visibility: hidden; width: 1.3em; text-align: center; color: var(--accent); flex: none; }
 .pill:hover, .pill.active { background: var(--fg); color: var(--bg); }
 .pill:hover .g, .pill.active .g { color: inherit; }
+
+/* 反色 pill（退出登录）：默认橙底白字，hover 白底橙字 */
+button.pill { font: inherit; cursor: pointer; }
+.pill.inv { background: var(--accent); border-color: var(--accent); color: var(--fg); }
+.pill.inv .g { color: var(--fg); }
+.pill.inv:hover, .pill.inv.active { background: var(--fg); border-color: var(--fg); color: var(--accent); }
+.pill.inv:hover .g, .pill.inv.active .g { color: var(--accent); }
 
 .rail-meta {
   margin-top: auto;
@@ -111,7 +121,32 @@ body {
   overflow: hidden;
 }
 .rail-meta i { font-style: normal; color: var(--accent); }
-.rail-meta .pill { margin-top: 8px; }
+/* 底部按钮拉通栏宽、文字居中（form.inline 是行内元素，会把 pill 压成短粗一块；
+   glyph 在底栏直接不渲染，省出的位置让文字真正居中） */
+.rail-meta form { display: block; }
+.rail-meta .pill { margin-top: 8px; width: 100%; justify-content: center; }
+.rail-meta .pill .g { display: none; }
+/* 用户名行：居中，两侧渐隐细线夹名字（制图纸图签的意象） */
+.rail-user {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  letter-spacing: .08em;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.rail-user::before,
+.rail-user::after {
+  content: "";
+  height: 1px;
+  flex: 1 0 12px;   /* 再窄也留一段线 */
+}
+.rail-user::before { background: linear-gradient(to right, transparent, var(--line)); }
+.rail-user::after { background: linear-gradient(to left, transparent, var(--line)); }
 
 /* 收起钮（label 驱动 checkbox），悬停在边栏上才出现 */
 .rail-btn {
@@ -132,15 +167,74 @@ body {
 .sidebar:hover .rail-btn { opacity: 1; }
 .rail-btn:hover { color: var(--accent); border-color: var(--accent); }
 
+/* 拖拽句柄：跨在边栏右边界上的命中条，悬停/拖拽时亮出琥珀中线
+ * （思路同 deepseek-harness 的 AppFrame.handle：独立元素 + Pointer capture） */
+.rail-handle {
+  position: absolute;
+  top: 0; bottom: 0;
+  right: -5px;              /* 8px 的一半再留 1px，跨在边界两侧 */
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 101;
+}
+.rail-handle::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  background: transparent;
+  transition: background .15s ease;
+}
+.rail-handle:hover::after,
+body.rail-dragging .rail-handle::after { background: var(--accent); }
+/* 拖拽中关掉跟随过渡，否则栏边缘追不上指针 */
+body.rail-dragging .sidebar,
+body.rail-dragging main,
+body.rail-dragging .statusbar { transition: none; }
+
+/* 主框调宽句柄：离线框边界 8px 的隐形命中条。悬停只在指针上下一段
+ * （160px，两端透明度渐隐）亮出琥珀竖条 —— 段的位置由 layout.js 写 --seg-top。
+ * 纯 CSS 定位不了"指针附近的一段"，这一段必须是 JS（同滚动条的指针揭示）。 */
+.main-handle {
+  position: fixed;
+  top: 0; bottom: 0;
+  width: 20px;
+  display: none;              /* 位置由 layout.js 算好才放出来 */
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 90;
+}
+.main-handle::after {
+  content: "";
+  position: absolute;
+  top: var(--seg-top, -200px);
+  height: 160px;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  background: linear-gradient(to bottom, transparent, var(--accent) 30%, var(--accent) 70%, transparent);
+  opacity: 0;
+  transition: opacity .15s ease;
+  pointer-events: none;
+}
+.main-handle.hot::after,
+body.main-dragging .main-handle::after { opacity: 1; }
+body.main-dragging main { transition: none; }
+
 /* 收起态：窄轨 —— 导航收成图标列，只留单字 glyph 与展开钮 */
 body:has(#nav-toggle:checked) { --rail: var(--rail-fold); }
 body:has(#nav-toggle:checked) .rail-btn::before { content: "❯"; }
 body:has(#nav-toggle:checked) .rail-btn { opacity: 1; }
+body:has(#nav-toggle:checked) .rail-handle { display: none; }
 body:has(#nav-toggle:checked) .lbl,
 body:has(#nav-toggle:checked) .logo-text,
 body:has(#nav-toggle:checked) .rail-meta { display: none; }
 body:has(#nav-toggle:checked) .logo { justify-content: center; }
 body:has(#nav-toggle:checked) .pill { justify-content: center; gap: 0; padding: 9px 0 10px; }
+body:has(#nav-toggle:checked) .pill .g { visibility: visible; }   /* 收起态只留单字图标 */
 
 /* ------------------------------------------------ 主体 */
 main {
@@ -467,6 +561,29 @@ input.rnd { border-radius: 10px; }
 .modal-card h2 { margin-top: 0; }
 .modal-actions { display: flex; gap: 1rem; align-items: center; margin-bottom: .6rem; }
 
+/* ------------------------------------------------ 滚动条：细槽常驻，琥珀 thumb 鼠标在哪条上哪条亮
+ * 思路同 deepseek-harness 的 scrollbar.css（它用 JS 指针跟踪 + 变量重绑做"悬停才出现"，
+ * 我们这里 thumb 常显为暗色、悬停变琥珀 —— 纯 CSS 可达，且不引起行重排） */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;        /* 透明边 = 内缩的圆头 grip */
+  background-clip: padding-box;
+  background-color: var(--line);
+  transition: background-color .2s ease;
+}
+/* 主框（视口）滚动条：指针移到右缘 24px 内点亮（layout.js 挂 scrollbar-hot）；
+   sidebar / 悬浮窗等内嵌滚动区悬停即亮，纯 CSS 可达 */
+html.scrollbar-hot::-webkit-scrollbar-thumb,
+.sidebar:hover::-webkit-scrollbar-thumb,
+.modal-card:hover::-webkit-scrollbar-thumb { background-color: var(--accent); }
+/* Firefox 没有伪元素滚动条：细条 + 纯色（不支持悬停变色，平台固有限制） */
+@supports not selector(::-webkit-scrollbar) {
+  html { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+}
+
 /* ------------------------------------------------ 折叠块 */
 details.card summary {
   cursor: pointer;
@@ -566,15 +683,17 @@ details.card[open] summary { margin-bottom: .6rem; }
   .card, .logo .caret, .hero .rot span, #live-text::after, .bar i { animation: none; }
   .card:nth-child(n) { animation-delay: 0s; }
   .card:hover, .bento .cell:hover { transform: none; box-shadow: none; }
-  .button, .button::after, a, button.link, .pill, tbody tr, .sidebar, main, .statusbar, .rail-btn { transition: none; }
+  .button, .button::after, a, button.link, .pill, tbody tr, .sidebar, main, .statusbar, .rail-btn, .rail-handle::after { transition: none; }
 }
 
 @media (max-width: 44rem) {
   :root { --rail: var(--rail-fold); }
   .lbl, .logo-text, .rail-meta { display: none; }
   .rail-btn { opacity: 1; }
+  .rail-handle, .main-handle { display: none !important; }
   .logo { justify-content: center; }
   .pill { justify-content: center; gap: 0; padding: 9px 0 10px; }
+  .pill .g { visibility: visible; }
   main { padding: 2rem 12px 5rem; }
   th, td { padding: .35rem .3rem; }
   .exambar .prog { width: 100px; }
