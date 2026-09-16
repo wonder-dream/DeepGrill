@@ -178,6 +178,70 @@ def test_favorite_is_idempotent_by_unique_constraint(tmp_dir: Path) -> None:
         conn.close()
 
 
+def test_one_evaluation_per_session_and_the_dedupe_keeps_the_good_row(tmp_dir: Path) -> None:
+    """**回归测试**：迁移 0005 的两件事 —— 去重规则 + 唯一索引（决策 89）。
+
+    题会话有两行 `evaluations` 时，`GET /me/export` 的 `scalar_one_or_none()` 抛
+    `MultipleResultsFound` ⇒ 那个用户的导出**永久 500**。所以 0005 先按
+    「优先留 `ok`、其次留最早」去重，再加唯一索引。
+
+    两段断言：去重**留下了哪一行**（规则），以及第二行**再也插不进去**（约束）。
+    为了让 0005 有东西可去重，这里先把索引摘掉、造出两行 —— 那正是"跑过 0004 的库"
+    的形状，而"已经在线上跑过的库"恰恰是这个迁移真正要处理的输入。
+    """
+    db = tmp_dir / "t.db"
+    migrate(db)
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        uid = conn.execute("SELECT id FROM users WHERE email='owner@local'").fetchone()[0]
+        conn.execute(
+            "INSERT INTO questions (id, kind, stem, difficulty) VALUES (1, 'knowledge', 'q', 3)"
+        )
+        conn.execute(
+            "INSERT INTO interviews (id, user_id, mode, status, quota_charged) "
+            "VALUES (1, ?, 'drill', 'active', 1)",
+            (uid,),
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, interview_id, question_id, seq, status, max_rounds) "
+            "VALUES (1, 1, 1, 1, 'finished', 3)"
+        )
+        conn.execute("DROP INDEX IF EXISTS uq_evaluation_session")
+        # 先失败后成功的收尾：留下的必须是**成功**那一行（失败那行没有分数）
+        conn.execute(
+            "INSERT INTO evaluations (session_id, total_score, review, status) "
+            "VALUES (1, 0, '判分失败', 'failed')"
+        )
+        conn.execute(
+            "INSERT INTO evaluations (session_id, total_score, review, status) "
+            "VALUES (1, 80, '真判定', 'ok')"
+        )
+        # 让它回到"还没跑过 0005"的状态：删掉记账行，migrate 会重跑那一个文件
+        conn.execute(
+            "DELETE FROM schema_migrations WHERE filename = '0005_one_evaluation_per_session.sql'"
+        )
+    finally:
+        conn.close()
+
+    assert migrate(db) == 1, "应该只重跑 0005 这一个文件"
+
+    conn = sqlite3.connect(str(db))
+    try:
+        rows = conn.execute(
+            "SELECT total_score, status FROM evaluations WHERE session_id = 1"
+        ).fetchall()
+        assert rows == [(80.0, "ok")], f"去重留下了 {rows} —— 该留成功的那一行"
+        try:
+            conn.execute("INSERT INTO evaluations (session_id, status) VALUES (1, 'ok')")
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError("同一个题会话写进了第二条 evaluations —— 唯一索引没生效")
+    finally:
+        conn.close()
+
+
 def test_second_run_is_idempotent(tmp_dir: Path) -> None:
     """跑第二遍不做事、不报错 —— 否则 pipeline 的第一步就不可重跑。"""
     db = tmp_dir / "t.db"

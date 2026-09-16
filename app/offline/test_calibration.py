@@ -75,7 +75,9 @@ def session(tmp_dir: Path) -> Iterator[Session]:
             s.add(Attempt(session_id=1, round_no=round_no, is_followup=followup))
         s.add(Attempt(session_id=2, round_no=1, is_followup=0))
         s.add(Evaluation(session_id=1, total_score=55.0, status="ok"))
-        s.add(Evaluation(session_id=2, total_score=88.0, status="ok"))
+        # ⚠️ 一个题会话**只有一行** `evaluations`（迁移 0005 的唯一索引，决策 89）——
+        # 所以"失败的那条不进分位"这件事只能靠**另一个题会话**来表达。原来这里给
+        # session 2 插了两行（88 成功 + 90 失败），那是 0005 之前的形状。
         s.add(Evaluation(session_id=2, total_score=90.0, status="failed"))
         s.commit()
         yield s
@@ -141,7 +143,7 @@ def test_a_quantile_returns_a_value_from_the_sample(session: Session) -> None:
 def test_the_score_section_ignores_failed_evaluations(session: Session) -> None:
     """失败的那条 90 分不能进分位 —— 它不是一次成功的判分（`status='failed'`）。"""
     body = _body(calibration.score_quantiles(session))
-    assert "成功判分 2 条" in body
+    assert "成功判分 1 条" in body
     assert "90.0" not in body
 
 

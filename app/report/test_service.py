@@ -518,7 +518,13 @@ def test_finish_persists_body_and_summary(session: Session) -> None:
 
 
 def test_finish_is_idempotent(session: Session) -> None:
-    """收尾被调两次（用户重复点结束）不该产生两倍的报告行。"""
+    """收尾被调两次（用户重复点结束）不该产生两倍的报告行 —— **也不该有两行判分**。
+
+    ⚠️ 这条测试原先只断言了 `report_items`，于是漏掉了另一半：`evaluations` 每次
+    收尾都 INSERT 一行，而 `GET /me/export` 用 `scalar_one_or_none()` 读它 ——
+    两行 ⇒ `MultipleResultsFound` ⇒ **那个用户的导出永久 500**（实测复现）。
+    现在一并钉住：评分别名册只有一行，且导出这条路真的跑得通。
+    """
     llm = FakeLLM().queue(
         _round_reply([(1, "命中"), (2, "未命中"), (3, "未命中")]),
         _eval_reply(),
@@ -530,10 +536,16 @@ def test_finish_is_idempotent(session: Session) -> None:
     service.finish_interview(session, interview=interview, llm=llm)
     service.finish_interview(session, interview=interview, llm=llm)
 
-    from app.db.models import ReportItem
+    from app.db.models import Evaluation, ReportItem
+    from app.profile import service as profile_service
 
     assert session.query(ReportItem).count() == 1
+    assert session.query(Evaluation).count() == 1, (
+        "一个题会话只能有一条最终评分（迁移 0005 的唯一索引，决策 89）"
+    )
     assert len(service.get_report(session, interview).items) == 1
+    # 导出是那条被两行打死的读路径（`scalar_one_or_none()`）—— 它必须跑得通
+    assert profile_service.export_user_data(session, ME) is not None
 
 
 def test_failed_evaluation_still_produces_a_report(session: Session) -> None:

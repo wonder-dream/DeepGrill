@@ -729,8 +729,16 @@ def attempts_for(session: Session, session_id: int) -> list[Attempt]:
 
 
 def evaluation_for(session: Session, session_id: int) -> Evaluation | None:
+    """取这个题会话的最终评分（**一行**：迁移 0005 的唯一索引，决策 89）。
+
+    与 `profile/service.py` 的导出路径同一条纪律：即使库没跑过 0005（老库 / 从备份
+    恢复），也不能因为两行就把"看报告"这条读路径弄成 500 —— 取最新那一行。
+    """
     return session.execute(
-        select(Evaluation).where(Evaluation.session_id == session_id)
+        select(Evaluation)
+        .where(Evaluation.session_id == session_id)
+        .order_by(Evaluation.id.desc())
+        .limit(1)
     ).scalar_one_or_none()
 
 

@@ -373,6 +373,30 @@ def test_evaluate_session_writes_scores_and_review(session: Session) -> None:
     assert row.status == "ok" and row.total_score == 80
 
 
+def test_evaluate_session_is_idempotent(session: Session) -> None:
+    """收尾可以被调用两次（页面层就会）—— 第二次**覆盖**同一行，不是追加第二行。
+
+    迁移 0005 之前它每次 INSERT 一行，而两行会让 `GET /me/export` 的
+    `scalar_one_or_none()` 抛 `MultipleResultsFound`：那个用户的导出**永久 500**。
+    """
+    ts = service.start_drill(session, user_id=ME, question_id=1)
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "未命中"), (3, "未涉及")]),
+        _eval_reply(accuracy=50, review="第一次"),
+        _eval_reply(accuracy=90, review="第二次"),
+    )
+    service.submit_answer(session, ts=ts, answer_text="a", llm=llm)
+
+    first = service.evaluate_session(session, ts=ts, llm=llm)
+    second = service.evaluate_session(session, ts=ts, llm=llm)
+    assert first.review == "第一次" and second.review == "第二次"
+
+    rows = session.query(Evaluation).filter(Evaluation.session_id == ts.id).all()
+    assert len(rows) == 1, "一个题会话只能有一条最终评分（UNIQUE(session_id)，决策 89）"
+    assert rows[0].review == "第二次", "第二次收尾要真的把新判定写进去"
+    assert rows[0].total_score == second.total_score
+
+
 def test_evaluate_failure_is_persisted_not_silent(session: Session) -> None:
     """§4.4 继承：判分失败也要落库 —— v1 的"会话永远停在判分中"就是没做到这条。
 

@@ -129,6 +129,23 @@ def test_evaluations_status_is_checked(session: Session) -> None:
     session.rollback()
 
 
+def test_one_evaluation_per_session(session: Session) -> None:
+    """一个题会话只有一条最终评分（迁移 0005 的唯一索引，决策 89）。
+
+    收尾本来就允许被重复调用（页面层会：旧标签页重放一轮之后再收尾一次），
+    而第二行会让 `GET /me/export` 的 `scalar_one_or_none()` 抛
+    `MultipleResultsFound` —— 那个用户的导出**永久 500**（实测复现）。
+    所以这条约束是"收尾幂等"的实现方式：不靠应用层先查再写（那有竞态）。
+    """
+    _seed_session(session)
+    session.add(Evaluation(session_id=10, status="ok"))
+    session.flush()
+    session.add(Evaluation(session_id=10, status="ok"))
+    with pytest.raises(IntegrityError):
+        session.flush()
+    session.rollback()
+
+
 def test_jobs_status_is_checked(session: Session) -> None:
     session.add(Job(kind="x", payload={}, status="queued", max_attempts=3))
     with pytest.raises(IntegrityError):

@@ -209,8 +209,17 @@ def export_user_data(session: Session, user_id: int) -> dict[str, Any]:
                 .where(Attempt.session_id == ts.id)
                 .order_by(Attempt.round_no)
             ).scalars().all()
+            # 取**一行**：一个题会话只有一条最终评分（迁移 0005 的唯一索引，决策 89）。
+            # `order_by(id.desc()).first()` 而不是 `scalar_one_or_none()` 是刻意的
+            # 冗余 —— 唯一索引保证不了"这个库跑过 0005"（老库、备份恢复回来的库），
+            # 而两行会让 `scalar_one_or_none()` 抛 `MultipleResultsFound`：
+            # **整个导出接口 500**，且用户没有任何自救办法。多取一行的排序，
+            # 换掉一整类"永久 500"。
             evaluation = session.execute(
-                select(Evaluation).where(Evaluation.session_id == ts.id)
+                select(Evaluation)
+                .where(Evaluation.session_id == ts.id)
+                .order_by(Evaluation.id.desc())
+                .limit(1)
             ).scalar_one_or_none()
             entry["sessions"].append(
                 {

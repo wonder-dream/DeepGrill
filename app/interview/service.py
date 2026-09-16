@@ -371,6 +371,12 @@ def evaluate_session(session: Session, *, ts: InterviewSession, llm) -> Evaluati
 
     失败**也要落库**（`status='failed'`）—— §4.4 标为继承：v1 的"会话永远停在
     判分中"就是因为失败没有落库也没有可见状态。
+
+    **一个题会话只有一行**（`UNIQUE(session_id)`，决策 89）：收尾是幂等的
+    ——`finish_interview()` 允许被重复调用（页面层就会），于是这里必须 **upsert**。
+    以前每次收尾都 INSERT 一行，第二行会让 `GET /me/export` 的
+    `scalar_one_or_none()` 抛 `MultipleResultsFound` ⇒ **那个用户的导出永久 500**
+    （实测：重放一轮之后收尾两次即可复现）。
     """
     question = session.get(Question, ts.question_id)
     criteria = bank_repository.criteria_of_question(session, question) if question else []
@@ -402,14 +408,18 @@ def evaluate_session(session: Session, *, ts: InterviewSession, llm) -> Evaluati
     except LLMError as e:
         logger.warning("题会话 %s 判分失败：%s", ts.id, e)
 
-    evaluation = Evaluation(
-        session_id=ts.id,
-        scores=scores,
-        total_score=rules.total_score(scores),
-        review=review,
-        status=status,
-    )
-    session.add(evaluation)
+    evaluation = session.execute(
+        select(Evaluation).where(Evaluation.session_id == ts.id)
+    ).scalar_one_or_none()
+    if evaluation is None:
+        evaluation = Evaluation(session_id=ts.id)
+        session.add(evaluation)
+    # 重算**覆盖**同一行（不是追加）：唯一索引管的是"不可能有两行"，
+    # 这里管的是"第二次收尾要真的把新判定写进去"。
+    evaluation.scores = scores
+    evaluation.total_score = rules.total_score(scores)
+    evaluation.review = review
+    evaluation.status = status
     session.flush()
     return EvaluationResult(
         scores=scores,
