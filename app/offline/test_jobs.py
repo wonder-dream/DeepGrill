@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -223,6 +224,107 @@ def test_rerun_is_safe_when_the_task_is_idempotent(session: Session) -> None:
 
     assert state == {"k": 1}, "跑两遍结果必须一样（覆盖写，不是累加）"
     assert len(session.execute(select(Job)).scalars().all()) == 2
+
+
+def test_run_one_reports_no_work_for_an_empty_queue(session: Session) -> None:
+    """空队列 → **False**（"有没有可干的活"要真的回答）。
+
+    返回 True 的后果实测过三次：`python -m app.cli worker --once`（帮助文本写着
+    "跑空队列就退出"）永远不退出，常驻 worker 在空队列上 `did_work=True → continue`、
+    **不 sleep** → 空转。
+    """
+    assert jobs.claim_one(session, worker_id="w") is None
+    assert jobs.run_one(session, worker_id="w") is False
+
+
+def test_run_one_refreshes_its_heartbeat_while_the_task_runs(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """任务跑着的时候，心跳要真的在刷（机制②的另一半）。
+
+    没有它，`requeue_stale()` 分不出"健康但要跑 6 分钟的任务"与"worker 已经死了"：
+    前者被放回队列、被第二个 worker 再跑一遍（重复付费 + 双份 `task_logs`）。
+    实测 `heartbeat()` 全库零调用者。间隔在这里调小到 0.01 秒，测试是瞬时的。
+    """
+    monkeypatch.setattr(jobs, "HEARTBEAT_INTERVAL", 0.01)
+    beats: list[int] = []
+    real = jobs.heartbeat
+
+    def spy(s: Session, job_id: int) -> None:
+        beats.append(job_id)
+        real(s, job_id)
+
+    monkeypatch.setattr(jobs, "heartbeat", spy)
+
+    def slow_task(s: Session, payload: dict) -> dict:
+        time.sleep(0.2)  # 比心跳间隔长得多 ⇒ 期间必然刷过几次
+        return {"message": "done"}
+
+    _register(fn=slow_task)
+    jobs.enqueue(session, kind="demo")
+    session.commit()
+
+    jobs.run_one(session, worker_id="w")
+    session.commit()
+
+    assert beats, "任务运行期间必须刷新心跳（heartbeat() 以前没有任何调用者）"
+
+
+def test_a_task_failing_on_a_db_write_is_recorded(session: Session) -> None:
+    """任务**在写库时**失败：不能把异常抛出去，而且失败记录要写下来。
+
+    实测：`finish()` 的 flush 撞上"会话需要回滚"的状态 → `PendingRollbackError`
+    穿过 `run_one` 的 except 逃出去 → **worker 进程当场死掉**，job 卡在 running，
+    §3.1 的失败记录一行都没写。
+    """
+
+    def boom(s, payload):
+        # 写到一半失败：同一个主键插两次
+        s.add(TaskLog(id=99, kind="probe_boom", payload={}, result={}))
+        s.flush()
+        s.add(TaskLog(id=99, kind="probe_boom", payload={}, result={}))
+        s.flush()
+        return {}
+
+    _register(name="probe_boom", fn=boom)
+    job = jobs.enqueue(session, kind="probe_boom")
+    session.commit()
+
+    jobs.run_one(session, worker_id="w")  # 不许抛
+    session.commit()
+
+    session.expire_all()
+    row = session.get(Job, job.id)
+    assert row is not None and row.status == "failed", "失败的任务要留下终态"
+    logs = session.execute(select(TaskLog).where(TaskLog.kind == "probe_boom")).scalars().all()
+    assert logs, "§3.1 要求失败也要有可查询的记录（task_logs）"
+
+
+def test_cli_worker_once_exits_on_an_empty_queue(tmp_dir: Path) -> None:
+    """`python -m app.cli worker --once`（帮助文本："跑空队列就退出"）**要真的退出**。
+
+    实测三次被杀于 12s / 15s / 25s —— `while True: if not run_one(...): break`
+    永远不 break，因为空队列上 `run_one()` 返回了 True。这里在原进程里跑它，
+    超时就判失败（不用 sleep 猜时长，用事件等）。
+    """
+    import threading
+
+    from app.cli import cmd_worker
+    from app.config import Settings
+
+    db = tmp_dir / "worker_once.db"
+    migrate(db)
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            cmd_worker(Settings(database_path=db, llm_api_key=""), once=True)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert done.wait(timeout=30), "`worker --once` 在空队列上没有退出（它本该跑空就退出）"
 
 
 def test_jobspec_declares_idempotence() -> None:
