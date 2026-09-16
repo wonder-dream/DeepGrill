@@ -31,6 +31,7 @@ from app.db import (
 )
 from app.db.models import User
 from app.errors import Forbidden, TooManyRequests
+from app.interview import service as interview_service
 from app.llm import LLMCallError, LLMClient
 from app.llm.embeddings import (
     APIEmbeddings,
@@ -112,6 +113,49 @@ class CurrentUser:
     email: str
 
 
+@dataclass(frozen=True)
+class RailState:
+    """侧边栏与状态栏里那两项**动态**内容（决策 96）—— 与 `CurrentUser` 同一类快照。
+
+    为什么是值的拷贝而不是 ORM 对象：理由与 `CurrentUser` 逐字相同（见上面那段）——
+    错误路径上依赖的 `finally` 会 rollback + close，那一刻读 ORM 对象就是
+    `DetachedInstanceError`，于是**错误页自己 500**。
+
+    为什么取数放在这一层而不是 `render()` 里：`render()` 手上没有会话，而错误路径上
+    会话可能已经关闭；这里**已经**在查库（`user_from_token`），多两条索引查询不改变
+    任何结构，却让 `base.html` 不必指望每个页面自己记得传 —— 而"每个页面记得传"
+    正是会漏的那类事（首页漏过一次，且不报错）。
+
+    代价写在明处：**每个渲染页面的请求多两次索引查询**（额度一行、未完成的题会话一条）。
+    """
+
+    quota_remaining: int
+    quota_daily: int
+    library_only: bool
+    #: 未完成的那道题会话 —— 为 None 时侧边栏**不显示**「继续面试」（不是显示成灰的）
+    resume_session_id: int | None
+    #: 悬停提示，例如「模拟面试 #5」；没有可继续的会话时为 None
+    resume_title: str | None
+
+
+def _rail_state(session: Session, user: User) -> RailState:
+    """侧边栏/状态栏那两项动态内容。**取数，不做判断**（判断都在各自领域里）。"""
+    quota = account_service.quota_state(session, user.id)
+    target = interview_service.resume_target(session, user.id)
+    label = None
+    if target is not None:
+        interview_row, _ts = target
+        mode = "模拟面试" if interview_row.mode == "interview" else "单题追问"
+        label = f"{mode} #{interview_row.id}"
+    return RailState(
+        quota_remaining=quota.remaining,
+        quota_daily=quota.daily,
+        library_only=quota.library_only,
+        resume_session_id=target[1].id if target is not None else None,
+        resume_title=label,
+    )
+
+
 def get_current_user(
     request: Request, session: Session = Depends(get_session)
 ) -> User | None:
@@ -137,6 +181,9 @@ def get_current_user(
         if user is not None
         else None
     )
+    # 侧边栏/状态栏的动态项也在这里一次性取好（决策 96）：同一处产生快照，
+    # 同一条理由（错误路径上会话已经关了）。匿名访客没有额度也没有面试 —— 是 None。
+    request.state.rail = _rail_state(session, user) if user is not None else None
     return user
 
 

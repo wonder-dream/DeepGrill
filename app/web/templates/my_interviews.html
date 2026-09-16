@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}面试记录 · DeepGrill{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>面试记录</h1>
+  <p class="muted">共 {{ interviews | length }} 场，新的在前。报告在收尾时就落库了，这里点进去看到的和当时是同一份。</p>
+</section>
+
+<section class="card">
+  {% if not interviews %}
+  <p class="muted">还没有面试记录。<a href="/bank">去题库挑一道题</a>做单题追问，或者<a href="/">开始一场模拟面试</a>。</p>
+  {% else %}
+  <table>
+    <thead><tr><th>#</th><th>形态</th><th>状态</th><th>开始于</th><th>报告</th></tr></thead>
+    <tbody>
+      {% for it in interviews %}
+      <tr>
+        <td>{{ it.id }}</td>
+        <td>{{ "模拟面试" if it.mode == "interview" else "单题追问" }}</td>
+        <td>{{ it.status }}</td>
+        <td class="muted">{{ it.started_at }}</td>
+        <td>{% if it.report_body %}<a href="/report/{{ it.id }}">看报告</a>{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<p class="muted"><a href="/me">← 回「我的」</a></p>
+{% endblock %}

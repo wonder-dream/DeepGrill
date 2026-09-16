@@ -49,12 +49,17 @@ def render(
     的仍是"登录"链接，而且页面上没有任何东西会报错。页面显式传的 `user` 仍然优先
     （有些页面拿到的是"必须是 owner"的那个对象，与 `request.state` 里那个是同一个）。
 
+    `rail` 同理走 `request.state.rail`（决策 96）：侧边栏的「继续面试」与状态栏的
+    今日额度点**每个页面都渲染**，所以它也是"漏一个页面就静默少一块"的那类东西。
+    它同样是快照（见 `deps.RailState`），不是 ORM 对象 —— 错误页读它时会话早已关闭。
+
     `status_code` 必须能透传：错误页配 200 是**静默的错**（缓存、爬虫、前端分支
     全都会判断错），而它不会有人肉眼发现。实测踩过两次 —— 领域层的 `NotFound`
     与 `Forbidden` 都曾渲染出 200 的错误页。
     """
     ctx: dict[str, Any] = {
         "user": getattr(request.state, "user", None),
+        "rail": getattr(request.state, "rail", None),
         **(context or {}),
     }
     return HTMLResponse(

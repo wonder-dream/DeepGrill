@@ -12,12 +12,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.account import service as account
 from app.bank import repository as bank_repository
-from app.db.models import Interview, User
+from app.db.models import User
 from app.deps import (
     SESSION_COOKIE,
     get_current_user,
@@ -26,6 +25,7 @@ from app.deps import (
     rate_limit_interviewer,
 )
 from app.errors import AppError, Forbidden, InvalidInput
+from app.interview import service as interview
 from app.knowledge import service as knowledge
 from app.llm import LLMError
 from app.offline import profile_pipeline
@@ -43,16 +43,7 @@ def me_page(request: Request, session: SessionDep, user: CurrentUserDep) -> obje
     if user is None:
         return RedirectResponse("/login", status_code=302)
 
-    recent = list(
-        session.execute(
-            select(Interview)
-            .where(Interview.user_id == user.id)
-            .order_by(Interview.id.desc())
-            .limit(10)
-        )
-        .scalars()
-        .all()
-    )
+    recent = interview.list_interviews(session, user.id, limit=10)
     return render(
         request,
         "me.html",
@@ -66,6 +57,23 @@ def me_page(request: Request, session: SessionDep, user: CurrentUserDep) -> obje
             "profile": profile_pipeline.latest_profile(session, user.id),
             "private_count": len(bank_repository.owned_ids(session, user.id)),
         },
+    )
+
+
+@router.get("/me/interviews")
+def interviews_page(request: Request, session: SessionDep, user: CurrentUserDep) -> object:
+    """面试记录页（决策 96）—— `/me` 上那块只摆最近 10 条。
+
+    为什么需要它：面试攒到十几场之后，`/me` 的摘要里就再也找不到旧报告了，而报告
+    本来就还在库里（`interviews.report_body`）。这一页**不筛状态** —— 放弃掉的
+    （`abandoned`）也要看得见，否则用户会以为那场面试凭空消失了。
+    """
+    if user is None:
+        return RedirectResponse("/login", status_code=302)
+    return render(
+        request,
+        "my_interviews.html",
+        {"user": user, "interviews": interview.list_interviews(session, user.id)},
     )
 
 

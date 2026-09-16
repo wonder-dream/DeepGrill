@@ -643,6 +643,54 @@ def active_interviews(session: Session, user_id: int, *, limit: int = 5) -> list
     )
 
 
+def list_interviews(
+    session: Session, user_id: int, *, limit: int | None = None
+) -> list[Interview]:
+    """这个人的面试记录，新的在前（决策 96）。
+
+    `limit=None` = 全部。两种用法各有一处：`/me` 的摘要要 `limit=10`，而面试记录页
+    （`/me/interviews`）要整页 —— 所以"取哪些"这件事留在领域里，页面只决定怎么摆。
+
+    为什么**不能**按 `status` 过滤：记录页要的是"我面过哪些"，包括 `abandoned`
+    （用户主动放弃的）—— 把它藏掉，用户会以为那场面试凭空消失了。要"继续哪一场"
+    请用 `active_interviews`。
+
+    没有回收者，也不需要：一条按 user 过滤、带 limit 的查询，不往内存里存东西。
+    """
+    stmt = (
+        select(Interview)
+        .where(Interview.user_id == user_id)
+        .order_by(Interview.id.desc())
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(session.execute(stmt).scalars().all())
+
+
+def resume_target(session: Session, user_id: int) -> tuple[Interview, InterviewSession] | None:
+    """「继续面试」要跳去的那一页：这个人**最新的、还没答完的题会话**（决策 96）。
+
+    一条查询就够 —— 不是"先取活跃面试、再逐个查它的会话"。后者在"有好几场活跃面试、
+    前几场都答完了"时是 N+1，而这一项**每个页面都要跑**（它在侧边栏上）。
+
+    返回 `(面试, 题会话)`；没有未完成的会话时返回 None（那时侧边栏不显示这个入口）。
+    """
+    row = session.execute(
+        select(InterviewSession, Interview)
+        .join(Interview, Interview.id == InterviewSession.interview_id)
+        .where(
+            Interview.user_id == user_id,
+            Interview.status == "active",
+            InterviewSession.status == "active",
+        )
+        .order_by(Interview.id.desc(), InterviewSession.seq)
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    return row[1], row[0]
+
+
 def next_active_session(session: Session, interview_id: int) -> InterviewSession | None:
     """一场面试里**下一道还没答完的题** —— "继续"按钮要跳到的那一页。
 

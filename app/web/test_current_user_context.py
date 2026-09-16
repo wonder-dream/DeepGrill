@@ -55,8 +55,14 @@ def _login(client: TestClient) -> None:
 
 
 def test_anonymous_pages_offer_login(client: TestClient) -> None:
+    """匿名页要有**一条**去登录的路。
+
+    决策 96 之后它的文案是「登录/注册」：注册不单设入口（登录页自己带通往注册的
+    链接），所以这里断言的是"路在"，不是某个具体措辞。
+    """
     body = client.get("/").text
-    assert ">登录<" in body
+    assert 'href="/login"' in body
+    assert "登录/注册" in body
     assert ">退出<" not in body
 
 

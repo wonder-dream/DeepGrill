@@ -192,3 +192,61 @@ def test_resume_submit_refuses_too_short_input(client: TestClient) -> None:
     assert r.status_code == 400
     assert "太短" in r.text
     assert fake.calls == []
+
+
+# ---------------------------------------------------------------------------
+# 面试记录页（决策 96）
+# ---------------------------------------------------------------------------
+def _add_interviews(db: Path, *, user_id: int, ids: list[int], **fields: object) -> None:
+    with create_session_factory(create_db_engine(db))() as s:
+        for i in ids:
+            row: dict[str, object] = {"mode": "drill", "status": "finished", "quota_charged": 1}
+            row.update(fields)
+            s.add(Interview(id=i, user_id=user_id, **row))
+        s.commit()
+
+
+def test_interviews_page_shows_every_record_not_just_the_recent_ten(
+    client: TestClient, db: Path
+) -> None:
+    """`/me` 的摘要只摆最近 10 条，记录页要**全部** —— 这正是它存在的理由。
+
+    夹具里已经有一条 `id=1`；再补 12 条，于是最新的 10 条（31…22）在 `/me` 上，
+    而 `id=1` 只在记录页上。**别人的面试一条都不能出现**（同一个页面最容易漏的
+    就是 owner_user_id 过滤那一类事）。
+    """
+    _add_interviews(db, user_id=2, ids=list(range(20, 32)), report_body="一份报告")
+    _add_interviews(db, user_id=3, ids=[99], report_body="别人的报告")
+    with create_session_factory(create_db_engine(db))() as s:
+        # 夹具里那条最老的面试原本没有报告正文 —— 给它一份，好断言"它也在记录页上"
+        s.get(Interview, 1).report_body = "一份报告"
+        s.commit()
+
+    log = client.get("/me/interviews").text
+    assert "共 13 场" in log
+    assert 'href="/report/1"' in log, "最老的那条也必须在（/me 的摘要里它已经看不到了）"
+    assert 'href="/report/31"' in log
+    assert 'href="/report/99"' not in log, "看到了别人的面试记录"
+
+    assert 'href="/report/1"' not in client.get("/me").text, "摘要本来就只给最近 10 条"
+
+
+def test_interviews_page_counts_abandoned_too(client: TestClient, db: Path) -> None:
+    """放弃掉的（`abandoned`）也要看得见 —— 否则用户会以为那场面试凭空消失了。
+
+    判据是"我面过哪些"，不是"我面完哪些"：要"继续哪一场"是另一件事，走 `resume_target`。
+    """
+    _add_interviews(db, user_id=2, ids=[50], status="abandoned", quota_charged=6)
+    assert "abandoned" in client.get("/me/interviews").text
+    assert "共 2 场" in client.get("/me/interviews").text
+
+
+def test_interviews_page_requires_login(db: Path) -> None:
+    with TestClient(create_app(Settings(database_path=db))) as c:
+        r = c.get("/me/interviews", follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"] == "/login"
+
+
+def test_me_page_links_to_the_full_interview_log(client: TestClient) -> None:
+    assert 'href="/me/interviews"' in client.get("/me").text
