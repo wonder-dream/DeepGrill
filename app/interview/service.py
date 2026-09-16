@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.bank import repository as bank_repository
@@ -34,6 +35,26 @@ logger = logging.getLogger(__name__)
 #: 一场模拟面试的题数（MVP）。追问上限按题给（ADR-0001：编排参数，不由难度推导）。
 INTERVIEW_QUESTION_COUNT = 3
 DEFAULT_MAX_ROUNDS = 3
+
+#: 题会话已经收尾（或整场面试已放弃）时再提交一轮的提示。**只有一处措辞**：
+#: 非流式那条路抛异常、流式那条路回 JSON，两条路用同一句话（两处各写一句，
+#: 迟早会分叉成"两个意思"）。
+SESSION_FINISHED_MESSAGE = "这道题已经答完了 —— 刷新页面看看结果"
+
+
+def require_active(ts: InterviewSession) -> None:
+    """这一轮还能不能答。不能就抛 `InvalidInput`（预期内，不是 500）。
+
+    为什么需要这道闸：`sessions.status` 收尾之后，页面上的表单**照样能再提交**
+    （旧标签页、后退、双击）。实测重放能把 `attempts` 顶过 `max_rounds`，而每一轮
+    都是**一次真的模型调用** —— 既花钱，又让"这场面试问了几轮"变成不可信的数字。
+    控制流在代码手里（ADR-0001）：达没达成"结束"，不该由按钮还在不在决定。
+
+    ⚠️ 权威判定在 `run_round()` 自己（服务层）。流式那两条路额外**在开始流之前**
+    调一次，因为状态码在流开始之后就改不了了。
+    """
+    if ts.status != "active":
+        raise InvalidInput(SESSION_FINISHED_MESSAGE)
 
 
 @dataclass
@@ -186,6 +207,7 @@ def run_round(
 
     ⚠️ **先取上一轮快照，再写本轮**（§3.6 的具体 bug，重写极易再犯）。
     """
+    require_active(ts)
     previous = current_snapshot(session, ts.id)  # ← 必须在写库之前
     round_no = next_round_no(session, ts.id)
 
@@ -255,7 +277,18 @@ def run_round(
         hits=snapshot.to_json(),
     )
     session.add(attempt)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as e:
+        # 同一轮被提交了两次（双击 / 两个标签页同时发）：两边的 `next_round_no()`
+        # 都读到同一个号，第二个到这里的 INSERT 会撞 `UNIQUE(session_id, round_no)`。
+        # 实测这条路以前以 **500** 逃出去 —— 但"这一轮已经在别处记下了"是**预期内**
+        # 的失败（同一次点击的第二次），该给人话。
+        #
+        # 回滚是必要的：会话上已经没有可以提交的东西（本轮只加了这一行 attempt），
+        # 而一个"脏"会话会让依赖它的收尾钩子在提交时再炸一次。
+        session.rollback()
+        raise InvalidInput("这一轮已经在别处提交过了 —— 刷新页面看看结果") from e
 
     finished = rules.should_finish(
         round_no=round_no,
@@ -324,7 +357,10 @@ def _parse_round(data: object, criteria) -> tuple[dict[int, str], bool]:
     if missing:
         logger.warning("模型漏了 %d 条考察点，按未涉及记：%s", len(missing), sorted(missing))
 
-    return updates, bool(payload.get("should_finish"))
+    # ⚠️ **严格判 `is True`**，不是 `bool(...)`：模型真的会回字符串 `"false"`
+    # （实测：引号包着的布尔），而 `bool("false")` 是 True —— 于是第一轮就收尾，
+    # 6 个额度点只买到一轮。宁可不收尾：多问一轮的代价远小于白瞎一场面试。
+    return updates, payload.get("should_finish") is True
 
 
 # ---------------------------------------------------------------------------

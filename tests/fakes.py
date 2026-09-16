@@ -69,12 +69,16 @@ class FakeReply:
         )
 
 
-def round_reply(hits=None, prose="继续说说看。", finish: bool = False) -> FakeReply:
+def round_reply(hits=None, prose="继续说说看。", finish: object = False) -> FakeReply:
     """面试官那一轮的回复 —— **两段式**（散文 + 分隔行 + json）。
 
     它是这个格式在测试里的**唯一住处**：prompt 那边改了格式，这里改一处，所有
     用它的测试一起跟着走。散着写 `{"hits": ...}` 的测试会在某天静默地测一个
     产品里已经不存在的格式（而失败信息看起来像"判定没成功"，完全指不出真因）。
+
+    `finish` 的类型是 `object` 而不是 `bool`：模型真的会回**字符串** `"false"`
+    （实测，见 `app/interview/service.py::_parse_round`）。把它收窄成 `bool`，
+    就没法用这个助手造出那条真实回复，于是"严格判 `is True`"这条规则会失去测试。
     """
     import json
 

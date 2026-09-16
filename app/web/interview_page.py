@@ -146,6 +146,8 @@ def answer(
 ) -> object:
     me = _require(user, session)
     ts = interview.get_session_row(session, session_id, me.id)
+    # 收尾后的重放要在**花钱之前**拦：这条路会调模型（语音那条还会先调转写）
+    interview.require_active(ts)
     return _submit_round(
         request, session, me, ts, answer_text=answer_text.strip(), llm=llm, input_mode="text"
     )
@@ -163,7 +165,10 @@ def answer_stream(
 ) -> object:
     """打字作答的流式那条路。**越权校验在请求里做**（流开始之后就改不了状态码了）。"""
     me = _require(user, session)
-    interview.get_session_row(session, session_id, me.id)
+    ts = interview.get_session_row(session, session_id, me.id)
+    guard = _stream_guard(ts)
+    if guard is not None:
+        return guard
     return _stream_response(
         engine=engine, llm=llm, me=me, session_id=session_id, answer_text=answer_text.strip()
     )
@@ -189,6 +194,7 @@ def answer_voice(
     """
     me = _require(user, session)
     ts = interview.get_session_row(session, session_id, me.id)
+    interview.require_active(ts)  # 同上：别为一场答完的面试付转写的钱
     data = report_service.interview_page_data(session, ts=ts, user_id=me.id)
 
     transcript, error = _transcribe(stt, audio)
@@ -227,7 +233,10 @@ def answer_voice_stream(
     前端拿到一屏乱码般的文本。
     """
     me = _require(user, session)
-    interview.get_session_row(session, session_id, me.id)
+    ts = interview.get_session_row(session, session_id, me.id)
+    guard = _stream_guard(ts)
+    if guard is not None:
+        return guard
 
     transcript, error = _transcribe(stt, audio)
     if error is not None:
@@ -310,14 +319,29 @@ def _submit_round(
 ) -> object:
     """答一轮然后**整页重渲染**（无 JS 那条路）—— 收尾、跳题、记账都在这里。"""
     before = _usage_snapshot(llm)
-    result = interview.submit_answer(
-        session,
-        ts=ts,
-        answer_text=answer_text,
-        llm=llm,
-        input_mode=input_mode,
-        stt_text=stt_text,
-    )
+    try:
+        result = interview.submit_answer(
+            session,
+            ts=ts,
+            answer_text=answer_text,
+            llm=llm,
+            input_mode=input_mode,
+            stt_text=stt_text,
+        )
+    except AppError:
+        # 失败的那一轮**也已经花掉了模型的钱**（§3.8：每次调用都要能回答"花在哪"）
+        # —— 记账必须发生在异常逃出去之前。最典型的一条是并发重放：模型调用成功了，
+        # 落库时才发现这一轮已经在别处记下（见 `interview.run_round` 的 IntegrityError）。
+        #
+        # ⚠️ 还得**立刻提交**：请求失败时依赖会在收尾时 `rollback()`（见
+        # `app/db/__init__.py::make_session_dependency`），不提交这笔 token 就被回滚掉了，
+        # 而钱是真花了的。
+        try:
+            _record_usage(session, me.id, llm, before)
+            session.commit()
+        except Exception:  # noqa: BLE001
+            logger.warning("这一轮失败之后补记 token 也失败了", exc_info=True)
+        raise
 
     if result.finished:
         target = _finish_target(session, ts, llm)
@@ -331,6 +355,20 @@ def _submit_round(
         "interview.html",
         {"data": data, "last": result, "llm_failed": result.llm_failed, "notice": notice},
     )
+
+
+def _stream_guard(ts) -> object | None:
+    """流式那两条路的预检：这一轮还能不能答？
+
+    必须在**开始流之前**做 —— 流一旦开始，状态码就改不了了（那时候只能发一帧
+    `error`，浏览器拿到的还是 200，而"页面已经答完了"是个 400 的事实）。
+    回 JSON 而不是 HTML：这条路的消费者是 `interview.js`，它认 `{"error": …}`。
+    """
+    try:
+        interview.require_active(ts)
+    except AppError as e:
+        return JSONResponse({"error": e.message, "kind": "input"}, status_code=e.status_code)
+    return None
 
 
 def _stream_response(

@@ -74,9 +74,13 @@ def session(tmp_dir: Path) -> Iterator[Session]:
         yield s
 
 
-def _round_reply(hits: list[tuple[int, str]], followup: str = "继续", finish: bool = False):
+def _round_reply(hits: list[tuple[int, str]], followup: str = "继续", finish: object = False):
     """面试官那一轮的回复。**格式的唯一住处是 `tests.fakes.round_reply`** ——
-    两段式（散文 + 分隔行 + json）的细节不该在测试里各写一遍。"""
+    两段式（散文 + 分隔行 + json）的细节不该在测试里各写一遍。
+
+    `finish` 的类型是 `object`：模型会回字符串 `"false"`（见
+    `test_only_a_real_true_asks_for_finish`），那正是这条规则需要被钉住的原因。
+    """
     return round_reply(hits=hits, prose=followup, finish=finish)
 
 
@@ -249,6 +253,83 @@ def test_two_rounds_without_new_hits_finishes_early(session: Session) -> None:
     assert first.finished is False, "第一轮不该因为这条收尾（那时还没有「上一轮」可言）"
     second = service.submit_answer(session, ts=ts, answer_text="b", llm=llm)
     assert second.finished is True
+
+
+def test_only_a_real_true_asks_for_finish() -> None:
+    """`should_finish` 必须**严格**判 `is True`（实测：模型会回字符串 `"false"`）。
+
+    `bool("false")` 是 True —— 于是一场 6 个额度点的面试在第一轮就收尾，
+    买到的只有一个考察点。宁可漏一次"模型想收尾"：多问一轮的代价小得多。
+    """
+    criteria = [Criterion(id=1, seq=1, text="随便一条", point_id=1)]
+    for raw, expected in [
+        (True, True),
+        ("false", False),
+        ("true", False),
+        (1, False),
+        (None, False),
+    ]:
+        _, model_finish = service._parse_round(
+            {"hits": [{"criterion_id": 1, "status": "命中"}], "should_finish": raw}, criteria
+        )
+        assert model_finish is expected, f"should_finish={raw!r}"
+
+
+def test_a_quoted_false_does_not_finish_the_round(session: Session) -> None:
+    """同一条规则的端到端版本：那条真实回复要真的走完 `run_round`。"""
+    ts = service.start_drill(session, user_id=ME, question_id=1)
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "未涉及"), (3, "未涉及")], finish="false")
+    )
+    result = service.submit_answer(session, ts=ts, answer_text="a", llm=llm)
+
+    assert result.finished is False, '模型给 "should_finish": "false" 时不该收尾'
+    assert ts.status == "active", "会话还得是活的 —— 否则用户再也答不了这一题"
+
+
+def test_a_finished_session_refuses_more_rounds(session: Session) -> None:
+    """收尾之后**不能再答**：实测重放能把 `attempts` 顶过 `max_rounds`，而每轮一次真调用。"""
+    ts = service.start_drill(session, user_id=ME, question_id=1)
+    ts.max_rounds = 1
+    session.commit()
+    # 只准备**一条**回复：闸门要是没拦住，第二轮会以"队列空了"的形式炸在这里，
+    # 而不是把一次模型调用花出去 —— 于是这条测试同时钉住"闸门在调模型之前"。
+    llm = FakeLLM().queue(_round_reply([(1, "命中"), (2, "未涉及"), (3, "未涉及")]))
+    assert service.submit_answer(session, ts=ts, answer_text="a", llm=llm).finished is True
+
+    with pytest.raises(InvalidInput):
+        service.submit_answer(session, ts=ts, answer_text="重放", llm=llm)
+
+    assert len(service.attempts_of(session, ts.id)) == 1
+    assert len(llm.calls) == 1, "闸门必须发生在调模型之前（每次调用都是钱）"
+    assert not llm.replies, "预录回复不该被消费掉"
+
+
+def test_a_duplicate_round_number_is_a_clean_conflict(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """并发提交同一轮：第二个要以**人话**失败，不是 500。
+
+    复现方式是把 `next_round_no` 钉死成"陈旧的读" —— 这正是并发那一刻的样子：
+    两边都在对方写库之前读到同一个轮次号，于是第二个的 INSERT 撞
+    `UNIQUE(session_id, round_no)`。修之前它作为 `IntegrityError` 逃出路由 → 500。
+    """
+    ts = service.start_drill(session, user_id=ME, question_id=1)
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "未涉及"), (3, "未涉及")]),
+        _round_reply([(1, "未涉及"), (2, "命中"), (3, "未涉及")]),
+    )
+    service.submit_answer(session, ts=ts, answer_text="a", llm=llm)
+    session.commit()
+
+    monkeypatch.setattr(service, "next_round_no", lambda *a, **k: 1)
+    with pytest.raises(InvalidInput):
+        service.submit_answer(session, ts=ts, answer_text="并发的第二份", llm=llm)
+
+    assert len(service.attempts_of(session, ts.id)) == 1, "冲突的那一轮不该留半行"
+    # 会话必须还能用：撞了唯一约束之后没回滚的话，后面每一次 flush 都会继续炸
+    monkeypatch.undo()
+    assert service.submit_answer(session, ts=ts, answer_text="再答一次", llm=llm).attempt_id
 
 
 def test_rules_are_pinned_directly() -> None:
