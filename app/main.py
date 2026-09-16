@@ -175,6 +175,20 @@ def _install_rate_limit(app: FastAPI, settings: Settings) -> None:
     # 模块全局会让它们互相限流。
     app.state.ratelimiters = limiters
 
+    if settings.trust_proxy_headers:
+        # **启动期护栏**（决策 92）：信转发头的前提是"前面真的有一层代理"，
+        # 而这个前提在这里无法自动验证 —— 配错了的后果是"按 IP 的两档限流全部失效"
+        # （客户端自己写 `CF-Connecting-IP` 就能每次换一个身份）。实测：轮换转发头
+        # 撞口令 15/15 全部通过、0 个 429；不带头则 10 次之后被拦。
+        #
+        # 所以这里**大声说出来**（不静默降级，§3.1）。另一半的防线是按账号那一档
+        # （`deps.rate_limit_auth_account`）：它与 IP 无关，转发头再怎么换也拦得住。
+        logger.warning(
+            "trust_proxy_headers=true：按 IP 的两档限流改为读 X-Forwarded-For / "
+            "CF-Connecting-IP —— 只有当前面**真的**是反向代理时才是对的，"
+            "否则客户端可以自己换头绕过它（还有按账号的那一档兜着，见决策 92）"
+        )
+
     @app.middleware("http")
     async def _ratelimit(request: Request, call_next):
         if not limiters.enabled or _ratelimit_exempt(request.url.path):

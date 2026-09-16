@@ -13,8 +13,9 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, Form, Request
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
@@ -235,6 +236,41 @@ def rate_limit_interviewer(
             retry_after=decision.retry_after,
         )
     request.scope.setdefault("ratelimit", []).append((limiters.llm, key))
+
+
+def rate_limit_auth_account(
+    request: Request,
+    email: Annotated[str, Form()] = "",
+) -> None:
+    """登录 / 注册那一档再加**按账号**的键（决策 92）。
+
+    为什么需要它：按 IP 的那一档可以被转发头绕开 —— `trust_proxy_headers=true`
+    且前面**不是**真代理时，客户端自己就能轮换 `CF-Connecting-IP`。实测：轮换转发头
+    撞口令，15/15 全部通过、0 个 429；不带头则 10 次之后就被拦。而按账号的键与
+    "从哪个 IP 来"无关：同一个邮箱连撞口令，怎么换头都会撞上限。
+
+    ⚠️ 它读的是**表单里的 email**（依赖里也能声明 Form，FastAPI 只解析一次 body），
+    所以登录那条路多了一个解析步骤 —— 但这一步本来就要做（它要校验口令）。
+    邮箱为空时不记账（那是输入错误，交给 IP 那一档）。
+
+    与 `rate_limit_interviewer` 同一个形状：占位记录进 `request.scope["ratelimit"]`，
+    由中间件在响应之后统一 settle。用 `auth` 那一档（**防滥用型**：4xx 不释放，
+    失败的尝试正是要拦的东西）。
+    """
+    limiters = getattr(request.app.state, "ratelimiters", None)
+    if limiters is None or not limiters.enabled:
+        return
+    key = email.strip().lower()
+    if not key:
+        return
+    account_key = f"account:{key}"
+    decision = limiters.auth.reserve(account_key)
+    if not decision.allowed:
+        raise TooManyRequests(
+            f"这个账号的尝试太频繁了，请等 {max(1, decision.retry_after)} 秒再试",
+            retry_after=decision.retry_after,
+        )
+    request.scope.setdefault("ratelimit", []).append((limiters.auth, account_key))
 
 
 class _MissingKeyLLM:

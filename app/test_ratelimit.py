@@ -434,6 +434,28 @@ def test_resume_submission_is_on_the_cost_limit(db: Path) -> None:
         assert c.post("/me/resume", data=resume).status_code == 429
 
 
+def test_auth_limit_survives_rotating_forwarded_headers(db: Path) -> None:
+    """**回归测试**（bug 33）：轮换转发头也绕不开按账号那一档（决策 92）。
+
+    实测：`trust_proxy_headers=true` 时客户端自己写 `CF-Connecting-IP` 就能每次换一个
+    "IP" —— 于是按 IP 的两档全部失效（15/15 错口令登录通过、0 个 429），而这件事在
+    产品上就是"撞密码没有上限"。修法是**再加一道与 IP 无关的键**：账号。
+
+    这里刻意让每个请求都带一个不同的转发头：按 IP 那一档会全部放行（所以它拦不住），
+    能拦住的只可能是按账号那一档。
+    """
+    app = _app(db, ratelimit_requests=1000, ratelimit_auth_requests=2,
+               ratelimit_auth_window_seconds=60, trust_proxy_headers=True)
+    with TestClient(app) as c:
+        for i in range(2):
+            r = c.post("/login", data={"email": "r@local", "password": "wrong-pw"},
+                       headers={"CF-Connecting-IP": f"203.0.113.{i}"})
+            assert r.status_code == 200, "前两次是普通的「口令不对」，不该被限流"
+        r = c.post("/login", data={"email": "r@local", "password": "wrong-pw"},
+                   headers={"CF-Connecting-IP": "203.0.113.99"})
+        assert r.status_code == 429, "换一个转发头就又能撞了 —— 按账号那一档没生效"
+
+
 def test_disabled_leaves_everything_alone(db: Path) -> None:
     app = _app(db, ratelimit_enabled=False, ratelimit_requests=1)
     with TestClient(app) as c:

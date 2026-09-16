@@ -27,7 +27,13 @@ from sqlalchemy.orm import Session
 from app.account import service as account
 from app.config import Settings
 from app.db.models import User
-from app.deps import SESSION_COOKIE, get_current_user, get_session, get_settings
+from app.deps import (
+    SESSION_COOKIE,
+    get_current_user,
+    get_session,
+    get_settings,
+    rate_limit_auth_account,
+)
 from app.errors import AppError
 from app.web.templating import render
 
@@ -64,6 +70,8 @@ def login_submit(
     settings: SettingsDep,
     email: Annotated[str, Form()] = "",
     password: Annotated[str, Form()] = "",
+    # 按**账号**再限一道（决策 92）：按 IP 那一档可以被转发头绕开，见依赖的 docstring
+    _rate_limit: None = Depends(rate_limit_auth_account),
 ) -> object:
     try:
         token = account.login(session, email=email, password=password)
@@ -95,6 +103,8 @@ def register_submit(
     username: Annotated[str, Form()] = "",
     password: Annotated[str, Form()] = "",
     invite_code: Annotated[str, Form()] = "",
+    # 注册也要按账号限：它是"批量造号"那条路，而按 IP 那档同样能被转发头绕开
+    _rate_limit: None = Depends(rate_limit_auth_account),
 ) -> object:
     try:
         account.register(
