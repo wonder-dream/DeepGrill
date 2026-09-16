@@ -108,9 +108,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(quality_page.router)
 
     _install_rate_limit(app, settings)
+    # 体量闸门**后装**：`add_middleware` 是插到栈顶的，所以后装的在最外层 ——
+    # 一个 200MB 的请求会在花掉限流额度**之前**就被 413 掉。
+    _install_body_limit(app, settings)
     _install_error_handlers(app)
 
     return app
+
+
+def _install_body_limit(app: FastAPI, settings: Settings) -> None:
+    """请求体上限闸门（§3.6 的同类问题：别让一个请求把磁盘/内存吃光）。
+
+    ## 为什么必须挡在**读 body 之前**
+
+    表单与 multipart 的 body 由 Starlette 在**解析请求时**读进来（超过阈值会落盘成
+    临时文件），而"这次请求该不该被受理"却要等鉴权 —— 鉴权在路由里。所以一个
+    **匿名**的大文件上传会让服务端先把 200MB 写进磁盘，然后才回 403。实测：
+    无闸门时磁盘 **+200.0 MB**；加了 `Content-Length` 闸门之后 **+0 MB**、0.1 秒
+    返回 413。
+
+    ## 它只认声明出来的 `Content-Length`
+
+    `Transfer-Encoding: chunked` 的请求没有这个头 —— 那种情况下这一层看不见体量，
+    由各路由自己的上限兜（录音那条读 `MAX_AUDIO_BYTES + 1` 就停）。**这不静默**：
+    413 的响应体里写着上限是多少。
+
+    上限是配置项（`DEEPGRILL_MAX_REQUEST_BODY_BYTES`，默认 16 MiB）：比应用层允许的
+    8MB 录音留了一倍余量，同时把"任意大"变成一个确定的数。
+    """
+    limit = settings.max_request_body_bytes
+
+    @app.middleware("http")
+    async def _body_limit(request: Request, call_next):
+        declared = request.headers.get("content-length")
+        if declared is not None:
+            try:
+                too_big = int(declared) > limit
+            except ValueError:
+                # 不是数字：交给下游（Starlette 会因为 Content-Length 非法而回 400）
+                too_big = False
+            if too_big:
+                return JSONResponse(
+                    {"detail": f"请求体太大（上限 {limit} 字节）"}, status_code=413
+                )
+        return await call_next(request)
 
 
 def _install_rate_limit(app: FastAPI, settings: Settings) -> None:

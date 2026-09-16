@@ -102,6 +102,33 @@ def test_unknown_path_returns_404_json(client: TestClient) -> None:
     assert client.get("/no-such-page").status_code == 404
 
 
+def test_a_huge_body_is_refused_before_it_is_read(settings: Settings) -> None:
+    """请求体超过上限 → **413，而且一个字节都不用读**（bug 19 的回归）。
+
+    实测（匿名 200MB multipart）：没有闸门时服务端先把 200MB 写进磁盘（临时文件），
+    然后才回 403 —— 鉴权在路由里，而 body 在路由之前就被读完了。闸门看的是
+    `Content-Length`，所以它在"读 body"这件事发生之前就能拒绝。
+
+    断言两条：状态码是 413，以及**响应体里写着上限**（不静默）。
+    """
+    from migrations._runner import migrate
+
+    migrate(settings.resolved_database_path())
+    app = create_app(settings)
+    limit = settings.max_request_body_bytes
+    with TestClient(app) as c:
+        r = c.post(
+            "/interview/1/voice",
+            content=b"x" * 1024,
+            headers={"content-length": str(limit + 1)},
+        )
+        assert r.status_code == 413, f"超限的请求体必须 413，而不是先落盘再 403：{r.status_code}"
+        assert str(limit) in r.text, "要说清上限是多少"
+
+        # 上限之内的请求照常走到下游（这里因为未登录 → 403，但**不是** 413）
+        assert c.post("/interview/1/voice", content=b"x" * 1024).status_code != 413
+
+
 def test_the_llm_client_is_closed_after_every_request(
     tmp_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
