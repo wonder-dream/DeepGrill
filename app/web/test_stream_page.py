@@ -294,19 +294,68 @@ def test_stream_without_an_api_key_degrades_instead_of_crashing(
     assert attempts[0].llm_error, "失败原因要可查询（迁移 0006）"
 
 
-def test_a_client_disconnect_still_records_the_cost(app, client: TestClient, db: Path) -> None:
-    """客户端中途关掉页面时，**这一轮花的钱也要留下痕迹**（§3.8 / 决策 14）。
+def test_the_stream_response_carries_the_abort_finalizer(
+    app, client: TestClient, db: Path
+) -> None:
+    """**回归测试**：收尾挂在响应的 `background=` 上 —— 那才是真实断开时会跑的那条路。
 
-    实测（probe16，真模型，18.1s）：收到第一段 prose 之后断开 → `attempts` 为空、
-    `tokens_used` 一点没动。断开时生成器被 `GeneratorExit` 关掉，而它不是
-    `Exception` —— 那个 `except Exception` 抓不到它，记账必须挂在 `finally` 上。
+    为什么不能只靠生成器的 `finally`：`StreamingResponse` 把同步生成器包成异步生成器
+    （`starlette/concurrency.py::iterate_in_threadpool`），**那个包装没有 try/finally** ——
+    客户端断开时底层生成器根本不会被关闭，它的 `finally` 等的是 GC（实测：断开之后
+    `attempts` 一直是 0）。background 则一定会跑：uvicorn 用 ASGI `spec_version 2.3`，
+    Starlette 走"任务组 + `listen_for_disconnect`"那条分支，断开 → 取消流任务 →
+    任务组正常退出 → `await self.background()`。
+
+    这里直接把那个 background 调起来（就是断开时 Starlette 会做的事），断言这一轮
+    被补落库；再调一次，断言**幂等**（只有一行）。
+    """
+    import asyncio
+
+    from app.db.models import Attempt, User
+    from app.web.interview_page import _stream_response
+
+    fake = FakeLLM().queue(round_reply(hits=[(1, "命中")], prose="继续说说。"))
+    location = _start(client)
+    session_id = int(location.rsplit("/", 1)[1])
+    engine = create_db_engine(db)
+    with create_session_factory(engine)() as s:
+        me = s.get(User, 2)
+        assert me is not None
+
+    response = _stream_response(
+        engine=engine, llm=fake, me=me, session_id=session_id, answer_text="保证可见性"
+    )
+    assert response.background is not None, "收尾必须挂在 background 上（断开时只有它会跑）"
+
+    asyncio.run(response.background())          # ← 客户端断开时 Starlette 做的事
+    asyncio.run(response.background())          # 幂等：再来一次也只有一行
+
+    with create_session_factory(engine)() as s:
+        rows = s.execute(select(Attempt).where(Attempt.session_id == session_id)).scalars().all()
+        assert len(rows) == 1, f"断开的那一轮必须落一条 attempts，实际 {len(rows)} 条"
+        assert "断了" in (rows[0].llm_error or "")
+    engine.dispose()
+
+
+def test_a_client_disconnect_still_records_the_round_and_the_cost(
+    app, client: TestClient, db: Path
+) -> None:
+    """客户端中途关掉页面时，这一轮**必须留下痕迹**（§3.1），已知的 token 也要记账。
+
+    实测（probe16 真模型 18.1s / probe19 假模型）：收到第一段 prose 之后断开 →
+    `attempts` 为空、`tokens_used` 一点没动。断开时生成器被 `GeneratorExit` 关掉，
+    而**它不是 `Exception`** —— 所以收尾必须挂在 `finally` 上，而且要做两件事：
+      · 这一轮以降级形态落库（全部「未涉及」+ `llm_error` 写明断开）
+      · 把**已经知道的** token 记进账本
+        （按 OpenAI 的约定 usage 在最后一个 chunk 才到，中途断开时通常是 0 ——
+         那半个洞补不上，所以这里用一个"调用时就报用量"的替身来钉住记账那一半）
 
     这里不走 TestClient 发请求，而是**直接对着生成器**：拿到第一帧之后 `close()`
     ——那就是"浏览器把连接关了"在服务端看到的东西（deterministic，不靠时序）。
     """
     from app.account import repository as account_repository
     from app.account import service as account
-    from app.db.models import User
+    from app.db.models import Attempt, User
     from app.web.interview_page import _round_stream
 
     class Metered(FakeLLM):
@@ -343,9 +392,15 @@ def test_a_client_disconnect_still_records_the_cost(app, client: TestClient, db:
     stream.close()  # ← 等价于客户端断开连接
 
     with create_session_factory(engine)() as s:
-        row = account_repository.quota_row(s, 2, account.today())
-    assert row is not None and row.tokens_used == 1000, (
-        "断开之后那一轮的钱必须记账（模型已经生成过内容了）"
+        rows = s.execute(select(Attempt).where(Attempt.session_id == session_id)).scalars().all()
+        assert len(rows) == 1, "断开的那一轮必须留下一条 attempts（否则『答了却像没答』）"
+        assert rows[0].answer_text == "保证可见性", "候选人的话要留住"
+        assert rows[0].llm_error, "失败原因要可查询（迁移 0006）"
+        assert "断了" in rows[0].llm_error
+        assert set(rows[0].hits.values()) == {"未涉及"}, "没有判定结果 → 全部记「未涉及」"
+        ledger = account_repository.quota_row(s, 2, account.today())
+    assert ledger is not None and ledger.tokens_used == 1000, (
+        "断开之后已经知道的 token 也要记账（模型已经生成过内容了）"
     )
     engine.dispose()
 

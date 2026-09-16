@@ -34,13 +34,15 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
-from typing import Annotated
+import threading
+from collections.abc import Callable, Iterator
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from app.account import service as account
 from app.db import create_session_factory
@@ -377,6 +379,48 @@ def _stream_guard(ts) -> object | None:
     return None
 
 
+def _round_finalizer(
+    *,
+    engine: Engine,
+    llm,
+    me: User,
+    session_id: int,
+    answer_text: str,
+    input_mode: str,
+    stt_text: str | None,
+    before: dict[str, int],
+    state: dict[str, Any],
+) -> Callable[[], None]:
+    """一轮的收尾函数：正常走完什么都不做；断开/异常则**补落这一轮 + 补记账**。
+
+    **恰好执行一次**（`lock` + `state["recorded"]`）：它会被两条路径调用（响应的
+    background、生成器自己的 `finally`），谁先到谁做。
+    """
+    lock = threading.Lock()
+
+    def finalize() -> None:
+        with lock:
+            if state["recorded"]:
+                return
+            state["recorded"] = True   # 先占位：另一条路不该再进来
+        try:
+            with create_session_factory(engine)() as s:
+                _record_usage(s, me.id, llm, before)
+                interview.record_aborted_round(
+                    s,
+                    session_id=session_id,
+                    answer_text=answer_text,
+                    input_mode=input_mode,
+                    stt_text=stt_text,
+                    reason=str(state["reason"]),
+                )
+                s.commit()
+        except Exception:  # noqa: BLE001
+            logger.warning("客户端断开之后补落这一轮失败", exc_info=True)
+
+    return finalize
+
+
 def _stream_response(
     *,
     engine: Engine,
@@ -392,12 +436,39 @@ def _stream_response(
     事件只有三种，前端只认三种：`prose`（增量文字）、`done`（去哪一页）、
     `error`（出事了，页面上说一句）。
 
-    ⚠️ 生成器本身在 `_round_stream()` 里 —— **与响应对象分开**。理由是那条路最重要
-    的一个行为（客户端断开）只有把生成器**单独驱动并 `close()`** 才测得到：
-    `StreamingResponse` 会把它包成异步生成器，而那个包装**不会**显式关闭底层
-    同步生成器（`starlette/concurrency.py::iterate_in_threadpool` 里没有 try/finally），
-    于是"断开"在测试里只能靠 GC 时机，测不稳。
+    ## 生成器与响应对象分开，且收尾挂两处
+
+    ⚠️ **收尾（`finalize`）必须挂在 `background=` 上**，不能只靠生成器的 `finally`：
+    `StreamingResponse` 会把同步生成器包成异步生成器，而那个包装
+    （`starlette/concurrency.py::iterate_in_threadpool`）**没有 try/finally** ——
+    客户端断开时底层同步生成器根本不会被关闭，它的 `finally` 等的是 GC，而 GC 什么
+    时候来没有保证（实测：断开之后 `attempts` 一直是 0，`finally` 里的补落库从没跑过）。
+
+    background 则一定会跑：uvicorn 走的是 ASGI `spec_version 2.3` 那条分支
+    （`starlette/responses.py::StreamingResponse.__call__` 的任务组 + `listen_for_disconnect`），
+    客户端断开 → 取消流那条任务 → 任务组**正常**退出 → `await self.background()`。
+    它是同步可调用对象，Starlette 用 `BackgroundTask` 丢进线程池（§3.3 因此成立）。
+
+    生成器自己的 `finally` 仍然调一次同一个收尾函数（幂等）—— 覆盖"生成器被 GC
+    关闭"那条兜底路径（比如进程退出时）。
     """
+    state: dict[str, Any] = {
+        "recorded": False,
+        "reason": interview.ABORTED_ROUND_MESSAGE,
+    }
+    before = _usage_snapshot(llm)
+    finalize = _round_finalizer(
+        engine=engine,
+        llm=llm,
+        me=me,
+        session_id=session_id,
+        answer_text=answer_text,
+        input_mode=input_mode,
+        stt_text=stt_text,
+        before=before,
+        state=state,
+    )
+
     return StreamingResponse(
         _round_stream(
             engine=engine,
@@ -407,8 +478,15 @@ def _stream_response(
             answer_text=answer_text,
             input_mode=input_mode,
             stt_text=stt_text,
+            state=state,
+            before=before,
+            on_finish=finalize,
         ),
         media_type="text/event-stream",
+        # ⚠️ 必须是 `BackgroundTask`，不能直接给函数：Starlette 1.6 直接把 background
+        # 存下来并 `await self.background()`（`responses.py` 的 `Response.__init__`），
+        # 不做包装 —— 传同步函数会在 `await None` 上炸（实测）。
+        background=BackgroundTask(finalize),
         headers={
             "Cache-Control": "no-store",
             # 反向代理（Cloudflare / nginx）默认会缓冲整个响应 —— 那样流式就没了
@@ -426,8 +504,15 @@ def _round_stream(
     answer_text: str,
     input_mode: str = "text",
     stt_text: str | None = None,
+    state: dict[str, Any] | None = None,
+    before: dict[str, int] | None = None,
+    on_finish=None,
 ) -> Iterator[str]:
     """一轮的 SSE 帧生成器（**同步生成器**：`close()` 就是"客户端断开"）。
+
+    `state` / `before` / `on_finish` 由 `_stream_response()` 注入；单独调它时
+    （测试、脚本）自动补一份等价的东西 —— 于是"断开"这件事在两种驱动方式下
+    行为一致。
 
     ## 为什么流自己开一个会话
 
@@ -443,29 +528,22 @@ def _round_stream(
     5 秒再整段跳出来）。代价是页面在等待期间必须显示"面试官正在回应……"
     （`interview.js` 的 `live-status`）—— 否则用户面对 5 秒空白会以为卡住了。
     """
+    state = state if state is not None else {"recorded": False,
+                                             "reason": interview.ABORTED_ROUND_MESSAGE}
     factory = create_session_factory(engine)
-    before = _usage_snapshot(llm)
-
-    def record_aborted_usage() -> None:
-        """客户端中途离开时补记账 —— 模型的钱已经花了（§3.8 / 决策 14）。
-
-        实测（第 1 轮 probe16，真模型）：收到第一段 prose 后关掉连接 → 这一轮没落库、
-        `tokens_used` **一点没动**。断开时生成器被 `GeneratorExit` 关掉，它不是
-        `Exception`，所以原来那个 `except Exception` 抓不到 —— 记账必须挂在 `finally` 上。
-
-        ⚠️ 用**新会话**：上面那个已经随 `with` 关掉了（而且它正要回滚）。
-
-        ⚠️ 记账失败只记日志：这条路上没有任何还能写库的地方。§3.1 要的"可查询记录"
-        由正常路径的账本承担；这里退化成服务端日志（至少留下痕迹，不是无声无息）。
-        """
-        try:
-            with factory() as s:
-                _record_usage(s, me.id, llm, before)
-                s.commit()
-        except Exception:  # noqa: BLE001
-            logger.warning("客户端断开之后补记 token 失败", exc_info=True)
-
-    recorded = False
+    before = before if before is not None else _usage_snapshot(llm)
+    if on_finish is None:
+        on_finish = _round_finalizer(
+            engine=engine,
+            llm=llm,
+            me=me,
+            session_id=session_id,
+            answer_text=answer_text,
+            input_mode=input_mode,
+            stt_text=stt_text,
+            before=before,
+            state=state,
+        )
     try:
         with factory() as s:
             ts = interview.get_session_row(s, session_id, me.id)
@@ -495,21 +573,23 @@ def _round_stream(
             # ⚠️ 必须在发 done **之前**提交：浏览器收到 done 就跳转，而那次渲染
             # 是另一个请求 —— 提交晚一步它就读不到这一轮。
             s.commit()
-            recorded = True
+            state["recorded"] = True
             yield _sse("done", {"redirect": target, "llm_failed": result.llm_failed})
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
         # 流已经开始，状态码改不了了 —— 那就**说出来**（§3.1：降级不静默），
         # 让前端提示一句、重新加载页面看真实状态。
         #
         # ⚠️ 帧里**只给人话**：原来发的是 `f"{type(e).__name__}: {e}"`，于是
         # `AttributeError: '_MissingKeyLLM' object has no attribute 'stream'`
-        # 这种内部细节直接进了浏览器（实测 probe5）。栈与原因进日志。
+        # 这种内部细节直接进了浏览器（实测 probe5）。栈与原因进日志**与这一轮的
+        # `llm_error`**（可查询的那一份）。
         logger.exception("流式这一轮失败")
+        state["reason"] = f"{type(e).__name__}: {e}"[: interview._FAILURE_REASON_MAX]
         yield _sse("error", {"message": "服务端出错了"})
     finally:
-        # 正常走完（recorded=True）时什么都不做；断开 / 中途异常时补一笔账
-        if not recorded:
-            record_aborted_usage()
+        # 兜底那条路（生成器被 GC 关闭时）：正常走完时它是空操作（幂等）
+        if on_finish is not None:
+            on_finish()
 
 
 def _finish_target(session: Session, ts, llm) -> str:

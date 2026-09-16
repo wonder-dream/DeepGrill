@@ -323,6 +323,62 @@ def run_round(
     )
 
 
+#: 客户端在 SSE 中途断掉时，那一轮落库的反馈文案与失败原因。**同一个字符串是有意的**：
+#: 页面上看到的话与库里查到的原因必须是同一句（两处各写一遍迟早会分叉）。
+ABORTED_ROUND_MESSAGE = "（这一轮在生成过程中断了 —— 没有判分结果，刷新页面继续）"
+
+
+def record_aborted_round(
+    session: Session,
+    *,
+    session_id: int,
+    answer_text: str,
+    input_mode: str = "text",
+    stt_text: str | None = None,
+    reason: str = ABORTED_ROUND_MESSAGE,
+) -> Attempt | None:
+    """把"生成途中断掉"的那一轮按**降级**落库（§3.1：不许整轮静默消失）。
+
+    实测（第 1 轮 probe16 / probe19 都复现）：SSE 收到第一段话之后客户端关掉连接 ——
+    那一轮在库里**一点痕迹都没有**（`attempts` 为空、会话还停在上一轮）。用户"答了却
+    像没答"，报告与掌握度也当它没发生过。这与其它降级路径（模型挂了、输出不可解析）
+    应当一致：全部记"未涉及"、把原因写进 `llm_error`（迁移 0006），会话照旧可以继续答。
+
+    ⚠️ 它**不推进收尾判据**：这一轮没有判定结果，`should_finish` 无从谈起。
+    代价是轮次号被占掉一个（`UNIQUE(session_id, round_no)`）—— 与"模型调用失败也要
+    记一轮"是同一种取舍：那次尝试真的发生过。
+
+    ⚠️ 只在会话仍是 `active`、题还在时写；撞了唯一约束就放弃（另一份请求已经记下了
+    这一轮，这里不该抢，也不该让异常逃出去）。
+    """
+    ts = session.get(InterviewSession, session_id)
+    if ts is None or ts.status != "active":
+        return None
+    question = session.get(Question, ts.question_id)
+    criteria = bank_repository.criteria_of_question(session, question) if question else []
+    previous = current_snapshot(session, session_id)
+    snapshot = previous.merge({c.id: rules.NOT_COVERED for c in criteria})
+    round_no = next_round_no(session, session_id)
+    attempt = Attempt(
+        session_id=session_id,
+        round_no=round_no,
+        is_followup=1 if round_no > 1 else 0,
+        input_mode=input_mode,
+        stt_text=stt_text,
+        answer_text=answer_text,
+        feedback_text=ABORTED_ROUND_MESSAGE,
+        hits=snapshot.to_json(),
+        llm_error=reason,
+    )
+    session.add(attempt)
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        return None
+    return attempt
+
+
 def _criteria_block(criteria) -> str:
     if not criteria:
         return "（这道题还没有考察点定义 —— 按题干自己判断要点）"

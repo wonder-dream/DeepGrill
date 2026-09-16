@@ -139,7 +139,12 @@ QUESTIONS = {
 def test_resume_page_shows_the_privacy_statement(client: TestClient) -> None:
     body = client.get("/me/resume").text
     assert "不保存简历原文" in body
-    assert "粘贴文本" in body, "要如实说明只支持粘贴，不能让人以为能传文件"
+    # 「只支持粘贴」这件事要**如实说明**，不能让人以为能传文件；但用哪句话说由页面定 ——
+    # 文案清理那一轮把「当前只支持粘贴文本（不做 PDF/DOCX 上传）」这句删掉了（用户不需要
+    # 知道我们内部为什么不做），所以这里钉的是**意图**而不是那一句原文：
+    # 页面上仍是粘贴流程（标题写着「粘贴简历」），而且没有任何"上传文件"的入口。
+    assert "粘贴" in body, "要如实说明这是粘贴流程，不能让人以为能传文件"
+    assert 'type="file"' not in body, "没有上传入口，就别在文案上留下会被误解的余地"
 
 
 def test_resume_submit_creates_private_questions(client: TestClient, db: Path) -> None:
