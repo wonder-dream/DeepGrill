@@ -194,10 +194,12 @@ def _private_anchor(session: Session, user_id: int) -> KnowledgePoint:
     from sqlalchemy import select
 
     name = f"私有题集（用户 {user_id}）"
+    # ⚠️ 认"是不是同一个用户"靠 **owner 列**（迁移 0007，决策 91），不是靠名字：
+    # 名字是给人看的，而注销那条路要按 owner 找到它并整体删掉 —— 两处用同一个
+    # 字符串约定，改一处就会静默漏删（留下简历派生的考察点）。名字仍然这么写，
+    # 因为它是**用户看得见**的东西（页面上会显示这个知识点）。
     existing = session.execute(
-        select(KnowledgePoint).where(
-            KnowledgePoint.name == name, KnowledgePoint.origin == "manual"
-        )
+        select(KnowledgePoint).where(KnowledgePoint.owner_user_id == user_id)
     ).scalars().first()
     if existing is not None:
         return existing
@@ -219,6 +221,7 @@ def _private_anchor(session: Session, user_id: int) -> KnowledgePoint:
         name=name,
         status="draft",      # ← 不是 confirmed：它没经过人审，也不该被当成公共骨架
         origin="manual",
+        owner_user_id=user_id,   # ← 注销时按它整体删掉（决策 91）
     )
     session.add(point)
     session.flush()

@@ -30,6 +30,7 @@ from app.db.models import (
     Interview,
     InviteCode,
     KnowledgePoint,
+    KnowledgePointEdge,
     Question,
     QuestionFeedback,
     QuestionPointStat,
@@ -210,6 +211,47 @@ def test_delete_removes_identity_and_content(session: Session) -> None:
     assert session.execute(select(Attempt)).first() is None, "逐轮原文要删"
     assert session.execute(select(UserFavorite).where(UserFavorite.user_id == ME)).first() is None
     assert session.execute(select(Question).where(Question.owner_user_id == ME)).first() is None
+
+
+def test_delete_removes_the_private_anchor_and_its_criteria(session: Session) -> None:
+    """**回归测试**：注销要把私有题集的**锚点**与它派生的考察点一起删掉（决策 91）。
+
+    实测：`delete_account()` 从头到尾没碰 `knowledge_points` —— 注销之后
+    `私有题集（用户 {id}）` 还在，挂在它下面的考察点也还在，而那条考察点的文本
+    是从用户简历里派生的（锚点名字里还带着 user id）。合规依据是「用户要求删除」，
+    这类原文留着就是没删。
+    """
+    anchor = KnowledgePoint(
+        domain_id=1, name=f"私有题集（用户 {ME}）", status="draft", origin="manual",
+        owner_user_id=ME,
+    )
+    session.add(anchor)
+    session.flush()
+    session.add(Criterion(point_id=anchor.id, seq=1, text="来自简历的考察点", shared=0))
+    session.flush()
+    # 聚合统计也可能挂在这个锚点的考察点上（注销时先 fold 过）—— 它同样是外键
+    session.add(
+        QuestionPointStat(question_id=2, point_id=anchor.id,
+                          criterion_id=session.execute(
+                              select(Criterion.id).where(Criterion.point_id == anchor.id)
+                          ).scalar_one())
+    )
+    # 别人（或同一个人的）前置边：它也是指向锚点的外键
+    session.add(KnowledgePointEdge(from_point_id=1, to_point_id=anchor.id, kind="prerequisite"))
+    session.commit()
+
+    report = service.delete_account(session, ME)
+    session.commit()
+
+    assert report.private_anchors == 1
+    assert session.get(KnowledgePoint, anchor.id) is None, "锚点必须删掉"
+    assert session.execute(
+        select(Criterion).where(Criterion.point_id == anchor.id)
+    ).first() is None, "锚点下派生的考察点必须删掉"
+    assert session.execute(
+        select(QuestionPointStat).where(QuestionPointStat.point_id == anchor.id)
+    ).first() is None
+    assert session.get(KnowledgePoint, 1) is not None, "公共知识点不该被牵连"
 
 
 def test_delete_keeps_public_questions_and_other_users(session: Session) -> None:

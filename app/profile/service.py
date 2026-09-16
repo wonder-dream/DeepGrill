@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.bank import repository as bank_repository
@@ -35,8 +35,11 @@ from app.db.models import (
     Evaluation,
     Interview,
     InviteCode,
+    KnowledgePoint,
+    KnowledgePointEdge,
     Question,
     QuestionFeedback,
+    QuestionPoint,
     QuestionPointStat,
     QuotaLedger,
     ReportItem,
@@ -67,6 +70,7 @@ class DeletionReport:
     profiles: int = 0
     feedback_unlinked: int = 0
     stats_rows_touched: int = 0
+    private_anchors: int = 0
     deleted: bool = False
 
     def summary(self) -> str:
@@ -74,6 +78,7 @@ class DeletionReport:
             f"删除了 {self.interviews} 场面试、{self.sessions} 个题会话、"
             f"{self.attempts} 轮作答、{self.evaluations} 条判分、"
             f"{self.report_items} 条报告快照、{self.private_questions} 道私有题、"
+            f"{self.private_anchors} 个私有题集锚点、"
             f"{self.favorites} 条收藏、{self.tokens} 个令牌、"
             f"{self.quota_rows} 行额度、{self.profiles} 份档案；"
             f"{self.feedback_unlinked} 条反馈改为匿名，"
@@ -354,6 +359,12 @@ def delete_account(session: Session, user_id: int) -> DeletionReport:
         delete(Question).where(Question.owner_user_id == user_id)
     ).rowcount or 0
 
+    # ③.6 私有题集的**锚点**与它派生的考察点（决策 91）
+    #      实测：注销之后锚点还在、挂在它下面的考察点也还在 —— 而那条考察点的文本
+    #      是从用户简历里派生的，锚点名字里还带着 user id。`delete_account()` 原来
+    #      从头到尾没碰过 `knowledge_points`。
+    report.private_anchors = _delete_private_anchors(session, user_id)
+
     # ④ `invite_codes` 的两个自引用外键必须断掉，否则删 users 会撞约束
     session.execute(
         update(InviteCode).where(InviteCode.created_by == user_id).values(created_by=None)
@@ -369,6 +380,61 @@ def delete_account(session: Session, user_id: int) -> DeletionReport:
 
     logger.info("已注销用户 %s：%s", user_id, report.summary())
     return report
+
+
+def _delete_private_anchors(session: Session, user_id: int) -> int:
+    """删掉这位用户的私有题集锚点，以及挂在它下面的一切（决策 91）。
+
+    锚点是 `私有题集（用户 {id}）`（`offline/profile_pipeline.py::_private_anchor`）：
+    一个 `status='draft'` 的私有容器 —— 它让"简历生成的题"立刻可判分，而不去污染
+    公共知识地图。**认它靠 `owner_user_id`，不靠名字**：按名字匹配等于把一处格式
+    约定复制成两处，改一处就会静默漏删。
+
+    ⚠️ 顺序：先删**引用了这些行的东西**，再删考察点，最后删知识点。
+    v2 没有一条 `FK CASCADE`，顺序错了不是"少删了"，是直接撞外键：
+
+    · `question_point_stats`：它的 `criterion_id` / `point_id` 都指向这里。
+      **决策 21 说"聚合判定保留"，但这一份留不住也没必要留** —— 它们的
+      `question_id` 指向的是刚被删掉的私有题；决策 21 保留的是**公共题上**的聚合。
+    · `question_points`：关联轴（挂载流程写的；私有锚点正常不会出现在里面，
+      但它是外键，防御性地一起清）。
+    · `knowledge_point_edges`：前置依赖边可能指向这个锚点（它是个 draft 节点，
+      正常不会，但同样是外键）。
+    · `criteria`：**简历派生的考察点文本就是在这里** —— 最后删它。
+
+    返回删掉的锚点个数（`DeletionReport` 要把"删了什么"说出来，不许静默）。
+    """
+    anchors = list(
+        session.execute(
+            select(KnowledgePoint.id).where(KnowledgePoint.owner_user_id == user_id)
+        ).scalars()
+    )
+    if not anchors:
+        return 0
+
+    criterion_ids = list(
+        session.execute(select(Criterion.id).where(Criterion.point_id.in_(anchors))).scalars()
+    )
+    # 两个条件各自可能单独命中（按 point 或按 criterion），用 `or_` 一次删干净
+    stat_filters = [QuestionPointStat.point_id.in_(anchors)]
+    if criterion_ids:
+        stat_filters.append(QuestionPointStat.criterion_id.in_(criterion_ids))
+    session.execute(delete(QuestionPointStat).where(or_(*stat_filters)))
+    session.execute(delete(QuestionPoint).where(QuestionPoint.point_id.in_(anchors)))
+    session.execute(
+        delete(KnowledgePointEdge).where(
+            or_(
+                KnowledgePointEdge.from_point_id.in_(anchors),
+                KnowledgePointEdge.to_point_id.in_(anchors),
+            )
+        )
+    )
+    session.execute(delete(Criterion).where(Criterion.point_id.in_(anchors)))
+    removed = session.execute(
+        delete(KnowledgePoint).where(KnowledgePoint.id.in_(anchors))
+    ).rowcount or 0
+    session.flush()
+    return removed
 
 
 def count_remaining(session: Session, user_id: int) -> dict[str, int]:

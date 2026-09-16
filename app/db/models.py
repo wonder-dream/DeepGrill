@@ -148,6 +148,9 @@ knowledge_points = Table(
     Column("origin", String, nullable=False, server_default="proposed"),
     Column("exclusions", Text),
     Column("question_count", Integer, nullable=False, server_default="0"),
+    # 私有题集锚点的归属（迁移 0007，决策 91）：非空即"这是某个用户的私有容器"，
+    # 注销时按它整体删掉（含其考察点）。公共知识点的这一列是 NULL。
+    Column("owner_user_id", ForeignKey("users.id")),
 )
 
 criteria = Table(
