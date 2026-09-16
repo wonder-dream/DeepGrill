@@ -162,6 +162,8 @@ criteria = Table(
     Column("text", Text, nullable=False),
     # 共用考察点：ADR-0002 判据② 的前提
     Column("shared", Integer, nullable=False, server_default="0"),
+    # 非空 = **这道题自己的**考察点（迁移 0008，决策 93）；NULL = 知识点级
+    Column("question_id", ForeignKey("questions.id")),
 )
 
 role_points = Table(

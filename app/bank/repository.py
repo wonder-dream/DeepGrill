@@ -116,12 +116,27 @@ def criteria_of_question(session: Session, question: Question) -> list[Criterion
     这是决策 49 的硬规则：`good_criteria` 是**离线素材**（聚类输入），运行时判分、
     追问、掌握度只准读 `criteria`。违反它不会报错，只会让判分悄悄用上一份没人再
     维护的旧标准。
+
+    两条来源，**先看题自己有没有**（决策 93）：
+
+    · **题级**（`question_id` 非空）—— 私有题集那条路按题造考察点。它们只属于这一道题，
+      判分不该拿同一个锚点下**别人**的考察点（实测：一个锚点下的 8 道题共享 20 条）。
+    · **知识点级**（`question_id` 为空）—— 公共骨架那一套：**主知识点 + 关联知识点**
+      （决策 24 / 80）。综合题的判分要覆盖它牵动的每一个点，否则「一道综合题同时更新
+      多个知识点的掌握度」这条判据根本不可能成立 —— 挂载挂上去了、判据却只读主的，
+      格子照样只亮一个。
     """
+    own = list(
+        session.execute(
+            select(Criterion).where(Criterion.question_id == question.id).order_by(Criterion.seq)
+        )
+        .scalars()
+        .all()
+    )
+    if own:
+        return own
     if question.primary_point_id is None:
         return []
-    # **主知识点 + 关联知识点**的判据（决策 24 / 80）：综合题的判分要覆盖它牵动的
-    # 每一个点，否则「一道综合题同时更新多个知识点的掌握度」这条判据根本不可能成立 ——
-    # 挂载挂上去了、判据却只读主的，格子照样只亮一个。
     point_ids = [question.primary_point_id, *related_points(session, question.id)]
     out: list[Criterion] = []
     seen: set[int] = set()

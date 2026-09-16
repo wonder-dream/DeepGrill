@@ -355,6 +355,8 @@ def delete_account(session: Session, user_id: int) -> DeletionReport:
         session.execute(
             delete(UserFavorite).where(UserFavorite.question_id.in_(private_ids))
         )
+        # 题级考察点（决策 93）先删：它们 `question_id` 指向这些题，是外键
+        session.execute(delete(Criterion).where(Criterion.question_id.in_(private_ids)))
     report.private_questions = session.execute(
         delete(Question).where(Question.owner_user_id == user_id)
     ).rowcount or 0

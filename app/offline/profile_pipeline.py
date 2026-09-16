@@ -272,10 +272,13 @@ def create_private_question_set(
         session.add(question)
         session.flush()
 
-        # 考察点挂在这个私有锚点下，于是**这道题立刻可以被判分**
-        # （判分读 `criteria`，而追问的靶子就是这些条目 —— 决策 28）
+        # 考察点挂在这个私有锚点下，**并且认到这道题上**（决策 93）：私有题集的锚点
+        # 一个用户只有一个，不认题的话 8 道题会共享全部考察点 —— 每道题都被拿别人的
+        # 考察点判分（实测）。判分那条路（`criteria_of_question`）优先读题级的。
         for seq, text in enumerate(gq.criteria, start=1):
-            session.add(Criterion(point_id=point.id, seq=seq, text=text, shared=0))
+            session.add(
+                Criterion(point_id=point.id, seq=seq, text=text, shared=0, question_id=question.id)
+            )
         result.questions.append(gq)
         result.questions_created += 1
 

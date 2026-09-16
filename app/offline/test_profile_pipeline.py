@@ -143,6 +143,44 @@ def test_full_pipeline_creates_private_questions_with_criteria(session: Session)
         assert criteria[0].text
 
 
+def test_each_private_question_is_graded_against_its_own_criteria(session: Session) -> None:
+    """**回归测试**（bug 16）：私有题集的考察点必须**认到题上**（决策 93）。
+
+    一个用户的私有锚点只有一个，而生成的那条路是**按题**造考察点的。不认题的话
+    判分读的是"锚点下的全部考察点" —— 实测 8 道私有题共享 20 条，每道题都被拿
+    别人题的考察点判分（掌握度矩阵与分数一起失真）。
+
+    断言点选在**判分真正读的那个入口**（`bank_repository.criteria_of_question`），
+    而不是"库里有几行"：这条路错了不会报错，只会判错。
+    """
+    llm = FakeLLM().queue(FakeReply(data=PROFILE), FakeReply(data=QUESTIONS))
+    profile_pipeline.create_private_question_set(
+        session, user_id=ME, resume_text=RESUME, llm=llm
+    )
+    session.commit()
+
+    questions = session.execute(
+        select(Question).where(Question.owner_user_id == ME).order_by(Question.id)
+    ).scalars().all()
+    assert len(questions) == 2
+
+    texts_by_question = []
+    for q in questions:
+        criteria = bank_repository.criteria_of_question(session, q)
+        assert criteria, f"题 {q.id} 判分时读不到考察点"
+        texts_by_question.append({c.text for c in criteria})
+
+    first, second = texts_by_question
+    assert first != second, "两道题读到了同一组考察点 —— 题级归属没生效"
+    assert not (first & second), f"两道题共享了考察点：{first & second}"
+    anchor_criteria = session.execute(
+        select(Criterion).where(Criterion.point_id == questions[0].primary_point_id)
+    ).scalars().all()
+    assert len(anchor_criteria) > len(first), (
+        "锚点下应当有**两题各自**的考察点（题级归属靠 question_id 区分）"
+    )
+
+
 def test_resume_text_is_never_persisted(session: Session) -> None:
     """**决策 8 的硬规定**：不保存简历原文。库里不该出现它的任何片段。"""
     llm = FakeLLM().queue(FakeReply(data=PROFILE), FakeReply(data=QUESTIONS))

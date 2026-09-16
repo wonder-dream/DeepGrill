@@ -370,12 +370,15 @@ def _commit_point(session: Session, *, domain_id: int, cand: Candidate) -> Knowl
         session.add(point)
         session.flush()
 
-    existing = {
-        c.text for c in session.execute(
-            select(Criterion).where(Criterion.point_id == point.id)
-        ).scalars()
-    }
-    seq = len(existing)
+    rows = list(
+        session.execute(select(Criterion).where(Criterion.point_id == point.id)).scalars()
+    )
+    existing = {c.text for c in rows}
+    # ⚠️ 从**最大值**往后接，不是 `len(existing) + 1`：seq 有空洞时（人审删过一条、
+    # 或两次提议之间插过一条）`len` 会落回一个**已存在**的号上 —— 于是同一个知识点
+    # 下两条考察点共用一个 seq。迁移 0008 之后这还会直接撞唯一索引（迁移 0001 起
+    # `criteria` 就没有这条约束，所以这个 bug 一直是静默的）。
+    seq = max((c.seq for c in rows), default=0)
     for text in cand.criteria:
         if text in existing:
             continue
