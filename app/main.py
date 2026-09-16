@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
+from app import security
 from app.config import Settings
 from app.db.startup import assert_database_is_ready
 from app.deps import get_settings
@@ -69,6 +70,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 页面装配要用到的进程级状态。放 `app.state` 而不是模块全局：
     # 同一进程里可以存在多个 app（测试就是这么用的），模块全局会互相串。
     app.state.settings = settings
+
+    # 密码哈希的并发闸门（决策 88）：scrypt 每次 16 MiB × 线程池 40 = 最坏 ~640 MiB。
+    # 它是**进程级**的（不是每请求一个），所以在这里按配置设一次。
+    security.set_hash_concurrency(settings.password_hash_concurrency)
 
     # ⚠️ **必须覆盖这个依赖，不能只设 app.state**：`get_settings()` 会去读环境变量
     # 造一个新的 Settings，于是 `create_app(settings=…)` 传进来的配置在依赖链里

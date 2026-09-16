@@ -29,19 +29,52 @@ from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.types import TEXT, TypeDecorator
 
+#: DBAPI 的 busy timeout（秒）。**python sqlite3 的默认值是 5 秒**，而每个请求都会把
+#: 事务跨在 LLM 调用上（几秒到几十秒）—— 并发写时后面的请求等锁超过 5 秒就被掐断成
+#: `database is locked` → 500。实测（20 路并发慢轮次）：默认 5 秒 **18/20 失败**；
+#: 30 秒 + `BEGIN IMMEDIATE` 之后失败数降到个位数，剩下的仍是"事务跨在模型调用上"。
+DEFAULT_BUSY_TIMEOUT_SECONDS = 30.0
 
-def connect_args_for(path: Path) -> dict[str, Any]:
+#: 连接池大小。同样因为"连接被跨着 LLM 调用持有"：默认的 5+10 在并发轮次下会耗尽，
+#: 等不到连接的请求 30 秒后以 `QueuePool limit ... timed out` 变成 500（实测 18/20）。
+DEFAULT_POOL_SIZE = 20
+DEFAULT_MAX_OVERFLOW = 30
+
+
+def connect_args_for(
+    path: Path,
+    *,
+    busy_timeout: float = DEFAULT_BUSY_TIMEOUT_SECONDS,
+    begin_immediate: bool = True,
+) -> dict[str, Any]:
     """sqlite3 的连接参数。
 
     `check_same_thread=False`：FastAPI 的同步依赖在线程池里跑，一个请求可能
     在不同的线程上开/关同一个连接 —— 而 SQLAlchemy 的连接池本身已经保证
     同一时刻只有一个线程用它。
+
+    `timeout`（DBAPI 的 busy timeout）与 `isolation_level="IMMEDIATE"` 是**并发写**
+    的两条实测结论，见上面两个常量的注释与 `docs/v2范围基线.md` 决策 87。
+
+    ⚠️ `IMMEDIATE` 与 `create_db_engine` 里那条"不能设 AUTOCOMMIT"的警告**不冲突**：
+    它不是"每条语句自己提交"，而是"写事务一开始就取写锁"，回滚语义完好。
     """
     del path  # 参数保留给"将来要按路径决定参数"的情形，此刻只有一个库
-    return {"check_same_thread": False}
+    args: dict[str, Any] = {"check_same_thread": False, "timeout": busy_timeout}
+    if begin_immediate:
+        args["isolation_level"] = "IMMEDIATE"
+    return args
 
 
-def create_db_engine(path: Path, *, echo: bool = False) -> Engine:
+def create_db_engine(
+    path: Path,
+    *,
+    echo: bool = False,
+    pool_size: int = DEFAULT_POOL_SIZE,
+    max_overflow: int = DEFAULT_MAX_OVERFLOW,
+    busy_timeout: float = DEFAULT_BUSY_TIMEOUT_SECONDS,
+    begin_immediate: bool = True,
+) -> Engine:
     """建引擎，并把两条 PRAGMA 挂到**每个新连接**上。
 
     - `foreign_keys=ON`：SQLite 默认**关着**外键。迁移 runner 自己开了它，
@@ -62,12 +95,19 @@ def create_db_engine(path: Path, *, echo: bool = False) -> Engine:
 
     也就是说：AUTOCOMMIT 让那条理由**变成假话**，而且它不会报错 ——
     任务记录会留下、业务写入却回滚了，正是 v1 那批"卡在中间态"的 bug 形状。
+
+    `pool_size` / `max_overflow` / `busy_timeout` 由调用方（配置）决定，默认值取
+    `DEFAULT_*` —— 这三个数都是**并发写**实测出来的，不是拍的（见常量注释）。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(
         f"sqlite:///{path}",
         echo=echo,
-        connect_args=connect_args_for(path),
+        connect_args=connect_args_for(
+            path, busy_timeout=busy_timeout, begin_immediate=begin_immediate
+        ),
+        pool_size=pool_size,
+        max_overflow=max_overflow,
     )
 
     @event.listens_for(engine, "connect")

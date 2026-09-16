@@ -20,7 +20,14 @@ from sqlalchemy.orm import Session
 
 from app.account import service as account_service
 from app.config import Settings
-from app.db import create_db_engine, create_session_factory, make_session_dependency
+from app.db import (
+    DEFAULT_BUSY_TIMEOUT_SECONDS,
+    DEFAULT_MAX_OVERFLOW,
+    DEFAULT_POOL_SIZE,
+    create_db_engine,
+    create_session_factory,
+    make_session_dependency,
+)
 from app.db.models import User
 from app.errors import Forbidden, TooManyRequests
 from app.llm import LLMCallError, LLMClient
@@ -34,8 +41,23 @@ from app.llm.stt import APISTT, FakeSTT, NoProviderSTT, SpeechToText
 
 
 @lru_cache(maxsize=8)
-def _engine_for(path_str: str) -> Engine:
-    return create_db_engine(Path(path_str))
+def _engine_for(
+    path_str: str,
+    pool_size: int = DEFAULT_POOL_SIZE,
+    max_overflow: int = DEFAULT_MAX_OVERFLOW,
+    busy_timeout: float = DEFAULT_BUSY_TIMEOUT_SECONDS,
+) -> Engine:
+    """同一库路径 + 同一组池参数只开一个引擎。
+
+    ⚠️ 池参数进缓存键（决策 87）：只按路径缓存的话，测试里两个不同配置的 app
+    会拿到同一个引擎 —— 那正是这个项目已经吃过一次的"配置静默失效"形状。
+    """
+    return create_db_engine(
+        Path(path_str),
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        busy_timeout=busy_timeout,
+    )
 
 
 def get_settings() -> Settings:
@@ -43,7 +65,12 @@ def get_settings() -> Settings:
 
 
 def get_engine(settings: Settings = Depends(get_settings)) -> Engine:
-    return _engine_for(str(settings.resolved_database_path()))
+    return _engine_for(
+        str(settings.resolved_database_path()),
+        settings.db_pool_size,
+        settings.db_max_overflow,
+        settings.db_busy_timeout_seconds,
+    )
 
 
 def get_session(engine: Engine = Depends(get_engine)) -> Iterator[Session]:

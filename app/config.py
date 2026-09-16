@@ -114,6 +114,24 @@ class Settings(BaseSettings):
     #: "按客户端随便填的字符串限流"。线上跑在 Cloudflare 后面时必须开。
     trust_proxy_headers: bool = False
 
+    #: SQLite 的 DBAPI busy timeout（秒）与连接池（决策 87）。
+    #:
+    #: 三个数都是**并发写实测**出来的（见 `app/db/__init__.py` 的常量注释）：
+    #: python sqlite3 默认 5 秒的 busy timeout + 默认 5+10 的池，在"连接被跨着
+    #: LLM 调用持有"的前提下会让 20 路并发慢轮次 18/20 变成 500。
+    db_busy_timeout_seconds: float = 30.0
+    db_pool_size: int = 20
+    db_max_overflow: int = 30
+
+    #: 请求体上限（字节）。录音上传应用层允许 8MB（`llm/stt.MAX_AUDIO_BYTES`），
+    #: 加上 multipart 边界留一倍余量。**它必须挡在鉴权之前**：否则一个匿名请求
+    #: 就能让服务端把任意大的文件先落盘再回 403（实测 200MB → 写盘 200MB）。
+    max_request_body_bytes: int = 16 * 1024 * 1024
+
+    #: 同时在跑的 scrypt 哈希数上限（决策 88）。scrypt 每次要 16 MiB
+    #: （n=2^14, r=8），而 anyio 的线程池是 40 —— 40 路并发登录实测让 RSS +173MB。
+    password_hash_concurrency: int = 4
+
     def resolved_database_path(self) -> Path:
         """把相对路径解析到仓库根下。"""
         p = self.database_path
