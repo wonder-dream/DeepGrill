@@ -79,6 +79,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 它是**进程级**的（不是每请求一个），所以在这里按配置设一次。
     security.set_hash_concurrency(settings.password_hash_concurrency)
 
+    # 额度"按天重置"用哪个时区（默认 +8）：也是**进程级**的一次性设置，
+    # 与上面那道闸门同一个模式。非法偏移会在这里当场炸掉（启动期报错好过请求里算错日期）。
+    from app.account import service as account_service
+
+    account_service.set_quota_utc_offset(settings.quota_utc_offset_hours)
+
     # ⚠️ **必须覆盖这个依赖，不能只设 app.state**：`get_settings()` 会去读环境变量
     # 造一个新的 Settings，于是 `create_app(settings=…)` 传进来的配置在依赖链里
     # **静默失效**（实测：测试传临时库，页面读的是仓库里那个真库，而且不报错）。

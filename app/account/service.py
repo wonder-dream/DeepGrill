@@ -52,8 +52,33 @@ COST = {"interview": 6, "drill": 1, "browse": 0}
 MIN_COST = min(c for c in COST.values() if c > 0)
 
 
+#: 额度按天重置的那个"天"用哪个时区算。默认 **+8**：项目面向中文用户，而服务器在
+#: 美东/UTC —— 用 UTC 的话用户看到的额度重置时刻是**北京时间早上 8 点**。
+#:
+#: ⚠️ 用**固定偏移**而不是 `ZoneInfo`：`zoneinfo` 在 Windows 上要另装 `tzdata`
+#: （实测本机没装，`ZoneInfo("Asia/Shanghai")` 直接抛 `ZoneInfoNotFoundError`），
+#: 而中国不实行夏令时 —— 固定 +8 与那个时区全年一致。哪天要支持有 DST 的时区，
+#: 就得引入 `tzdata` 并换回 `ZoneInfo`（那是一笔独立的改动）。
+_QUOTA_UTC_OFFSET_HOURS = 8.0
+
+
+def set_quota_utc_offset(hours: float) -> None:
+    """装配根按配置设一次（与 `security.set_hash_concurrency` 同一个模式）。
+
+    非法值**当场报错**：让它在启动期炸，而不是等到某个请求里算出奇怪的日期。
+    """
+    global _QUOTA_UTC_OFFSET_HOURS
+    if not -12 <= hours <= 14:
+        raise InvalidInput(f"额度时区偏移必须在 -12 ~ +14 小时之间（收到 {hours}）")
+    _QUOTA_UTC_OFFSET_HOURS = float(hours)
+
+
 def today() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%d")
+    """额度账本里的"今天"（`day` 列）。
+
+    它决定**每日额度什么时候重置**：按配置的偏移算，而不是按 UTC（见上面那段注释）。
+    """
+    return (datetime.now(UTC) + timedelta(hours=_QUOTA_UTC_OFFSET_HOURS)).strftime("%Y-%m-%d")
 
 
 

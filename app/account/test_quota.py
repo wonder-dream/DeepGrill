@@ -43,6 +43,43 @@ def _day() -> str:
     return service.today()
 
 
+def test_the_quota_day_follows_the_configured_offset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**回归测试**：额度按天重置的"天"按配置的时区算，不是按 UTC。
+
+    以前写的是 `datetime.now(UTC)` —— 服务器在美东/UTC 时，中文用户看到的额度重置
+    时刻是**北京时间早上 8 点**。默认改成 +8；边界要能用测试钉住（否则"改没改对"
+    只能等到某天早上有人来问）。
+    """
+    from datetime import UTC
+    from datetime import datetime as real_datetime
+
+    class FixedDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            # UTC 17:30 == 北京时间次日 01:30
+            return real_datetime(2026, 9, 16, 17, 30, tzinfo=UTC)
+
+    monkeypatch.setattr(service, "datetime", FixedDatetime)
+    try:
+        service.set_quota_utc_offset(8)
+        assert service.today() == "2026-09-17", "北京时间已经跨天了"
+        service.set_quota_utc_offset(0)
+        assert service.today() == "2026-09-16", "UTC 还是 16 号"
+        service.set_quota_utc_offset(-5)
+        assert service.today() == "2026-09-16"
+    finally:
+        service.set_quota_utc_offset(8)   # 模块级状态，必须复位
+
+
+def test_a_bogus_offset_is_refused_at_startup() -> None:
+    """非法偏移要**当场报错**（启动期），而不是在某个请求里算出奇怪的日期。"""
+    from app.errors import InvalidInput
+
+    with pytest.raises(InvalidInput):
+        service.set_quota_utc_offset(99)
+    service.set_quota_utc_offset(8)
+
+
 def test_spend_units_is_exact_under_concurrency(db: Path) -> None:
     """并发扣点：一笔都不能丢（丢的就是"日上限被突破"）。
 

@@ -132,6 +132,11 @@ class Settings(BaseSettings):
     #: （n=2^14, r=8），而 anyio 的线程池是 40 —— 40 路并发登录实测让 RSS +173MB。
     password_hash_concurrency: int = 4
 
+    #: 额度"按天重置"用哪个时区（小时偏移）。默认 +8：面向中文用户，而服务器在
+    #: 美东/UTC —— 不改的话用户看到的重置时刻是**北京时间早上 8 点**。
+    #: 用固定偏移而不是时区名：Windows 上 `zoneinfo` 要另装 tzdata，而中国无夏令时。
+    quota_utc_offset_hours: float = 8.0
+
     def resolved_database_path(self) -> Path:
         """把相对路径解析到仓库根下。"""
         p = self.database_path

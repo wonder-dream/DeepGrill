@@ -548,6 +548,39 @@ def test_finish_is_idempotent(session: Session) -> None:
     assert profile_service.export_user_data(session, ME) is not None
 
 
+def test_no_pending_writes_when_the_model_is_called(session: Session) -> None:
+    """**回归测试**：收尾路径的每次模型调用之前，会话里不该有**待写**的东西。
+
+    写事务是跟着请求走的（`/interview/{id}/answer` 刚写过这一轮的 attempt），
+    而 SQLite 的写锁在第一次 DML 时就被攥住 —— 如果模型调用发生在那之前不提交，
+    锁就被**模型调用的时长**持有：实测 20 路并发慢轮次最坏 ≈38 秒，其余请求全排队。
+
+    判据选 `session.new / session.dirty`（有待写对象 = 写锁迟早被拿）而不是
+    `in_transaction()`：SQLite 的读事务不开写锁，而后者的语义会误报。
+    """
+    llm = FakeLLM().queue(
+        _round_reply([(1, "命中"), (2, "命中"), (3, "未命中")]),
+        _eval_reply(accuracy=75, completeness=75, clarity=75, depth=75),
+        _summary_reply("总结"),
+    )
+    interview = _play(session, hits=None, llm=llm)
+
+    pending_at_call: list[tuple[int, int]] = []
+    real_chat = llm.chat
+
+    def chat(messages, **kwargs):
+        pending_at_call.append((len(session.new), len(session.dirty)))
+        return real_chat(messages, **kwargs)
+
+    llm.chat = chat  # type: ignore[method-assign]
+    service.finish_interview(session, interview=interview, llm=llm)
+
+    assert pending_at_call, "这条测试没走到模型调用"
+    assert all(new == 0 and dirty == 0 for new, dirty in pending_at_call), (
+        f"有模型调用发生在待写状态之下（会持着写锁等模型返回）：{pending_at_call}"
+    )
+
+
 def test_failed_evaluation_still_produces_a_report(session: Session) -> None:
     """某题判分失败时报告仍要出得来（那一题 status='failed'），不能整场 500。"""
     llm = FakeLLM().queue(

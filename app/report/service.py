@@ -147,9 +147,35 @@ class Report:
 
 
 def finish_interview(session: Session, *, interview: Interview, llm) -> Report:
-    """面试收尾：判每题 → 拼报告 → 落库。**幂等**（重复调用只会重算并覆盖）。"""
+    """面试收尾：判每题 → 拼报告 → 落库。**幂等**（重复调用只会重算并覆盖）。
+
+    ## ⚠️ 不许把写事务跨在模型调用上（这是本条路径的硬约束）
+
+    这个方法里有 **1 + 题数 + 1** 次 LLM 调用（逐题判分 + 一次总结），而写事务是
+    **跟着请求**的：调用它的那条请求（`/interview/{id}/answer`）刚写过这一轮的
+    attempt，事务开着，SQLite 的写锁也就一直握着。实测（20 路并发慢轮次）：
+    最坏一条请求持锁 **≈38 秒**，其余请求全在那把锁后面排队。
+
+    所以这里**分步提交**：每次模型调用之前都把待写的东西落库，调用期间不持写锁。
+
+    ## 分步提交的代价（说清楚才好维护）
+
+    进程在中途死掉会留下"半场面试"：部分 `evaluations` / `report_items` 已写，
+    而 `interviews.status` 还是 `active`。这是**可重入**的 —— 再跑一次 finish 会按
+    `_evaluate_and_snapshot` 的 upsert 覆盖同一行（决策 89 的唯一索引），
+    不会写出第二份，用户看到的也仍是刚才那份报告。
+    """
     sessions = interview_service.sessions_of(session, interview.id)
-    items = [_evaluate_and_snapshot(session, ts=ts, llm=llm) for ts in sessions]
+    # ① 先把"已经发生的事"落库（调用方刚写的这一轮 attempt 也在其中）——
+    #    从这一刻起到总结返回，模型调用期间不持写锁
+    session.commit()
+
+    items: list[ItemReport] = []
+    for ts in sessions:
+        items.append(_evaluate_and_snapshot(session, ts=ts, llm=llm))
+        # ② 每判完一道题就提交：下一题的判分调用同样不持锁
+        session.commit()
+
     changes = _matrix_changes(session, interview=interview)
     missing_point_ids = _missing_point_ids(session, items)
     gaps = knowledge_service.prerequisite_gaps(session, missing_point_ids)
@@ -165,6 +191,10 @@ def finish_interview(session: Session, *, interview: Interview, llm) -> Report:
         prerequisite_gaps=gaps,
         top_problems=problems,
     )
+    # ③ 总结那一次调用之前同样把待写的落库（上面几步只读，这一步是兜底：
+    #    将来谁在中间加了一次写，也不会把锁跨到模型调用上）
+    session.flush()
+    session.commit()
     report.summary, report.summary_source = _summarize(report, llm=llm)
 
     interview.report_body = report.to_body()
