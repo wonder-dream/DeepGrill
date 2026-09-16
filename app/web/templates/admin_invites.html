@@ -3,7 +3,8 @@
 {% block content %}
 <section class="card">
   <h1>邀请码</h1>
-  <p class="muted">注册 = 邀请码。名额由"发了多少码"决定，而不是一个全局计数器。</p>
+  <p class="muted">注册 = 邀请码。名额由"发了多少码"决定，而不是一个全局计数器。
+     生成与作废都要<strong>二次确认</strong>，且确认前有 5 秒强制等待（防误触）。</p>
   <form method="post" action="/admin/invites">
     <p><label>有效期（天，留空 = 永久有效）
       <input type="text" name="days" size="6" placeholder="如 7"></label></p>
@@ -43,4 +44,54 @@
 </section>
 
 <section class="card"><p><a class="button" href="/admin">回后台</a></p></section>
+
+{% if pending %}
+<div class="modal">
+  <div class="modal-card">
+    <h2>确认操作</h2>
+    <p>你即将执行：<strong>{{ pending.summary }}</strong></p>
+    {% if pending.too_fast %}
+    <p class="warn">太快了点 —— 还需等待约 {{ pending.too_fast }} 秒。等待是强制的：到点再按
+       「确认执行」才会真正生效；提前按多少次都不会执行。</p>
+    {% else %}
+    <p class="warn">这是危险操作，执行后没有撤销。为防止误触，需等待 {{ pending.wait_seconds }} 秒后再确认；
+       提前提交不会生效。</p>
+    {% endif %}
+    <form method="post" action="/admin/invites/confirm">
+      <input type="hidden" name="action" value="{{ pending.action }}">
+      <input type="hidden" name="token" value="{{ pending.token }}">
+      <input type="hidden" name="code" value="{{ pending.code }}">
+      <input type="hidden" name="days" value="{{ pending.days_valid if pending.days_valid is not none else '' }}">
+      <p class="modal-actions">
+        {# 按钮默认渲染为可用（无 JS 也能提交，服务端照样拦早提交）；JS 起来后才倒计时禁用。 #}
+        <button class="button" id="confirm-btn" type="submit"
+                data-wait="{{ pending.too_fast or pending.wait_seconds }}">确认执行（{{ pending.too_fast or pending.wait_seconds }}s）</button>
+        <a class="button" href="/admin/invites">取消</a>
+      </p>
+    </form>
+  </div>
+</div>
+<script>
+  /* 危险操作确认的强制等待：倒计时写在确认按钮里，到点才启用。
+     只是防误触的前端闸 —— 真正的强制在服务端（token 签发时刻 + 5 秒）。 */
+  (function () {
+    var btn = document.getElementById("confirm-btn");
+    if (!btn) return;
+    var left = parseInt(btn.dataset.wait, 10);
+    if (!(left > 0)) return;
+    btn.disabled = true;
+    var tick = function () {
+      left -= 1;
+      if (left <= 0) {
+        btn.disabled = false;
+        btn.textContent = "确认执行";
+        return;
+      }
+      btn.textContent = "确认执行（" + left + "s）";
+      setTimeout(tick, 1000);
+    };
+    setTimeout(tick, 1000);
+  })();
+</script>
+{% endif %}
 {% endblock %}

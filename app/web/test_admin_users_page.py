@@ -4,10 +4,16 @@
 · **只有 owner 能进** —— 它是本地管理工具，不是公开面
 · **作废的边界**：未使用的码可作废；**用过的码不能删**（它是发放记录）
 · **重置口令必须同时踢下线** —— 否则旧会话还能用，"口令丢了"没被真正解决
+
+邀请码的生成与作废是**两步确认**：第一步只渲染确认页（不写库），第二步
+`/admin/invites/confirm` 才真正执行，且签发与确认之间强制等待
+`CONFIRM_WAIT_SECONDS` 秒 —— 测试里用 monkeypatch 把它归零走完整流程，
+另有两个测试验证等待与令牌校验本身。
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -24,6 +30,34 @@ from migrations._runner import migrate
 
 PASSWORD = "secret123"
 _HASH = hash_password(PASSWORD)
+
+
+def _grab_token(body: str) -> str:
+    m = re.search(r'name="token" value="([^"]+)"', body)
+    assert m, "确认页必须携带确认令牌"
+    return m.group(1)
+
+
+def _confirm(
+    client: TestClient,
+    confirm_page_body: str,
+    *,
+    action: str,
+    days: str = "",
+    code: str = "",
+    token: str | None = None,
+):
+    """提交第二步确认表单；`token` 不给就从确认页里抠。"""
+    return client.post(
+        "/admin/invites/confirm",
+        data={
+            "action": action,
+            "token": token if token is not None else _grab_token(confirm_page_body),
+            "code": code,
+            "days": days,
+        },
+        follow_redirects=False,
+    )
 
 
 @pytest.fixture
@@ -86,9 +120,14 @@ def test_invite_states_are_computed_from_the_row(owner_client: TestClient) -> No
     assert "未使用" in body and "已使用" in body and "已过期" in body
 
 
-def test_create_invite_with_and_without_expiry(owner_client: TestClient, db: Path) -> None:
-    owner_client.post("/admin/invites", data={"days": "7"}, follow_redirects=False)
-    owner_client.post("/admin/invites", data={"days": ""}, follow_redirects=False)
+def test_create_invite_with_and_without_expiry(
+    owner_client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("app.web.admin_users_page.CONFIRM_WAIT_SECONDS", 0)
+    for days in ("7", ""):
+        r = owner_client.post("/admin/invites", data={"days": days}, follow_redirects=False)
+        assert r.status_code == 200, "第一步只渲染确认页，不生成"
+        assert _confirm(owner_client, r.text, action="create", days=days).status_code == 302
 
     with create_session_factory(create_db_engine(db))() as s:
         codes = list(s.execute(select(InviteCode)).scalars())
@@ -100,17 +139,25 @@ def test_create_invite_with_and_without_expiry(owner_client: TestClient, db: Pat
         assert all(c.created_by == 1 for c in generated), "要记下是谁生成的"
 
 
-def test_generated_code_is_not_guessable(owner_client: TestClient, db: Path) -> None:
-    owner_client.post("/admin/invites", data={"days": ""}, follow_redirects=False)
+def test_generated_code_is_not_guessable(
+    owner_client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("app.web.admin_users_page.CONFIRM_WAIT_SECONDS", 0)
+    r = owner_client.post("/admin/invites", data={"days": ""}, follow_redirects=False)
+    assert _confirm(owner_client, r.text, action="create", days="").status_code == 302
     with create_session_factory(create_db_engine(db))() as s:
         codes = [c.code for c in s.execute(select(InviteCode)).scalars()]
     new = [c for c in codes if c not in ("DG-UNUSED", "DG-USED", "DG-EXPIRED")][0]
     assert new.startswith("DG-") and len(new) >= 15, f"码太短，容易被猜：{new}"
 
 
-def test_revoke_only_works_on_unused_codes(owner_client: TestClient, db: Path) -> None:
+def test_revoke_only_works_on_unused_codes(
+    owner_client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("app.web.admin_users_page.CONFIRM_WAIT_SECONDS", 0)
     r = owner_client.post("/admin/invites/DG-UNUSED/revoke", follow_redirects=False)
-    assert r.status_code == 302
+    assert r.status_code == 200, "第一步只渲染确认页，不作废"
+    assert _confirm(owner_client, r.text, action="revoke", code="DG-UNUSED").status_code == 302
     with create_session_factory(create_db_engine(db))() as s:
         assert account_repository.find_invite(s, "DG-UNUSED") is None
 
@@ -120,6 +167,29 @@ def test_revoke_only_works_on_unused_codes(owner_client: TestClient, db: Path) -
     assert "发放记录" in r.text
     with create_session_factory(create_db_engine(db))() as s:
         assert account_repository.find_invite(s, "DG-USED") is not None
+
+
+def test_confirm_inside_the_wait_executes_nothing(owner_client: TestClient, db: Path) -> None:
+    """5 秒强制等待是服务端校验：立刻确认只会把确认页渲染回来（含剩余秒数），不写库。"""
+    r = owner_client.post("/admin/invites", data={"days": "7"}, follow_redirects=False)
+    r = _confirm(owner_client, r.text, action="create", days="7")
+    assert r.status_code == 200
+    assert "还需等待" in r.text
+    with create_session_factory(create_db_engine(db))() as s:
+        codes = [c.code for c in s.execute(select(InviteCode)).scalars()]
+    assert set(codes) == {"DG-UNUSED", "DG-USED", "DG-EXPIRED"}, "提前确认不许生成"
+
+
+def test_confirm_with_a_tampered_token_is_rejected(
+    owner_client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("app.web.admin_users_page.CONFIRM_WAIT_SECONDS", 0)
+    r = owner_client.post("/admin/invites", data={"days": "7"}, follow_redirects=False)
+    r = _confirm(owner_client, r.text, action="create", days="7", token="123-deadbeef")
+    assert r.status_code == 400
+    with create_session_factory(create_db_engine(db))() as s:
+        codes = [c.code for c in s.execute(select(InviteCode)).scalars()]
+    assert set(codes) == {"DG-UNUSED", "DG-USED", "DG-EXPIRED"}
 
 
 def test_revoke_unknown_code_is_not_found(owner_client: TestClient) -> None:

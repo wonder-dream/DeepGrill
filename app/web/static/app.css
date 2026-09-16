@@ -444,6 +444,29 @@ input.rnd { border-radius: 10px; }
   .feedback-form:not(:has(input[name="kind"][value="duplicate"]:checked)) .dup-only { display: none; }
 }
 
+/* ------------------------------------------------ 确认悬浮窗（危险操作两步确认） */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.55);
+}
+.modal-card {
+  width: 100%;
+  max-width: 30rem;
+  background: var(--panel);
+  border: 1px solid var(--line-bright);
+  padding: 1.2rem 1.4rem 1.3rem;
+  box-shadow: 8px 8px 0 rgba(245, 158, 11, 0.35);
+  animation: rise .25s var(--ease) both;
+}
+.modal-card h2 { margin-top: 0; }
+.modal-actions { display: flex; gap: 1rem; align-items: center; margin-bottom: .6rem; }
+
 /* ------------------------------------------------ 折叠块 */
 details.card summary {
   cursor: pointer;
