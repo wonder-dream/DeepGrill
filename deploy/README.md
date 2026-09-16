@@ -22,29 +22,40 @@
 | **TLS 可用**（Cloudflare 做访客 TLS，源站只监听回环） | TLS 是**上线前置条件，不是待办**（决策 64）。明文生产 = 令牌与会话在公网上裸奔 |
 | `DEEPGRILL_REQUIRE_SECURE_DB=true` | 迁移会种一个 `owner@local`，口令哈希是明文可读的 `PLACEHOLDER__…`。不替换就能被任何人拿到 owner 权限，所以**进程会拒绝启动**（决策 58） |
 | `DEEPGRILL_SESSION_COOKIE_SECURE=true` | 本机 http 开发留 false，线上必须 true |
-| `DEEPGRILL_TRUST_PROXY_HEADERS=true` | 跑在 Cloudflare 后面时，不信任转发头会让**所有请求看起来来自同一个 IP**，按 IP 的限流就此失效 |
-| 首件事是**替换 owner 口令** | 见上。用 `python -m app.cli` 之外没有别的入口，直接改库即可（改完再开开关） |
+| `DEEPGRILL_TRUST_PROXY_HEADERS=true` | 跑在 Cloudflare 后面时，不信任转发头会让**所有请求看起来来自同一个 IP**，按 IP 的限流就此失效（应用还有一道按**账号**的，见决策 92）|
+| 首件事是**替换 owner 口令** | `python -m app.cli set-password --email owner@local`（交互输入，或 `DEEPGRILL_NEW_PASSWORD='…'`；命令会同时撤销该账号的旧令牌）。**再用同一条命令改掉 `demo@local`** —— 它的口令 `deepgrill-demo` 明写在 `app/offline/seed.py` 里，是公开值 |
+| **源站只允许 Cloudflare 回源** | 反代把访客 IP 取自 `CF-Connecting-IP`（见 nginx.conf 第 18–20 行的注释）。端口若对全网开放，任何人都能伪造这个头 → 按 IP 的限流形同不存在。用防火墙只放 CF 的出口网段 |
+| **`/admin` 的白名单** | `nginx.conf` 里 `location ^~ /admin` 段留了 `deny all` + 一行注释掉的 `allow`。**上线前把你的出口 IP 填进去**（或改用 Cloudflare Access，那种做法下这一段可以删）|
+| `mkdir -p backups` | systemd 的 `ReadWritePaths` 要求目录**存在**；不存在时 backup 单元直接起不来（`ProtectSystem=strict` 的经典坑）|
 
 ## 二、首次安装
 
 ```bash
-# ① 用户与目录
+# ① 用户与目录（backups 目录必须**先建**：ReadWritePaths 要求它存在）
 sudo useradd --system --home /srv/deepgrill --shell /usr/sbin/nologin deepgrill
-sudo mkdir -p /srv/deepgrill && sudo chown deepgrill:deepgrill /srv/deepgrill
+sudo mkdir -p /srv/deepgrill/backups && sudo chown -R deepgrill:deepgrill /srv/deepgrill
 
 # ② 代码与虚拟环境（以 deepgrill 身份）
 sudo -u deepgrill git clone <repo> /srv/deepgrill
 cd /srv/deepgrill && sudo -u deepgrill python3 -m venv .venv
-sudo -u deepgrill .venv/bin/python -m pip install -e .
+# ⚠️ **从锁文件装**，不要 `pip install -e .` 让它自己解析：
+#    它会把 fastapi/starlette 解析成"当时最新"的版本，而那套组合没被测过
+#    （`pyproject.toml` 只有下界 + 上界，真正可复现的那一份在 requirements.lock.txt）
+sudo -u deepgrill .venv/bin/python -m pip install -r requirements.lock.txt
+sudo -u deepgrill .venv/bin/python -m pip install -e . --no-deps
 
-# ③ 配置（照 .env.example 抄，然后把上面那三个开关打开）
+# ③ 配置（照 .env.example 抄，然后把上面那几个开关打开）
 sudo -u deepgrill cp .env.example .env && sudo -u deepgrill chmod 600 .env
 
 # ④ 建库 —— **迁移是显式的一步**（ADR-0008 / 决策 55）
 sudo -u deepgrill .venv/bin/python -m migrations.run
 sudo -u deepgrill .venv/bin/python -m migrations.run --check   # 再确认一次
 
-# ⑤ 装单元与反代
+# ⑤ 换掉两个公开口令（owner 的占位值、demo 的公开演示值）
+sudo -u deepgrill .venv/bin/python -m app.cli set-password --email owner@local
+sudo -u deepgrill .venv/bin/python -m app.cli set-password --email demo@local   # 或直接停用它
+
+# ⑥ 装单元与反代
 sudo cp deploy/*.service deploy/*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now deepgrill-web deepgrill-worker
@@ -56,10 +67,12 @@ sudo cp <你的 Origin Certificate>.key /etc/ssl/cloudflare/deepgrill.key
 sudo chmod 600 /etc/ssl/cloudflare/deepgrill.key
 sudo cp deploy/nginx.conf /etc/nginx/sites-available/deepgrill.conf
 sudo sed -i 's/deepgrill.example.com/<你的域名>/g' /etc/nginx/sites-available/deepgrill.conf
+# ⚠️ 再把 `location ^~ /admin` 段里那行注释掉的 allow 改成你自己的出口 IP
+sudo nano /etc/nginx/sites-available/deepgrill.conf
 sudo ln -sf /etc/nginx/sites-available/deepgrill.conf /etc/nginx/sites-enabled/deepgrill
 sudo nginx -t && sudo systemctl reload nginx
 
-# ⑥ 验证
+# ⑦ 验证
 curl -fsS http://127.0.0.1:8000/healthz          # 应用自身
 curl -fsS https://<你的域名>/healthz             # 走完 CF + nginx 那一整条
 systemctl status deepgrill-web deepgrill-worker --no-pager
@@ -101,7 +114,9 @@ Origin Certificate**。"Flexible SSL"（CF→源站明文）会让令牌在公�
 ```bash
 cd /srv/deepgrill
 sudo -u deepgrill git pull
-sudo -u deepgrill .venv/bin/python -m pip install -e .
+# 依赖变了才需要重装 —— 而"变了"的判据是 requirements.lock.txt：它一改就照锁文件装
+sudo -u deepgrill .venv/bin/python -m pip install -r requirements.lock.txt
+sudo -u deepgrill .venv/bin/python -m pip install -e . --no-deps
 sudo -u deepgrill .venv/bin/python -m migrations.run      # ① 先迁移
 sudo systemctl restart deepgrill-web deepgrill-worker      # ② 再换进程
 ```

@@ -149,6 +149,85 @@ def test_cli_merge_points_refuses_an_out_of_range_id(tmp_dir: Path, capsys) -> N
     assert cmd_merge_points(settings, 1, 1) == 2, "源与目标相同也要当场拒绝"
 
 
+def test_cli_set_password_replaces_the_placeholder(tmp_dir: Path, capsys) -> None:
+    """**上线前置条件**（决策 58）：把 owner 的占位口令换成真口令。
+
+    这条命令以前**不存在** —— `deploy/README.md` 只能写"直接改库即可"，等于让人手算
+    一个 scrypt 哈希再 UPDATE。断言点选在"新口令验得通、旧口令验不通、令牌被撤销"：
+    三者缺一，线上就还是错的（或者旧会话还活着）。
+    """
+    from app.account import repository as account_repository
+    from app.cli import cmd_set_password
+    from app.offline.seed import SEED_EMAIL, SEED_PASSWORD
+    from app.security import verify_password
+
+    db = tmp_dir / "pw.db"
+    settings = Settings(database_path=db)
+    migrate(db)
+    # 演示账号由 `seed` 建 —— 它的口令是**仓库里公开写死**的那个（SEED_PASSWORD），
+    # 所以上线时它和 owner 的占位口令是同一类问题
+    with create_session_factory(create_db_engine(db))() as s:
+        seed(s)
+        s.commit()
+    assert cmd_set_password(settings, "owner@local", "a-real-owner-pw") == 0
+    assert "已改" in capsys.readouterr().out
+
+    with create_session_factory(create_db_engine(db))() as s:
+        owner = account_repository.find_user_by_email(s, "owner@local")
+        assert owner is not None
+        assert verify_password("a-real-owner-pw", owner.password_hash)
+        assert not owner.password_hash.startswith("PLACEHOLDER__"), "占位口令必须被替换掉"
+
+    # 演示账号也在库里且口令是公开写死的 —— 同一条命令能把它换掉
+    assert cmd_set_password(settings, SEED_EMAIL, "another-real-pw") == 0
+    with create_session_factory(create_db_engine(db))() as s:
+        demo = account_repository.find_user_by_email(s, SEED_EMAIL)
+        assert demo is not None
+        assert verify_password("another-real-pw", demo.password_hash)
+        assert not verify_password(SEED_PASSWORD, demo.password_hash), "公开的演示口令要失效"
+
+
+def test_cli_set_password_refuses_bad_input(tmp_dir: Path, capsys) -> None:
+    """口令太短、账号不存在：都要**明确失败**（rc≠0），而不是改了半个。"""
+    from app.account import repository as account_repository
+    from app.cli import cmd_set_password
+
+    db = tmp_dir / "pw2.db"
+    settings = Settings(database_path=db)
+    migrate(db)
+
+    assert cmd_set_password(settings, "owner@local", "short") == 2
+    assert "至少 8 位" in capsys.readouterr().err
+
+    assert cmd_set_password(settings, "nobody@local", "long-enough-pw") == 2
+    assert "没有这个账号" in capsys.readouterr().err
+
+    with create_session_factory(create_db_engine(db))() as s:
+        owner = account_repository.find_user_by_email(s, "owner@local")
+        assert owner is not None
+        assert owner.password_hash.startswith("PLACEHOLDER__"), "失败的尝试不该改动任何东西"
+
+
+def test_cli_set_password_revokes_tokens(tmp_dir: Path) -> None:
+    """改口令必须**同时踢下线**（复用后台重置那条路，规则只有一份）。"""
+    from app.account import repository as account_repository
+    from app.cli import cmd_set_password
+    from app.db.models import UserToken
+
+    db = tmp_dir / "pw3.db"
+    settings = Settings(database_path=db)
+    migrate(db)
+    with create_session_factory(create_db_engine(db))() as s:
+        owner = account_repository.find_user_by_email(s, "owner@local")
+        assert owner is not None
+        account_repository.issue_token(s, owner.id, "hash-of-live-token")
+        s.commit()
+
+    assert cmd_set_password(settings, "owner@local", "a-real-owner-pw") == 0
+    with create_session_factory(create_db_engine(db))() as s:
+        assert s.execute(select(UserToken)).first() is None, "旧令牌必须全部撤销"
+
+
 def test_cli_seed_and_status(tmp_dir: Path, capsys) -> None:
     from app.cli import cmd_seed, cmd_status
 

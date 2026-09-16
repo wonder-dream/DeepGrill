@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -276,6 +277,67 @@ def cmd_verify_backup(path: str) -> int:
     return 0 if report.ok else 1
 
 
+def cmd_set_password(settings: Settings, email: str, password_from_env: str) -> int:
+    """改一个账号的口令（决策 58 的**上线前置条件**）。
+
+    ## 为什么必须有这条命令
+
+    迁移会种一个 `owner@local`，它的口令哈希是明文可读的 `PLACEHOLDER__…`，所以线上
+    必须打开 `DEEPGRILL_REQUIRE_SECURE_DB=true`（否则进程拒绝启动）。而**在这条命令
+    之前，仓库里没有任何改口令的入口** —— `deploy/README.md` 只能写"直接改库即可"，
+    等于让人手算一个 scrypt 哈希再 UPDATE 进 SQLite：算错一位就是"登录不上 + 进程拒绝
+    启动"两件事同时发生，且没有报错指向真因。
+
+    它复用 `account.admin_reset_password`，于是**规则与后台重置完全一致**：口令至少
+    8 位、**同时撤销该账号的全部令牌**（改了口令还把旧会话留着，等于没改）。
+
+    ## 口令从哪来
+
+    · 环境变量 `DEEPGRILL_NEW_PASSWORD`（脚本化用）
+    · 否则交互输入两次（`getpass`，不回显）—— **刻意不从命令行参数读**：那会进
+      shell 历史与 `ps` 的输出。
+    """
+    import getpass
+
+    from app.account import service as account
+
+    password = password_from_env or ""
+    if not password:
+        if not sys.stdin.isatty():
+            print(
+                "没有终端可以交互输入 —— 请用环境变量：\n"
+                "  DEEPGRILL_NEW_PASSWORD='…' python -m app.cli set-password --email owner@local",
+                file=sys.stderr,
+            )
+            return 2
+        password = getpass.getpass(f"给 {email} 设置新口令：")
+        again = getpass.getpass("再输一遍：")
+        if password != again:
+            print("两次输入不一致", file=sys.stderr)
+            return 2
+
+    engine = create_db_engine(settings.resolved_database_path())
+    with create_session_factory(engine)() as session:
+        _ensure_migrated(session)
+        from app.account import repository as account_repository
+
+        user = account_repository.find_user_by_email(session, email)
+        if user is None:
+            print(f"没有这个账号：{email}", file=sys.stderr)
+            return 2
+        try:
+            revoked = account.admin_reset_password(
+                session, user_id=user.id, new_password=password
+            )
+        except Exception as e:  # InvalidInput（口令太短）等
+            print(f"没改成：{e}", file=sys.stderr)
+            return 2
+        session.commit()
+    print(f"已改 {email} 的口令，并撤销了它的 {revoked} 个令牌（旧会话立即失效）")
+    print("接下来：确认 DEEPGRILL_REQUIRE_SECURE_DB=true，再启动服务")
+    return 0
+
+
 def cmd_generate(settings: Settings, point: int | None, count: int, enqueue: bool) -> int:
     """给知识点补公共题（决策 4 的"生成题"那条来源）。
 
@@ -449,6 +511,10 @@ def main(argv: list[str] | None = None) -> int:
     calibrate.add_argument(
         "--live", action="store_true", help="额外真调两次模型测单位成本（在库的副本上跑）"
     )
+    set_password = sub.add_parser(
+        "set-password", help="改一个账号的口令（上线前置：替换 owner 的占位口令，决策 58）"
+    )
+    set_password.add_argument("--email", required=True, help="账号邮箱，如 owner@local")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -475,6 +541,11 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_generate(settings, args.point, args.count, args.enqueue)
     if args.command == "calibrate":
         return cmd_calibrate(settings, args.live)
+    if args.command == "set-password":
+        # 口令从环境变量读（脚本化），没有就交互输入 —— **不走 argv**（会进 ps 与历史）
+        return cmd_set_password(
+            settings, args.email, os.environ.get("DEEPGRILL_NEW_PASSWORD", "")
+        )
     # `parser.error` 自己会 `SystemExit(2)` —— 后面那句 `return 2` 永远走不到
     # （mypy 的 `warn_unreachable` 会（正确地）指出来）
     parser.error(f"未知命令：{args.command}")

@@ -6,14 +6,30 @@ requires-python = ">=3.13"
 
 # 依赖只列**用途上必需**的，不搬 v1 的 requirements.txt
 # （那是 v1 的事实，抄过来就成了第二份会漂的清单）。
-# 版本用下界不用 ==：真正可复现的版本记录属于 lock 文件，不属于这里。
+#
+# 写法：**下界 + 上界**。下界是"用到了这个版本的功能"，上界是"没在更高的大版本上
+# 测过" —— 只有下界时，服务器上 `pip install -e .` 会解析到当时最新的版本，而
+# "测试跑绿的组合"与"生产装到的组合"可能不是一个东西（FastAPI 对 starlette 只写
+# `>=0.46.0`，没有上界）。真正可复现的那一份在 `requirements.lock.txt`（它是从
+# 实测环境里生成的，deploy/README 的安装步骤就用它）。
+#
+# ⚠️ 两条**曾经漏掉**的运行时依赖（2026-09-16 排查上线风险时发现）：
+#   · `httpx` —— `app/llm/__init__.py` 直接 `import httpx`。它以前只是被某条
+#     开发依赖顺带装上的，干净环境里 `pip install -e .` **可能没有它**，
+#     结果是服务起不来（ImportError）。
+#   · `python-multipart` —— FastAPI 的 `Form()` / `File()` 全靠它解析表单。
+#     登录、注册、作答、录音上传都是表单，少了它整站不可用。
+#   两者都不是"可选功能"，所以进 dependencies 而不是 extra。
 dependencies = [
-    "fastapi",        # 路由 + Depends 注入 db session + 参数校验（§3.4）
-    "uvicorn",        # ASGI 服务器
-    "sqlalchemy",     # ORM 与 session
-    "pydantic",       # 请求体校验；pydantic-settings 读配置
-    "pydantic-settings",
-    "jinja2",         # 服务端渲染整页 HTML（ADR-0004）
+    "fastapi>=0.141,<0.142",          # 路由 + Depends 注入 db session + 参数校验（§3.4）
+    "starlette>=1.6,<2",              # 中间件（GZip）与 BackgroundTask：FastAPI 只给它写下界
+    "uvicorn>=0.52,<1",               # ASGI 服务器
+    "sqlalchemy>=2.0.52,<2.1",        # ORM 与 session
+    "pydantic>=2.13,<3",              # 请求体校验；pydantic-settings 读配置
+    "pydantic-settings>=2.15,<3",
+    "jinja2>=3.1,<4",                 # 服务端渲染整页 HTML（ADR-0004）
+    "httpx>=0.28,<0.29",              # LLM / 转写 / 嵌入三个客户端的 HTTP 层
+    "python-multipart>=0.0.20,<0.1",  # Form()/File() 的解析器（登录、作答、录音上传）
 ]
 # ⚠️ 这里原先还有 `itsdangerous`（"签名会话 cookie"）—— **已删**。
 # 认证用的是 `user_tokens` 表里的不透明令牌 + sha256 存储 + HttpOnly Cookie

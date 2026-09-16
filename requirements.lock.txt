@@ -1,0 +1,35 @@
+# 运行时依赖的**实测锁定**（生成脚本：见提交信息；重生成见 tests/test_dependencies.py）
+#
+# 为什么必须有这个文件：`pyproject.toml` 只写下界（那是「用途上必需」的清单），
+# 而 `pip install -e .` 在服务器上会解析到**当时最新**的版本 —— 实测通过的组合
+# 与生产装到的组合可能不是一个东西（FastAPI 对 starlette 只写了 `>=0.46.0`，
+# 没有上界）。这一串是把测试跑绿的那套环境原样钉住。
+#
+# 用法（deploy/README.md 的安装步骤就是这么写的）：
+#   .venv/bin/python -m pip install -r requirements.lock.txt
+#   .venv/bin/python -m pip install -e . --no-deps      # 再装本项目，不再解析依赖
+#
+# 平台说明：本文件不含 uvloop / httptools 这类**可选加速包** —— uvicorn 会退回
+# asyncio + h11，而那正是这套锁定的来源环境实测跑过的组合。
+annotated-doc==0.0.5  # fastapi 需要
+annotated-types==0.8.0  # pydantic 需要
+anyio==4.15.1  # httpx 需要、starlette 需要
+certifi==2026.7.22  # httpx 需要
+click==8.5.0  # uvicorn 需要
+fastapi==0.141.1  # （直接依赖）
+h11==0.16.0  # uvicorn 需要
+httpcore==1.0.9  # httpx 需要
+httpx==0.28.1  # （直接依赖）
+idna==3.19  # anyio 需要、httpx 需要
+jinja2==3.1.6  # （直接依赖）
+markupsafe==3.0.3  # jinja2 需要
+pydantic==2.13.5  # fastapi 需要、（直接依赖）
+pydantic-core==2.46.5  # pydantic 需要
+pydantic-settings==2.15.0  # （直接依赖）
+python-dotenv==1.2.3  # pydantic-settings 需要
+python-multipart==0.0.32  # （直接依赖）
+sqlalchemy==2.0.52  # （直接依赖）
+starlette==1.6.0  # fastapi 需要、（直接依赖）
+typing-extensions==4.16.0  # fastapi 需要、pydantic 需要、sqlalchemy 需要
+typing-inspection==0.4.4  # fastapi 需要、pydantic 需要、pydantic-settings 需要
+uvicorn==0.52.4  # （直接依赖）

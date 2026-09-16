@@ -193,3 +193,22 @@ def test_nginx_only_speaks_modern_tls() -> None:
     assert "ssl_protocols" in text
     assert "TLSv1 " not in text and "TLSv1.1" not in text
     assert "ssl_certificate " in text
+
+
+def test_nginx_locks_down_the_admin_area() -> None:
+    """`/admin/**` 必须有一道反代层的白名单，且**失败方向是安全的那一边**。
+
+    它是唯一能改全局装配的地方（知识层人审、账号、邀请码），而此前它与首页一样对
+    全网开放 —— 唯一挡着的是 owner 那一份口令，而那份口令在迁移里是明文可读的占位值。
+    `deny all` 必须留着：忘填自己的 IP 时，后果是"自己也进不去后台"，
+    而不是"后台对所有人开放"。
+    """
+    text = _nginx()
+    assert "location ^~ /admin" in text, "nginx 里没有 /admin 的白名单段"
+    block = text.split("location ^~ /admin", 1)[1].split("\n    }", 1)[0]
+    assert "deny all;" in block, "/admin 段里没有 `deny all`（失败方向必须安全）"
+    assert "allow " in block, "/admin 段里没有 allow（那它自己也进不去）"
+    assert "proxy_pass" in block, "/admin 段忘了转发给应用"
+    # 文档要说清"上线前必须改成自己的 IP"，否则那段注释会被当成装饰
+    readme = (DEPLOY / "README.md").read_text(encoding="utf-8")
+    assert "/admin" in readme, "部署文档没提 /admin 的白名单要改"
