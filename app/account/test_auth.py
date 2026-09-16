@@ -71,6 +71,53 @@ def add_user(db: Path, email: str = "u@local", password: str = "secret123") -> i
 _CACHED_HASH: str | None = None
 
 
+def _token_rows(db: Path) -> int:
+    """用**另一条连接**数令牌行 —— 也就是"浏览器紧接着发的那个请求会看到什么"。"""
+    import sqlite3
+
+    con = sqlite3.connect(str(db))
+    try:
+        return int(con.execute("SELECT COUNT(*) FROM user_tokens").fetchone()[0])
+    finally:
+        con.close()
+
+
+def test_login_commits_before_the_redirect_is_sent(db: Path, settings: Settings) -> None:
+    """登录的令牌必须在 **302 发出之前**落库（注册、退登、收藏、作答同理）。
+
+    ⚠️ 这条测试为什么要绕开 TestClient 的常规用法：它等整个 ASGI 调用跑完才返回，
+    而**依赖栈的提交发生在响应发出之后**（`fastapi/routing.py`：`function_stack`
+    包的正是 `await response(...)`）。于是"响应先于提交"这个窗口在常规用法里看不见。
+    这里在外面包一层 ASGI spy，在 `http.response.start` 那一刻用另一条连接读库：
+    那时**看得到令牌行 ⇔ 处理器自己提交过**。
+
+    实测（真 uvicorn、第 1 轮）：少了这一句，登录/注册之后紧接着的请求 12/12 与 8/8
+    被判成匿名，窗口 9–40ms。
+    """
+    add_user(db)
+    app = create_app(settings)
+    seen: list[int] = []
+
+    async def spy_app(scope, receive, send):
+        async def spy(message):
+            if message["type"] == "http.response.start":
+                seen.append(_token_rows(db))
+            await send(message)
+
+        await app(scope, receive, spy)
+
+    with TestClient(spy_app) as c:
+        r = c.post(
+            "/login", data={"email": "u@local", "password": "secret123"}, follow_redirects=False
+        )
+        assert r.status_code == 302
+
+    assert seen == [1], (
+        f"302 发出时令牌行数={seen}（应当是 [1]）：提交必须发生在响应之前，"
+        "否则浏览器紧接着的请求读不到这个令牌"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 注册
 # ---------------------------------------------------------------------------

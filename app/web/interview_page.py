@@ -120,6 +120,9 @@ def start(
             status_code=e.status_code,
         )
 
+    # 302 之前必须提交（依赖的提交发生在响应之后，见 `app/deps.py::get_session`）——
+    # 否则跳过去那次渲染读不到刚建的这场面试（同一条竞态实测过 9–40ms 的窗口）。
+    session.commit()
     return RedirectResponse(f"/interview/{ts.id}", status_code=302)
 
 
@@ -346,6 +349,9 @@ def _submit_round(
     if result.finished:
         target = _finish_target(session, ts, llm)
         _record_usage(session, me.id, llm, before)
+        # 跳到报告/下一题之前提交：那个页面是**另一个请求**，而依赖的提交发生在
+        # 响应之后 —— 不提交就会渲染出"这一轮还没落库"的旧状态
+        session.commit()
         return RedirectResponse(target, status_code=302)
 
     _record_usage(session, me.id, llm, before)

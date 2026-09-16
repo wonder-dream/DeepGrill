@@ -73,6 +73,9 @@ def login_submit(
 
     response = RedirectResponse("/me", status_code=302)
     _set_session_cookie(response, token, settings)
+    # 302 之前必须提交（依赖的提交发生在响应之后，见 `app/deps.py::get_session`）——
+    # 少了这一句，浏览器跳过去的那次 /me 有一半概率读不到这个令牌，被判成匿名。
+    session.commit()
     return response
 
 
@@ -111,6 +114,8 @@ def register_submit(
 
     response = RedirectResponse("/me", status_code=302)
     _set_session_cookie(response, token, settings)
+    # 与登录同理：新账号与令牌都要在响应之前落库（8/8 实测复现过"注册完就匿名"）
+    session.commit()
     return response
 
 
@@ -121,4 +126,6 @@ def logout(request: Request, session: SessionDep) -> RedirectResponse:
         account.logout(session, token)
     response = RedirectResponse("/", status_code=302)
     response.delete_cookie(SESSION_COOKIE, path="/")
+    # 撤销也要先落库：否则"退出登录"之后的几十毫秒里，那个令牌还能用
+    session.commit()
     return response

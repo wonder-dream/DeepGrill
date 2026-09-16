@@ -93,6 +93,7 @@ def create_invite(
     else:
         raise InvalidInput(f"有效期只能是正整数天数（收到 {days!r}）")
     account.new_invite(session, created_by=owner.id, days_valid=days_valid)
+    session.commit()  # 302 之前必须提交（见 `app/deps.py::get_session`）
     return RedirectResponse("/admin/invites", status_code=302)
 
 
@@ -100,6 +101,7 @@ def create_invite(
 def revoke_invite(code: str, session: SessionDep, user: CurrentUserDep) -> RedirectResponse:
     _require_owner(user)
     account.revoke_invite(session, code)
+    session.commit()  # 同上：跳回去那页要看到码已经没了
     return RedirectResponse("/admin/invites", status_code=302)
 
 
@@ -134,4 +136,6 @@ def reset_password(
     """重置口令（决策 7）。**同时撤销该用户的全部令牌** —— 否则旧会话还能用。"""
     _require_owner(user)
     account.admin_reset_password(session, user_id=user_id, new_password=new_password)
+    # 口令与令牌的撤销都要在响应之前落库 —— 否则"重置完立刻用旧会话"还有几十毫秒的窗口
+    session.commit()
     return RedirectResponse("/admin/users?reset=ok", status_code=302)

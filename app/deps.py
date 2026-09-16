@@ -74,7 +74,15 @@ def get_engine(settings: Settings = Depends(get_settings)) -> Engine:
 
 
 def get_session(engine: Engine = Depends(get_engine)) -> Iterator[Session]:
-    """每请求一个会话。事务边界在 `make_session_dependency` 里（成功提交、失败回滚）。"""
+    """每请求一个会话。事务边界在 `make_session_dependency` 里（成功提交、失败回滚）。
+
+    ⚠️ **提交发生在响应发出之后**，所以"写完就 302"的处理器必须自己先 `commit()`。
+    这不是实现细节，是 FastAPI 的结构：路由的依赖栈在 `await response(...)` **之后**
+    才退出（`fastapi/routing.py` 里 `function_stack` 包的正是 `await response`）。
+    浏览器收到 302 会**立刻**发下一个请求，于是那个请求可能读不到刚写的数据 ——
+    实测：登录/注册之后紧接着的请求被判成匿名（12/12 与 8/8 复现，窗口 9–40ms），
+    `/interview/start` 之后跳到的新会话页偶尔 404。写路径上的 `commit()` 就是补这一段。
+    """
     factory = create_session_factory(engine)
     yield from make_session_dependency(factory)()
 

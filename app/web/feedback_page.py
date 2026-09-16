@@ -59,6 +59,8 @@ def submit_feedback(
         duplicate_point_ids=points,
     )
     # 回到题目页 —— 那里会显示"已提交"
+    # （302 之前必须提交：依赖的提交发生在响应之后，见 `app/deps.py::get_session`）
+    session.commit()
     return RedirectResponse(f"/bank/{question_id}?feedback=ok", status_code=302)
 
 
@@ -100,4 +102,5 @@ def handle_feedback(
 ) -> RedirectResponse:
     _require_owner(user)
     feedback.resolve(session, feedback_id=feedback_id, action=action, note=note)
+    session.commit()  # 302 之前必须提交（见 `app/deps.py::get_session`）
     return RedirectResponse("/admin/feedback", status_code=302)

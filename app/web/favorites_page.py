@@ -45,6 +45,9 @@ def add_favorite(
     if user is None:
         return RedirectResponse("/login", status_code=302)
     favorites.add(session, user_id=user.id, question_id=question_id)
+    # 302 之前必须提交（依赖的提交发生在响应之后，见 `app/deps.py::get_session`）——
+    # 否则跳回去的那一页还显示"收藏这道题"，用户会以为没点上
+    session.commit()
     return RedirectResponse(f"/bank/{question_id}?favorite=ok", status_code=302)
 
 
@@ -55,6 +58,7 @@ def remove_favorite(
     if user is None:
         return RedirectResponse("/login", status_code=302)
     favorites.remove(session, user_id=user.id, question_id=question_id)
+    session.commit()  # 同上
     return RedirectResponse(f"/bank/{question_id}?favorite=off", status_code=302)
 
 

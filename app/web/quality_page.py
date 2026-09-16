@@ -76,6 +76,7 @@ def _stem(session: Session, question_id: int) -> str:
 def resolve_flag(flag_id: int, session: SessionDep, user: CurrentUserDep) -> RedirectResponse:
     _require_owner(user)
     quality.close(session, flag_id=flag_id, status=quality.RESOLVED)
+    session.commit()  # 302 之前必须提交（见 `app/deps.py::get_session`）
     return RedirectResponse("/admin/quality?done=resolved", status_code=302)
 
 
@@ -83,6 +84,7 @@ def resolve_flag(flag_id: int, session: SessionDep, user: CurrentUserDep) -> Red
 def dismiss_flag(flag_id: int, session: SessionDep, user: CurrentUserDep) -> RedirectResponse:
     _require_owner(user)
     quality.close(session, flag_id=flag_id, status=quality.DISMISSED)
+    session.commit()  # 同上
     return RedirectResponse("/admin/quality?done=dismissed", status_code=302)
 
 
@@ -91,4 +93,5 @@ def hide_flag(flag_id: int, session: SessionDep, user: CurrentUserDep) -> Redire
     """藏起来 —— 治理里唯一改题库的动作（最保守的那种：不删数据）。"""
     _require_owner(user)
     quality.hide_question(session, flag_id=flag_id)
+    session.commit()  # 同上
     return RedirectResponse("/admin/quality?done=hidden", status_code=302)

@@ -132,6 +132,9 @@ def explain_question(
         )
 
     llm_usage.record(session, me.id, llm, before)
+    # 跳回详情页之前提交：那一页要**读缓存**显示刚生成的讲解，而依赖的提交发生在
+    # 响应之后（见 `app/deps.py::get_session`）
+    session.commit()
     return RedirectResponse(f"/bank/{question_id}?explain=ok", status_code=302)
 
 
@@ -162,6 +165,7 @@ def promote_question(
             notice=f"门禁没过：{result.summary()}",
             status_code=200,
         )
+    session.commit()  # 302 之前必须提交（见 `app/deps.py::get_session`）
     return RedirectResponse(f"/bank/{question_id}?promoted=ok", status_code=302)
 
 
