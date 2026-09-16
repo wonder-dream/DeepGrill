@@ -309,6 +309,46 @@ def test_a_fresh_db_with_no_tables_is_still_allowed(tmp_dir: Path) -> None:
     assert_schema_covers_code(db)
 
 
+def test_half_migrated_columns_are_caught_in_strict_mode(tmp_dir: Path) -> None:
+    """**回归测试**：加列的迁移没跑，也要能被启动检查挡下（线上那一档）。
+
+    实测（我自己的这条改动）：`knowledge_points.owner_user_id` / `criteria.question_id`
+    这四条迁移没跑时，服务**照常起得来** —— 然后注销与私有题集那条路报
+    `no such column`。`missing_tables()` 看不见这种半迁移（表都在）。
+
+    ⚠️ 只在**严格档**（`require_secure_db=true`，线上那个开关）拦：开发机的库常常
+    故意落后于代码，把它变成"所有测试一起红"只会让人绕过检查。
+    """
+    import shutil
+
+    from app.db.startup import SchemaOutOfDate, assert_schema_covers_code, missing_columns
+    from migrations._runner import MIGRATIONS_DIR, _migration_files, migrate
+
+    partial = tmp_dir / "partial"
+    partial.mkdir()
+    for path in _migration_files():
+        if path.name[:4] <= "0006":   # 只放到 0006：0007 / 0008 的加列还没跑
+            shutil.copy(path, partial / path.name)
+
+    db = tmp_dir / "old.db"
+    real = MIGRATIONS_DIR
+    import migrations._runner as runner
+
+    runner.MIGRATIONS_DIR = partial
+    try:
+        migrate(db)
+    finally:
+        runner.MIGRATIONS_DIR = real
+
+    missing = missing_columns(db)
+    assert "knowledge_points.owner_user_id" in missing, f"没查出缺列：{missing}"
+    assert "criteria.question_id" in missing
+    assert_schema_covers_code(db)  # 非严格档放行（开发机不拦）
+    with pytest.raises(SchemaOutOfDate) as e:
+        assert_schema_covers_code(db, strict=True)
+    assert "python -m migrations.run" in str(e.value), "诊断信息要指向那一条命令"
+
+
 def test_missing_tables_uses_the_code_mapping(tmp_dir: Path) -> None:
     """判据是**代码要用的表**（`models.metadata`），不是"库里有几张表"。
 

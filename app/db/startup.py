@@ -69,7 +69,7 @@ def assert_database_is_ready(db_path: Path, *, require_secure: bool) -> None:
     ① `require_secure` 为真且发现占位口令 → 抛 `InsecureDatabase`（决策 58）
     ② 库**已经迁移过一部分**、却缺代码要用的表 → 抛 `SchemaOutOfDate`
     """
-    assert_schema_covers_code(db_path)
+    assert_schema_covers_code(db_path, strict=require_secure)
     if not require_secure:
         return
     offenders = placeholder_accounts(db_path)
@@ -122,7 +122,13 @@ def missing_tables(db_path: Path) -> list[str]:
     return sorted(wanted - present)
 
 
-def assert_schema_covers_code(db_path: Path) -> None:
+def assert_schema_covers_code(db_path: Path, *, strict: bool = False) -> None:
+    """启动前调用：库至少要装得下代码要用的**表**；`strict` 时**列**也要对得上。
+
+    `strict` 由 `require_secure_db`（那个"线上必须打开"的开关）带进来，理由见
+    `missing_columns()` 的 docstring：列对不上在开发机上应该是"你自己知道要跑迁移"，
+    在线上必须是"进程起不来 + 一句话说清原因"。
+    """
     missing = missing_tables(db_path)
     if missing:
         raise SchemaOutOfDate(
@@ -131,3 +137,54 @@ def assert_schema_covers_code(db_path: Path) -> None:
             f"请先跑：python -m migrations.run\n"
             f"（库：{db_path}）"
         )
+    if not strict:
+        return
+    missing_cols = missing_columns(db_path)
+    if missing_cols:
+        raise SchemaOutOfDate(
+            f"拒绝启动：库里缺了代码要用的列 {missing_cols} —— "
+            f"同上，这是「代码先上线、迁移没跑」的另一种形态（加列）。\n"
+            f"请先跑：python -m migrations.run\n"
+            f"（库：{db_path}）"
+        )
+
+
+def missing_columns(db_path: Path) -> list[str]:
+    """代码映射里有、而库里没有的列 → 返回 `表.列`（排序）。
+
+    ⚠️ **为什么列也要查**：`missing_tables()` 只挡得住"表还没建"，而加一列是同一个
+    窗口的另一种形态，且表现**更隐蔽** —— 进程起得来、大部分页面正常，只有碰到那一列
+    的路径报 `no such column`（实测：一条加 `knowledge_points.owner_user_id` 的迁移
+    没跑时，起服务不报错，而注销与私有题集那条路直接 `OperationalError`）。
+
+    ⚠️ **为什么只在 `strict`（= 线上那个开关）时拦**：开发机的库常常**故意**落后于
+    代码（"我正在写第 N 个迁移"），把它变成"所有测试一起红"的结果只有一个 ——
+    大家学会绕过这个检查（与 `require_secure` 默认 False 同一个理由）。线上则相反：
+    带着对不上的 schema 提供服务，代价是用户撞上一个说不清的 500。
+
+    方向是单向的：只报"代码要、库里没有"。**库里多出来的列不报** —— 那可能是回退
+    代码留下的残骸，它不会让页面 500。
+    """
+    if not db_path.is_file():
+        return []
+    from app.db.models import metadata
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        present = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if not (present & set(metadata.tables)):
+            return []  # 一张都没有：还没初始化（同 `missing_tables`）
+        missing: list[str] = []
+        for name, table in sorted(metadata.tables.items()):
+            if name not in present:
+                continue  # 整张表都缺 —— 那是 `missing_tables` 的活，别重复报
+            have = {row[1] for row in conn.execute(f"PRAGMA table_info({name})")}
+            missing.extend(
+                f"{name}.{column.name}" for column in table.columns if column.name not in have
+            )
+    finally:
+        conn.close()
+    return missing
