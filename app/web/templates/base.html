@@ -5,10 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>{% block title %}DeepGrill{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css?v=25">
-  <link rel="icon" href="/static/favicon.ico?v=1" type="image/x-icon">
+  {# 静态资源的版号**由文件内容算出来**（`templating.asset()`）—— 手写 `?v=31` 那种
+     计数器已经删掉：它靠人记得加一，而"改了文件忘了加"在浏览器里表现为**改动静默
+     不生效**（实测踩过两次）。改完 `static/` 下的文件重启一次服务即可，不用动模板。 #}
+  <link rel="stylesheet" href="{{ asset('app.css') }}">
+  <link rel="icon" href="{{ asset('favicon.ico') }}" type="image/x-icon">
 </head>
 <body>
+  {# shell = 整页外壳（边栏 + 主框 + 状态条）。普通页面只填 content；
+     面试页这种要**全屏接管**的整页覆盖 shell（考场模式，见 interview.html）。 #}
+  {% block shell %}
   <input type="checkbox" id="nav-toggle" class="nav-toggle">
   <aside class="sidebar">
     <div class="rail-handle" id="rail-handle" title="拖动调整边栏宽度"></div>
@@ -56,6 +62,7 @@
     {% endif %}
     <span>{% if user %}<span class="ok">●</span> {{ user.username }}{% else %}guest{% endif %}</span>
   </footer>
-  <script src="/static/layout.js?v=2" defer></script>
+  <script src="{{ asset('layout.js') }}" defer></script>
+  {% endblock %}
 </body>
 </html>

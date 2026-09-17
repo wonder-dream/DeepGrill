@@ -32,8 +32,15 @@ from app.llm import LLMError, ProseFilter, prompts, split_prose_and_json
 
 logger = logging.getLogger(__name__)
 
-#: 一场模拟面试的题数（MVP）。追问上限按题给（ADR-0001：编排参数，不由难度推导）。
-INTERVIEW_QUESTION_COUNT = 3
+#: 一场模拟面试的题数。追问上限按题给（ADR-0001：编排参数，不由难度推导）。
+#:
+#: 8 道 × 每题最多 3 轮 = 最多 24 轮（用户定的形态：8 题、每题最多追问两轮）。
+#: ⚠️ 它同时是**成本参数**：一场的模型调用次数 ≈ 题数 × 轮数 + 收盘那几次，所以
+#: 6 → 8 道把单场成本抬到约 2.7 倍（≈ 84k token），而额度点系数（`COST["interview"]`
+#: = 6）与每日上限**没有跟着改** —— 那是一次有意的保留：当前每日额度是放宽过的
+#: 测试值 32 点（标定值仍是 8），用户明确要求"一场 6 点先用着"。真要按成本标定，
+#: 得连 `docs/v2范围基线.md` 的决策 71 一起重写，别顺手改常量。
+INTERVIEW_QUESTION_COUNT = 8
 DEFAULT_MAX_ROUNDS = 3
 
 #: 题会话已经收尾（或整场面试已放弃）时再提交一轮的提示。**只有一处措辞**：
@@ -161,8 +168,12 @@ def start_interview(
 ) -> Interview:
     """模拟面试（6 个额度点）：抽多题 → 逐题提问 → 每题追问。
 
-    `question_ids` 给了就用它（用户自选）；没给就在**可见范围内**抽最近几道。
-    抽题只走 `bank` 的仓储 —— 于是私有题的隔离规则自动生效。
+    `question_ids` 给了就用它。**答题页给的就是它**：选哪几道要看掌握度与答题记录
+    （跨 `knowledge` 与 `interview` 两个领域），所以那一步在装配层做（决策 100，
+    `web/interview_page.py::_questions_for_mock`）。
+    **不给**时退回"最近几道"（`visible_to` + id 倒序）—— 那是给脚本与测试的最小形态，
+    它不看人是谁，所以同一份库对谁都给同一套。两条路都只走 `bank` 的仓储，
+    于是私有题的隔离规则自动生效。
     """
     if question_ids:
         usable: list[int] = []

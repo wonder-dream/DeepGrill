@@ -39,6 +39,34 @@
     return; // 不是面试页（脚本只在这一页加载）
   }
 
+  // ---------------------------------------------------------------- 考场进出
+  /* 考场模式：界面里没有导航，两个出口都在考场条上 ——「退出」只是离开这一页
+     （改状态的是「放弃本场」，那是个 POST）。所以**不拦浏览器后退**：拦了它
+     只会让"退出之后想回上一页"变成一件要按两次的事，而出口本来就不止一个。
+     第一版压了一条历史记录当"第三条出路"的挡板，退出按钮加进来之后就撤掉了。 */
+
+  // ---------------------------------------------------------------- 题干打字机
+  /* 终端模式的开场：新题（还没有任何一轮对话）时题干逐字打出，像面试官正在打字。
+     渐进增强 —— 无 JS 时题干本来就是完整渲染的；已有对话的页面是追问的延续，
+     不打字直接显示。 */
+  var stemEl = document.getElementById("term-stem");
+  if (stemEl && stemEl.getAttribute("data-fresh") === "1") {
+    var fullStem = stemEl.getAttribute("data-stem") || stemEl.textContent;
+    var stemPos = 0;
+    stemEl.textContent = "";
+    stemEl.classList.add("typing");
+    var typeStem = function () {
+      stemPos += 1;
+      stemEl.textContent = fullStem.slice(0, stemPos);
+      if (stemPos < fullStem.length) {
+        window.setTimeout(typeStem, 42);
+      } else {
+        stemEl.classList.remove("typing");
+      }
+    };
+    window.setTimeout(typeStem, 400);
+  }
+
   function say(text) {
     status.textContent = text;
   }

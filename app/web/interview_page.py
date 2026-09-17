@@ -10,6 +10,10 @@
 | 打字作答 | `POST /interview/{id}/answer` | `POST /interview/{id}/answer/stream` |
 | 语音作答 | `POST /interview/{id}/voice` | `POST /interview/{id}/voice/stream` |
 
+**两个出口语义不同**（决策 99）：「退出」是页面上的一条纯链接（`GET /`，不改任何
+状态 —— 这一场还开着）；只有「放弃本场」（`POST /interview/{id}/abandon`）或答完
+最后一场才**结束**这一场。
+
 无 JS 的那两条**不是摆设**：它们是渐进增强的底座（浏览器禁用 JS、或脚本没加载
 成功时页面照常能用），也是端到端测试最好写的那条路。两条路共用
 `interview.run_round()` —— 判定、落库、收尾只有一份实现。
@@ -43,8 +47,10 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
+from starlette.responses import Response
 
 from app.account import service as account
+from app.bank import service as bank_service
 from app.db import create_session_factory
 from app.db.models import Interview, User
 from app.deps import (
@@ -57,6 +63,7 @@ from app.deps import (
 )
 from app.errors import AppError, QuotaExhausted
 from app.interview import service as interview
+from app.knowledge import service as knowledge
 from app.llm.stt import MAX_AUDIO_BYTES, STTError, STTUnavailable, Transcript
 from app.report import service as report_service
 from app.web import llm_usage
@@ -68,6 +75,10 @@ router = APIRouter()
 
 SessionDep = Annotated[Session, Depends(get_session)]
 UserDep = Annotated[User, Depends(get_current_user)]
+
+#: 答题页（含"这场已经放弃"那一支）的缓存头。理由写在 `show()` 的 docstring 里 ——
+#: 一句话：**离开教室之后按返回键，不该从浏览器缓存里复原那个还能答的界面**。
+_NO_STORE = "no-store"
 
 
 def _require(user: User | None, session: Session) -> User:
@@ -82,6 +93,54 @@ def _require(user: User | None, session: Session) -> User:
 # ---------------------------------------------------------------------------
 # 开始与查看
 # ---------------------------------------------------------------------------
+def _questions_for_mock(session: Session, user_id: int) -> list[int]:
+    """一场模拟面试问哪几道题（决策 100）。三段，凑满 `INTERVIEW_QUESTION_COUNT` 为止：
+
+    ① **薄弱知识点下、而且这人没答过**的题 —— 「薄弱点」= 考过但没答到的知识点
+       （`mastery_matrix().weak_points()` 的定义），顺序就是薄弱程度的顺序；
+    ② 不够就补**全库没答过**的题；
+    ③ 还不够（题库小、或者他把可见的题都答过了）才放开"没答过"这一条，退回最新几道。
+
+    **不引入随机**：同一份库状态永远给出同一套 —— 否则报告复现不了、测试也钉不住。
+    为什么在这里算而不是在 `interview` 领域里算：它要同时读 `knowledge`（薄弱点）与
+    `bank`（题库），而领域之间不许互相 import（ADR-0005）—— 装配层正是为这件事存在的。
+    判据与首页「今日推荐题」**同源**（同一个 `weak_points()` + 同一个
+    `answered_question_ids()`）：各写一套的话，"首页推荐的"和"面试抽的"迟早各说各话。
+    """
+    answered = interview.answered_question_ids(session, user_id)
+    want = interview.INTERVIEW_QUESTION_COUNT
+    by_point = knowledge.mastery_matrix(session, user_id).weak_points(limit=want)
+
+    picked: list[int] = []
+    if by_point:
+        picked = [
+            card.id
+            for card in bank_service.recommend(
+                session,
+                user_id,
+                weak_point_ids=[c.point_id for c in by_point],
+                exclude_ids=answered,
+                limit=want,
+            )
+        ]
+        if len(picked) < want:
+            picked += [
+                card.id
+                for card in bank_service.latest(session, user_id, limit=want * 2)
+                if card.id not in answered and card.id not in picked
+            ]
+
+    if not picked:
+        # 新用户（还没测出薄弱点）与"全答过"都落在这里：**兜底也要能开场**。
+        picked = [
+            card.id
+            for card in bank_service.latest(session, user_id, limit=want * 2)
+            if card.id not in answered
+        ] or [card.id for card in bank_service.latest(session, user_id, limit=want)]
+
+    return picked[:want]
+
+
 @router.post("/interview/start")
 def start(
     request: Request,
@@ -95,11 +154,16 @@ def start(
 
     额度不足**不是错误页**，而是决策 13 的降级：面试官今天歇了，题库照旧。
     所以这一支单独渲染，把"还能做什么"写在页面上 —— 用户看到的不该是一堵墙。
+
+    模拟面试的题**在装配层选好再递进去**（决策 100）：选题要看掌握度与答题记录，
+    那跨 `knowledge` 与 `interview` 两个领域，而领域之间不许互相 import。
     """
     me = _require(user, session)
     try:
         if mode == "interview":
-            row = interview.start_interview(session, user_id=me.id)
+            row = interview.start_interview(
+                session, user_id=me.id, question_ids=_questions_for_mock(session, me.id)
+            )
             ts = interview.sessions_of(session, row.id)[0]
         else:
             if question_id is None:
@@ -165,21 +229,33 @@ def abandon(
 
 @router.get("/interview/{session_id}")
 def show(request: Request, session_id: int, session: SessionDep, user: UserDep) -> object:
+    """答题页。`session_id` 是**题会话** id（不是面试 id）—— 与两条作答路一致。
+
+    ⚠️ 这一页（连同它的 409 那一支）**必须 `no-store`**：不标的话浏览器会把整页
+    放进 back/forward 缓存，而"离开教室"之后按返回键会**从缓存里复原那个看起来
+    还能答的界面**（实测：放弃之后点浏览器返回，又会看到答题框）。`no-store` 让
+    返回键变成一次真请求 —— 那时服务端渲染的是这段会话的**真实状态**：这一场已经
+    放弃的，这里是 409 那一页。
+    """
     me = _require(user, session)
     ts = interview.get_session_row(session, session_id, me.id)
     row = session.get(Interview, ts.interview_id)
     if row is not None and row.status != "active":
         # 放弃之后旧标签页/历史记录里那个链接还会被点开。**不能**把答题界面再摆出来：
         # 表单提交上去只会换来一句"这场面试已经放弃了"，而看起来像是还能答。
-        return render(
+        response: Response = render(
             request,
             "interview_start_failed.html",
             {"message": interview.ABANDONED_MESSAGE, "exhausted": False, "unfinished": None,
              "abandoned": True, "quota": None},
             status_code=409,
         )
+        response.headers["Cache-Control"] = _NO_STORE
+        return response
     data = report_service.interview_page_data(session, ts=ts, user_id=me.id)
-    return render(request, "interview.html", {"data": data})
+    response = render(request, "interview.html", {"data": data})
+    response.headers["Cache-Control"] = _NO_STORE
+    return response
 
 
 # ---------------------------------------------------------------------------

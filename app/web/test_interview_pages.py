@@ -19,10 +19,20 @@ from app.account import repository as account_repository
 from app.account import service as account
 from app.config import Settings
 from app.db import create_db_engine, create_session_factory
-from app.db.models import Criterion, Domain, KnowledgePoint, Question, User
+from app.db.models import (
+    Attempt,
+    Criterion,
+    Domain,
+    Interview,
+    KnowledgePoint,
+    Question,
+    User,
+)
+from app.db.models import Session_ as InterviewSession
 from app.deps import get_llm
 from app.main import create_app
 from app.security import hash_password
+from app.web.interview_page import _questions_for_mock
 from migrations._runner import migrate
 from tests.fakes import FakeLLM, FakeReply, round_reply
 
@@ -372,3 +382,210 @@ def test_abandoning_is_idempotent_from_the_page(client: TestClient) -> None:
     _start_drill(client)
     assert client.post("/interview/1/abandon", follow_redirects=False).status_code == 302
     assert client.post("/interview/1/abandon", follow_redirects=False).status_code == 302
+
+
+def test_exit_link_only_leaves_without_touching_this_interview(app, client: TestClient) -> None:
+    """「退出」只是离开这一页（决策 99）—— 它不写库、不改状态。
+
+    它与「放弃本场」是**两个不同的动作**：退出之后这一场还活着（回首页点「继续未完成」
+    接着答），放弃才是结束这一场。用 `unfollowed`（不开 follow_redirects）走这条链接，
+    断言那之后**还能继续作答** —— 这正是"没被标成 abandoned"的行为证据。
+    """
+    with create_session_factory(create_db_engine(app.state.test_db))() as s:
+        s.add(Interview(id=10, user_id=2, mode="drill", status="active"))
+        s.add(InterviewSession(id=1, interview_id=10, question_id=1, seq=1,
+                               status="active", max_rounds=3))
+        s.commit()
+
+    _login(client)
+    html = client.get("/interview/1").text
+    assert '<a class="pill" href="/"' in html, "退出必须是纯链接（POST /abandon 是另一个动作）"
+    assert 'action="/interview/10/abandon"' in html, "放弃本场那个表单要还在（它才是结束这一场）"
+
+    exited = client.get("/", follow_redirects=False)
+    assert exited.status_code == 200, "退出 = 打开首页，不是一个跳转"
+
+    with create_session_factory(create_db_engine(app.state.test_db))() as s:
+        assert s.get(Interview, 10).status == "active", "退出不许把这一场标成放弃"
+        assert s.get(Interview, 10).ended_at is None
+
+    # 这一场还能接着答：退出之后回到同一个地址，表格与作答框照旧
+    again = client.get("/interview/1")
+    assert again.status_code == 200
+    assert 'name="answer_text"' in again.text
+
+
+def test_exam_pages_are_not_cacheable(app, client: TestClient) -> None:
+    """答题页与"这场已经放弃"那一页都必须是 `no-store`。
+
+    否则浏览器把整页放进 back/forward 缓存：**放弃之后按返回键，会从缓存里复原
+    那个看起来还能答的界面**（实测就是这个现象）。标上 `no-store` 之后返回键变成
+    一次真请求 —— 那时服务端渲染的是真实状态（已放弃 ⇒ 409 那一页）。
+    """
+    _login(client)
+    location = _start_drill(client)
+
+    live = client.get(location)
+    assert live.status_code == 200
+    assert live.headers["cache-control"] == "no-store"
+
+    client.post("/interview/1/abandon")
+    abandoned = client.get(location)
+    assert abandoned.status_code == 409
+    assert abandoned.headers["cache-control"] == "no-store", "409 那一页也不能被缓存"
+
+
+def test_exam_bar_actions_are_plain_labelled_pills(app, client: TestClient) -> None:
+    """考场条那两个出口的结构要对（它们不是导航栏那种 pill）。
+
+    导航栏的 pill 靠一个**收起态才显形的单字图标**（`.g`，平时 `visibility: hidden`
+    但仍占位）撑着"展开/收起"两种形态；考场条是常显文字，带着那个占位符就会把可见
+    文字往右推（用户报的"没居中"）。所以这里钉的是：**两个出口各自只有一个 `<span
+    class="lbl">` 文字**，不再有 `.g`。CSS 那侧（`.exambar-actions .pill` 的
+    `justify-content: center` + `gap: 0`）只负责短粗胶囊的样子。
+    """
+    _login(client)
+    _start_drill(client)
+    html = client.get("/interview/1").text
+
+    bar = html.split('class="exambar-actions"', 1)[1].split("</header>", 1)[0]
+    assert 'class="lbl"' in bar
+    assert 'class="g"' not in bar, "考场条的按钮不该再带那个占位图标"
+    assert "退出" in bar and "放弃本场" in bar
+    assert 'href="/"' in bar and "/abandon" in bar
+
+
+def test_abandon_button_targets_the_interview_not_the_session(app, client: TestClient) -> None:
+    """⚠️ 面试 id 与题会话 id 是两张表的 id，**不保证相等**。
+
+    隔离库（第一个用户的第一场面试）里两者都是 1，所以"表单指向了题会话 id"
+    这个错误在那个夹具下看不出来 —— 一旦用了一阵子，点「放弃本场」就会 404
+    （实测：`/interview/10/abandon` 而真正的面试 id 是 3）。
+    """
+    with create_session_factory(create_db_engine(app.state.test_db))() as s:
+        s.add(Interview(id=10, user_id=2, mode="drill", status="active"))
+        s.add(InterviewSession(id=1, interview_id=10, question_id=1, seq=1,
+                               status="active", max_rounds=3))
+        s.commit()
+
+    _login(client)
+    html = client.get("/interview/1").text
+    assert 'action="/interview/10/abandon"' in html, "放弃表单要提交**面试** id（路由收的是它）"
+    assert 'action="/interview/1/abandon"' not in html, "题会话 id 提交给放弃路由 ⇒ 404"
+
+    r = client.post("/interview/10/abandon", follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "/"
+
+
+# ---------------------------------------------------------------------------
+# 模拟面试抽哪几道题（决策 100：薄弱点优先 + 排除答过的）
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def pick_db(tmp_dir: Path) -> Path:
+    """题库：公共题 q1-q8（q4 缺号留白），再加一道**别人的**私有题 q9。
+
+    挂载刻意错开，好让两种情形分得开：
+    · **volatile（知识点 1）**：q1、q3、q4、q7、q8
+    · **线程池（知识点 2）**：q2、q5、q6
+
+    于是"哪个题更新"与"哪道题在薄弱点下"不重合 —— 断言顺序时才分得清它是按
+    薄弱点排的，还是又退回去按 id 倒序了（用户报的就是后者）。
+    """
+    path = tmp_dir / "pick.db"
+    migrate(path)
+    with create_session_factory(create_db_engine(path))() as s:
+        s.add(User(id=2, email="pick@local", username="pick", password_hash=_PASSWORD_HASH,
+                   role="user"))
+        s.add(User(id=3, email="other@local", username="other", password_hash=_PASSWORD_HASH,
+                   role="user"))
+        s.flush()
+        s.add(Domain(id=1, name="Java 并发"))
+        s.add(KnowledgePoint(id=1, domain_id=1, name="volatile", status="confirmed"))
+        s.add(KnowledgePoint(id=2, domain_id=1, name="线程池", status="confirmed"))
+        s.flush()
+        s.add(Criterion(id=1, point_id=1, seq=1, text="可见性", shared=0))
+        s.add(Criterion(id=2, point_id=2, seq=1, text="拒绝策略", shared=0))
+        s.flush()
+        layout = {1: 1, 2: 2, 3: 1, 4: 1, 5: 2, 6: 2, 7: 1, 8: 1, 9: 1}
+        for qid, point_id in layout.items():
+            s.add(Question(id=qid, kind="knowledge", stem=f"第 {qid} 题", difficulty=3,
+                           primary_point_id=point_id, origin="seed",
+                           owner_user_id=3 if qid == 9 else None,
+                           visibility="private" if qid == 9 else "public"))
+        s.commit()
+    return path
+
+
+def _play_once(db: Path, *, question_id: int, hits: dict[int, str]) -> None:
+    """造"这个人答过一轮"的记录（直接落行）—— 掌握度就是从这里推出来的。
+
+    注意**只加 attempt、不算"答过的题"之外的东西**：`answered_question_ids()` 数的是
+    "回答过的题"，而决策 100 要排除的正是这种题（只被排进过计划、一轮没答的不算）。
+    id 由题目 id 推出来（同一场测试里一道题只会造一次），免得一行行去数。
+    """
+    ref = 900 + question_id
+    with create_session_factory(create_db_engine(db))() as s:
+        s.add(Interview(id=ref, user_id=2, mode="drill", status="finished"))
+        s.flush()
+        s.add(InterviewSession(id=ref, interview_id=ref, question_id=question_id, seq=1,
+                               status="active", max_rounds=3))
+        s.flush()
+        s.add(Attempt(session_id=ref, round_no=1, is_followup=0, input_mode="text",
+                      answer_text="答了", feedback_text="继续",
+                      hits={str(k): v for k, v in hits.items()}))
+        s.commit()
+
+
+def _pick(db: Path) -> list[int]:
+    with create_session_factory(create_db_engine(db))() as s:
+        return _questions_for_mock(s, user_id=2)
+
+
+def test_a_mock_prefers_the_weak_point_over_the_newest(pick_db: Path) -> None:
+    """薄弱点下还有没答过的题时，**它排在前面**（决策 100 的第一段）。
+
+    线程池是薄弱点（q2 答错），同一知识点下还有没答过的 q6 / q5 ⇒ 它们必须排在
+    最前面；其余从"全库没答过"里按 id 倒序补齐。若顺序变成纯 id 倒序（8,7,6,5,…），
+    说明它根本没看掌握度 —— 那正是用户报的坏形态。
+    """
+    _play_once(pick_db, question_id=2, hits={2: "未命中"})
+    picked = _pick(pick_db)
+    assert picked[:2] == [6, 5], "薄弱点下没答过的题应当排在最前面"
+    assert 2 not in picked, "答过的那道不再出现"
+    assert picked == [6, 5, 8, 7, 4, 3, 1], "剩下的按 id 倒序补齐"
+
+
+def test_a_mock_skips_questions_the_user_already_answered(pick_db: Path) -> None:
+    """答过的题不再出现在新一场里（决策 100 的 A）。
+
+    这也解释了轮换：**答过之后，下一场才会换题**。只被排进计划、一轮都没答的
+    （放弃的那几场）不算"答过" —— 这也是用户那四场为什么没让它换题。
+    """
+    _play_once(pick_db, question_id=3, hits={2: "命中"})
+    assert 3 not in _pick(pick_db)
+
+
+def test_a_mock_still_starts_when_everything_was_answered(pick_db: Path) -> None:
+    """全都答过时**照样要能开场**（决策 100 的第三段，每场 8 道）。
+
+    抽不出来就报错等于把"练得多"变成了惩罚。注意别人的私有题（q9）任何一段都不许出现。
+    """
+    for qid in (1, 2, 3, 4, 5, 6, 7, 8):
+        _play_once(pick_db, question_id=qid, hits={})
+    picked = _pick(pick_db)
+    assert picked == [8, 7, 6, 5, 4, 3, 2, 1], "放开'没答过'这条之后退回最新八道"
+    assert 9 not in picked, "别人的私有题不许被抽到"
+
+
+def test_the_same_state_gives_the_same_eight(pick_db: Path) -> None:
+    """**不引入随机**（决策 100）：同一份库状态永远同一套、同一顺序。
+
+    报告要可复现、测试要能钉住 —— 随机抽题会把这两件都毁掉。
+    """
+    _play_once(pick_db, question_id=2, hits={2: "未命中"})
+    assert _pick(pick_db) == _pick(pick_db) == [6, 5, 8, 7, 4, 3, 1]
+
+
+def test_a_new_user_gets_the_newest_questions(pick_db: Path) -> None:
+    """还没答过任何题的人没有薄弱点（"没考过"不等于"薄弱"）⇒ 走兜底：最新八道。"""
+    assert _pick(pick_db) == [8, 7, 6, 5, 4, 3, 2, 1]

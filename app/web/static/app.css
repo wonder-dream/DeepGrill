@@ -533,10 +533,22 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
 .opt input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* 反馈表单：圆角输入框；「重复」专属字段默认隐藏（无 :has 的浏览器回退为常显） */
-input.rnd { border-radius: 10px; }
+input.rnd, select.rnd { border-radius: 10px; }
 @supports selector(:has(*)) {
   .feedback-form:not(:has(input[name="kind"][value="duplicate"]:checked)) .dup-only { display: none; }
 }
+
+/* 分页条：翻页 + 页码 + 跳页 + 每页条数，控件排一行可换行 */
+.pager { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+.pager-ctl { display: inline-flex; align-items: center; gap: 6px; }
+.pager-ctl input[type="text"] { text-align: center; }
+
+/* 题库筛选条：与分页条同族的一行可换行控件 */
+.filter-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: .6rem; }
+
+/* 下拉框：select 透明底 + option 系统配色，在暗色页面上会看不见字 —— 显式配色 */
+select { background: var(--panel); }
+option { background: var(--panel); color: var(--fg); }
 
 /* ------------------------------------------------ 确认悬浮窗（危险操作两步确认） */
 .modal {
@@ -635,10 +647,115 @@ details.card[open] summary { margin-bottom: .6rem; }
   font-size: 14px;
 }
 
+/* ------------------------------------------------ 考场模式（全屏接管，见 interview.html 的 shell 覆盖） */
+.exam-full {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px),
+    var(--bg);
+  background-size: 26px 26px, 26px 26px, auto;
+}
+/* 进入动效：终端式开屏，停留约 1.1s 后淡出（forwards 定格在不可见、不占命中） */
+.boot {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  animation: boot-out .5s ease 1.1s forwards;
+}
+.boot-text { font-size: 15px; letter-spacing: .35em; color: var(--muted); }
+@keyframes boot-out { to { opacity: 0; visibility: hidden; } }
+
+.exam-full > .exambar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line-bright);
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.exam-full > .exambar .prog-wrap { flex: 1; }
+/* 两个出口并排靠右：「退出」（纯链接，只是离开）与「放弃本场」（表单，结束这一场）。
+   `margin-left: auto` 挪到容器上 —— 留在 form 上的话只推得动第一个子元素。 */
+.exam-full > .exambar .exambar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* form 本身也拉成 flex 项：否则它按内容收缩，把里面的 pill 压成一块短粗的按钮 */
+.exam-full > .exambar .exambar-actions form { display: flex; }
+/* 文字**水平居中**。`.pill` 只有 `align-items: center`（那是竖排居中），默认
+   `justify-content: flex-start` 会把内容推到左边；`gap: 0` 是因为这里的内容就是
+   一个文字 span（导航栏那种单字图标不在这两个按钮上）。 */
+.exam-full > .exambar .exambar-actions .pill {
+  justify-content: center;
+  gap: 0;
+  border-radius: 999px;
+  padding: 6px 14px 7px;
+  font-size: 13px;
+}
+
+/* 中段：只有这里滚动，考场条与作答栏固定 */
+.exam-full .stage {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 20px 24px;
+}
+.exam-full .stage > .card,
+.exam-full .stage > .warn { max-width: 58rem; margin-left: auto; margin-right: auto; }
+
+/* 作答栏：考场底部固定的输入行 */
+.exam-full .answer-bar {
+  flex: none;
+  border-top: 1px solid var(--line-bright);
+  background: var(--bg);
+  padding: 12px 20px 16px;
+}
+.exam-full .answer-bar > * { max-width: 58rem; margin-left: auto; margin-right: auto; }
+.answer-modes { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; margin: 0 0 8px; }
+.answer-form { display: flex; gap: 10px; align-items: flex-start; }
+.answer-form textarea { flex: 1; }
+
+/* ------------------------------------------------ 面试页：终端模式 */
+/* 对话区 = 一块深色终端：比页面更深的底、❯ 提示符、打字机光标 */
+.term {
+  background: #0e0c09;
+  border-color: var(--line-bright);
+}
+.term .chat { gap: 18px; }
+.term .msg .body { position: relative; padding-left: 1.4em; }
+.term .msg .body::before {
+  content: "❯";
+  position: absolute;
+  left: 0;
+  color: var(--muted);
+}
+.term .msg.ai .body::before { color: var(--accent); }
+.term .msg.me .body { padding-left: 1.8em; }   /* 盒内给提示符让位 */
+.term .who { letter-spacing: 2px; }
+/* 开场题干的打字机光标（interview.js 打完后摘掉 .typing） */
+#term-stem.typing::after {
+  content: "▍";
+  color: var(--accent);
+  animation: blink .9s step-end infinite;
+}
+
 /* 流式输出区 */
-#live-card { border-color: var(--accent); }
 #live-text { white-space: pre-wrap; }
-#live-card:not([hidden]) #live-text::after {
+.term-live { margin-top: 18px; border-top: 1px dashed var(--line); padding-top: 12px; }
+.term-live:not([hidden]) #live-text::after {
   content: "▍";
   color: var(--accent);
   animation: blink .9s step-end infinite;
@@ -681,6 +798,7 @@ details.card[open] summary { margin-bottom: .6rem; }
 
 @media (prefers-reduced-motion: reduce) {
   .card, .logo .caret, .hero .rot span, #live-text::after, .bar i { animation: none; }
+  .boot { animation: none; opacity: 0; visibility: hidden; }
   .card:nth-child(n) { animation-delay: 0s; }
   .card:hover, .bento .cell:hover { transform: none; box-shadow: none; }
   .button, .button::after, a, button.link, .pill, tbody tr, .sidebar, main, .statusbar, .rail-btn, .rail-handle::after { transition: none; }

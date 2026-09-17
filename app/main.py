@@ -228,9 +228,10 @@ def _ratelimit_exempt(path: str) -> bool:
     return path in RATELIMIT_EXEMPT_PATHS or path.startswith(RATELIMIT_EXEMPT_PREFIXES)
 
 
-#: 静态资源的缓存时长（秒）。**它不能长**：文件名里没有内容指纹，所以部署之后
-#: 旧 CSS/JS 会继续被用 —— 一小时的折中是"省掉大部分重复请求"与"改样式不必让人
-#: 清缓存"之间。真要做强缓存（`max-age` 一年），前提是先给静态文件加内容哈希。
+#: 静态资源的缓存时长（秒）。**它可以长**：URL 里带的是**由文件内容算出来的版号**
+#: （`app/web/templating.py::asset`，`/static/app.css?v=<sha256 前 12 位>`），所以改了
+#: 文件就是新 URL、浏览器不会拿到旧的那份。真要做 `max-age` 一年，前提是给文件名加
+#: 内容哈希（那时 URL 与文件一一对应）—— 现在一小时已经是"够省请求、又不会静默用旧版本"。
 STATIC_MAX_AGE = 3600
 
 
@@ -240,6 +241,10 @@ def _install_static_cache(app: FastAPI) -> None:
     用中间件而不是包装 `StaticFiles`：前者一行、且对"以后再加静态目录"自动生效。
     ⚠️ 它**不覆盖** `Cache-Control` 已经存在的响应 —— 以后给某个带指纹的产物设
     更长的缓存时，不必再来改这里。
+    ⚠️ 这条 "`cache-control` 不在 headers 里" 的判断现在是**在测试里钉住的**
+    （`app/test_ratelimit.py` 的 `test_static_files_are_cacheable` /
+    `test_html_pages_are_not_cached`）：静态资源的缓存策略一旦被改成"无条件覆盖"，
+    页面级响应自己的 `no-store` 就可能被这一层悄悄改写 —— 而这类改动在 review 里看不出来。
     """
     from starlette.middleware.base import BaseHTTPMiddleware
 

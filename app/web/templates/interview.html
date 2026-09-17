@@ -1,99 +1,116 @@
 {% extends "base.html" %}
 {% block title %}第 {{ data.seq }} 题 · DeepGrill{% endblock %}
-{% block content %}
-<section class="card exambar">
-  <span class="b">[<i>{{ data.point_name or "未挂知识点" }}</i>]</span>
-  <div class="prog-wrap">
-    <span class="mono">第 {{ data.seq }} 题 / 共 {{ data.total_questions }} 题</span>
-    <div class="prog"><i style="width: {{ ((data.seq / data.total_questions) * 100) | round(0) | int if data.total_questions else 0 }}%"></i></div>
+{# 考场模式：整页接管屏幕（覆盖 shell），不渲染边栏/状态条。
+   两个出口，**语义不同**（决策 99）：
+   · 「退出」= 只离开这一页（纯链接，不写库、不改状态）—— 这一场还活着，
+     首页的「继续未完成」照样能回来接着答；
+   · 「放弃本场」（POST /abandon）= **结束这一场**，不留分析页。 #}
+{% block shell %}
+<div class="exam-full">
+  {# 进入动效：终端式开屏，约 1 秒后淡出退场（纯 CSS，完了 visibility 解除占用） #}
+  <div class="boot" aria-hidden="true">
+    <span class="boot-text">▸ 正在进入考场<span class="caret">_</span></span>
   </div>
-  <span class="mono">{{ data.rounds | length }} / {{ data.session.max_rounds }} 轮</span>
-</section>
 
-<section class="card">
-  <h1>{{ data.question.stem }}</h1>
-</section>
+  <header class="exambar">
+    <span class="b">[<i>{{ data.point_name or "未挂知识点" }}</i>]</span>
+    <div class="prog-wrap">
+      <span class="mono">第 {{ data.seq }} 题 / 共 {{ data.total_questions }} 题</span>
+      <div class="prog"><i style="width: {{ ((data.seq / data.total_questions) * 100) | round(0) | int if data.total_questions else 0 }}%"></i></div>
+    </div>
+    <span class="mono">{{ data.rounds | length }} / {{ data.session.max_rounds }} 轮</span>
+    <div class="exambar-actions">
+      {# 这两个按钮**不带**导航栏那种单字图标：那是给侧边栏"收起态"用的，平时
+         `visibility: hidden` 却仍占位 —— 在这里会把可见文字往右推（"没居中"的成因）。 #}
+      <a class="pill" href="/" title="回首页。这一场还开着，之后可以从「继续未完成」回来。"><span class="lbl">退出</span></a>
+      <form method="post" action="/interview/{{ data.interview.id }}/abandon"
+            onsubmit="return confirm('放弃本场面试？这场会结束、不再评分，已答的轮次仍然计入掌握度，但不会留下分析页。');">
+        <button class="pill" type="submit"><span class="lbl">放弃本场</span></button>
+      </form>
+    </div>
+  </header>
 
-{% if data.rounds %}
-<section class="card">
-  <h2>对话</h2>
-  <div class="chat">
-    {% for r in data.rounds %}
-    <div class="msg me">
-      <div class="who">你{% if r.input_mode == "voice" %}<span class="tag">语音</span>{% endif %}</div>
-      <div class="body">{{ r.answer_text or "（未作答）" }}</div>
-    </div>
-    {% if r.feedback_text %}
-    <div class="msg ai">
-      <div class="who">面试官</div>
-      <div class="body">{{ r.feedback_text }}</div>
-    </div>
+  {# 中段：终端对话区（这一带滚动，考场条与作答栏固定） #}
+  <div class="stage">
+    {% if notice %}
+    <p class="warn">{{ notice }}</p>
     {% endif %}
-    {% endfor %}
+
+    {% if voice_error %}
+    <p class="warn">这一轮没成：{{ voice_error }}
+      {% if voice_error_kind == "stt_unavailable" %}
+      —— <strong>这一轮没有被记录</strong>，改用下面打字作答即可继续。
+      {% endif %}
+    </p>
+    {% endif %}
+
+    {% if llm_failed %}
+    <p class="warn">这一轮的判定没成功（模型没接上），本轮记为「未涉及」，可以继续作答。</p>
+    {% endif %}
+
+    {# 终端：题干 + 对话流 + 流式区一整块深色终端底。
+       开场题干的「打字机」由 interview.js 逐字打出（新题才打；已有对话的页面是延续，
+       不打）。无 JS 时题干就是完整文字 —— 渐进增强。 #}
+    <section class="card term">
+      <div class="chat">
+        <div class="msg ai">
+          <div class="who">面试官</div>
+          <div class="body"><span id="term-stem" data-stem="{{ data.question.stem }}"{% if not data.rounds %} data-fresh="1"{% endif %}>{{ data.question.stem }}</span></div>
+        </div>
+        {% for r in data.rounds %}
+        <div class="msg me">
+          <div class="who">你{% if r.input_mode == "voice" %}<span class="tag">语音</span>{% endif %}</div>
+          <div class="body">{{ r.answer_text or "（未作答）" }}</div>
+        </div>
+        {% if r.feedback_text %}
+        <div class="msg ai">
+          <div class="who">面试官</div>
+          <div class="body">{{ r.feedback_text }}</div>
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+      {# 流式区：JS 起来之后面试官的反馈逐段出现在这里，随后页面跳到服务端渲染的真实状态。
+         没有 JS 时它始终是空的、也不碍事（那两条表单走整页渲染）。 #}
+      <div class="term-live" id="live-card" hidden>
+        <div class="who">面试官</div>
+        <p id="live-text"></p>
+        <p class="muted" id="live-status"></p>
+      </div>
+    </section>
   </div>
-</section>
-{% endif %}
 
-{% if notice %}
-<p class="warn">{{ notice }}</p>
-{% endif %}
-
-{% if voice_error %}
-<p class="warn">这一轮没成：{{ voice_error }}
-  {% if voice_error_kind == "stt_unavailable" %}
-  —— <strong>这一轮没有被记录</strong>，改用下面打字作答即可继续。
-  {% endif %}
-</p>
-{% endif %}
-
-{% if llm_failed %}
-<p class="warn">这一轮的判定没成功（模型没接上），本轮记为「未涉及」，可以继续作答。</p>
-{% endif %}
-
-{# 流式区：JS 起来之后面试官的话逐段出现在这里，随后页面跳到服务端渲染的真实状态。
-   没有 JS 时它始终是空的、也不碍事（那两条表单走整页渲染）。 #}
-<section class="card" id="live-card" hidden>
-  <h2>面试官</h2>
-  <p id="live-text"></p>
-  <p class="muted" id="live-status"></p>
-</section>
-
-<section class="card">
-  <h2>{{ "继续回答" if data.rounds else "你的回答" }}</h2>
-
-  <p class="muted">
-    <label><input type="radio" name="answer-mode" value="voice" checked> 语音作答（默认）</label>
-    <label><input type="radio" name="answer-mode" value="text"> 打字作答</label>
-    <span class="muted">语音转写直接进判分，没有"核对一遍再交"这一步。</span>
-  </p>
-
-  <div id="voice-pane">
-    <p>
-      <button class="button" id="record-btn" type="button">开始录音</button>
+  {# 作答栏：考场底部固定（终端的输入行）。 #}
+  <footer class="answer-bar">
+    <p class="muted answer-modes">
+      <label><input type="radio" name="answer-mode" value="voice" checked> 语音作答（默认）</label>
+      <label><input type="radio" name="answer-mode" value="text"> 打字作答</label>
       <span class="muted" id="record-status">点一下开始，说完再点一下结束。</span>
     </p>
-    <form id="voice-form" method="post" enctype="multipart/form-data"
-          action="/interview/{{ data.session.id }}/voice"
-          data-stream-action="/interview/{{ data.session.id }}/voice/stream">
-      <input type="file" name="audio" id="audio-input" accept="audio/*" hidden>
-    </form>
-    <p class="muted">录音只用来转写成文字：<strong>服务端不保存原始录音</strong>。
-       浏览器不给麦克风权限、或这个环境没有 STT 供应商时，会提示你改用打字。</p>
-  </div>
 
-  {# 默认**不隐藏**：没有 JS 时语音按钮是死的，而打字框必须还能用。
-     JS 起来之后才按当前模式收起其中一个 —— 这是渐进增强，不是"靠 JS 才可用"。 #}
-  <div id="text-pane">
-    <form method="post" action="/interview/{{ data.session.id }}/answer"
-          data-stream-action="/interview/{{ data.session.id }}/answer/stream">
-      <p><textarea name="answer_text" rows="6" cols="60" required
-          placeholder="说清楚你的思路：为什么、怎么权衡、边界在哪。"></textarea></p>
-      <p><button class="button" type="submit">提交这一轮</button></p>
-    </form>
-  </div>
+    <div id="voice-pane">
+      <p>
+        <button class="button" id="record-btn" type="button">开始录音</button>
+      </p>
+      <form id="voice-form" method="post" enctype="multipart/form-data"
+            action="/interview/{{ data.session.id }}/voice"
+            data-stream-action="/interview/{{ data.session.id }}/voice/stream">
+        <input type="file" name="audio" id="audio-input" accept="audio/*" hidden>
+      </form>
+      <p class="muted">录音只用来转写成文字，<strong>服务端不保存原始录音</strong>；没有麦克风就用打字作答。</p>
+    </div>
 
-  <p class="muted">追问上限 {{ data.session.max_rounds }} 轮；到顶由程序强制收尾，不靠模型自觉。</p>
-</section>
-
-<script src="/static/interview.js"></script>
+    {# 默认**不隐藏**：没有 JS 时语音按钮是死的，而打字框必须还能用。
+       JS 起来之后才按当前模式收起其中一个 —— 这是渐进增强，不是"靠 JS 才可用"。 #}
+    <div id="text-pane">
+      <form class="answer-form" method="post" action="/interview/{{ data.session.id }}/answer"
+            data-stream-action="/interview/{{ data.session.id }}/answer/stream">
+        <textarea name="answer_text" rows="3" required
+            placeholder="说清楚你的思路：为什么、怎么权衡、边界在哪。（Enter 提交，Shift+Enter 换行）"></textarea>
+        <button class="button" type="submit">提交这一轮</button>
+      </form>
+    </div>
+  </footer>
+</div>
+<script src="{{ asset('interview.js') }}" defer></script>
 {% endblock %}
