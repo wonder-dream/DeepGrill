@@ -424,9 +424,13 @@ def _transcribe(stt, audio: UploadFile | None) -> tuple[Transcript | None, tuple
     try:
         return stt.transcribe(raw, content_type=audio.content_type or ""), None
     except STTUnavailable as e:
+        # 这一句是给用户的**配置指引**（"语音转写还没接入，请用打字作答"），不是异常原文
         return None, (str(e), "stt_unavailable")
     except STTError as e:
-        return None, (f"转写失败：{e}", "stt_error")
+        # ⚠️ 供应商的原文**不进页面**（它含返回体截断、`DEEPGRILL_STT_API_KEY`
+        # 这类环境变量名 —— 实测口径见 `app/llm/stt.py`）：原文进日志，用户拿一句人话。
+        logger.warning("转写失败（%s）：%s", audio.content_type, e)
+        return None, ("这一轮没听清 —— 再录一次，或者改用打字作答。", "stt_error")
 
 
 # ---------------------------------------------------------------------------

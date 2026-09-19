@@ -126,6 +126,9 @@ def explain_question(
        但这次调用的 token **要进账本**（决策 14）—— 否则"钱花在哪"答不出来。
     ③ **失败要说出来**：模型挂了就把错误渲染回详情页（含一句"讲解没生成出来"），
        而不是静默地什么都不显示（§3.1）。
+       ⚠️ 但**只给用户那一句人话**：第一版写的是 `f"讲解没生成出来：{e}"`，而
+       `LLMError` 的原文里有 `缺少 LLM api_key（设置 DEEPGRILL_LLM_API_KEY）`
+       这种环境变量名——异常原文进日志（下面那行 warning），不进页面。
     """
     me = user
     if me is None:
@@ -142,7 +145,7 @@ def explain_question(
         logger.warning("题目 %s 的讲解没生成出来：%s", question_id, e)
         return _render_detail(
             request, session, data, user,
-            notice=f"讲解没生成出来：{e}",
+            notice="讲解这次没生成出来。",
             status_code=502,
         )
 
@@ -192,6 +195,9 @@ def _render_detail(request: Request, session: Session, data, user, *, notice, st
         "bank_detail.html",
         {
             "data": data,
+            # 枚举 → 中文（映射定义在 `bank.service`，列表页与详情页共用一份）
+            "kind_text": service.kind_label(data.question.kind),
+            "origin_text": service.origin_label(data.question.origin),
             "can_start": user is not None,
             "quota": account.quota_state(session, user.id) if user else None,
             "is_favorited": False if user is None else favorites.is_favorited(

@@ -129,16 +129,21 @@ def test_generation_is_not_charged_in_quota_points(app, client: TestClient, db: 
 
 
 def test_model_failure_is_visible_on_the_page(app, client: TestClient, db: Path) -> None:
-    """模型挂了 → 页面上有一句"讲解没生成出来"，而且**什么都没落库**（§3.1）。"""
+    """模型挂了 → 页面上有一句"讲解没生成出来"，而且**什么都没落库**（§3.1）。
+
+    ⚠️ 但**异常原文不上屏**：真实的 `LLMError` 里有 `DEEPGRILL_LLM_API_KEY` 这类
+    环境变量名（见 `bank_page.explain_question`）。这里用一个**不含引号**的探针文案
+    反证它没漏出去（含引号的会被 HTML 转义成 `&#34;`，那样断言就假绿了）。
+    """
     from app.llm import LLMCallError
 
     app.dependency_overrides[get_llm] = lambda: FakeLLM().queue(
-        FakeReply(error=LLMCallError("模型挂了"))
+        FakeReply(error=LLMCallError("供应商探针 502"))
     )
     r = client.post("/bank/1/explain")
     assert r.status_code == 502
-    assert "讲解没生成出来" in r.text
-    assert "模型挂了" in r.text
+    assert "没生成出来" in r.text
+    assert "供应商探针 502" not in r.text, "异常原文漏给了用户（它只该进日志）"
     assert _explanations(db) == []
 
 

@@ -263,12 +263,17 @@ def test_provider_failure_and_missing_provider_say_different_things(
     """「没接供应商」与「识别失败」是两件事 —— 页面上说的话不该一样。
 
     （前者的处置是"去配一下"，后者是"再录一次"。）
+
+    ⚠️ 而**供应商的异常原文不上页面**：`BoomSTT` 那句"供应商返回 502"是探针，
+    它只许进日志 —— 真实的 `STTError` 原文里有供应商返回体截断与
+    `DEEPGRILL_STT_API_KEY` 这类环境变量名（见 `interview_page._transcribe`）。
     """
     app.dependency_overrides[get_stt] = BoomSTT
     location = _start_drill(client)
     r = _post_voice(client, location)
     assert r.status_code == 400
-    assert "转写失败：供应商返回 502" in r.text
+    assert "这一轮没听清" in r.text
+    assert "供应商返回 502" not in r.text, "异常原文漏给了用户"
     assert "语音转写还没接入" not in r.text
     assert _attempts(db) == []
 

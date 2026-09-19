@@ -40,6 +40,8 @@
     <p class="warn">这一轮没成：{{ voice_error }}
       {% if voice_error_kind == "stt_unavailable" %}
       —— <strong>这一轮没有被记录</strong>，改用下面打字作答即可继续。
+      {% elif voice_error_kind == "stt_error" %}
+      —— 改用下面打字作答即可继续。
       {% endif %}
     </p>
     {% endif %}
@@ -72,7 +74,7 @@
       </div>
       {# 流式区：JS 起来之后面试官的反馈逐段出现在这里，随后页面跳到服务端渲染的真实状态。
          没有 JS 时它始终是空的、也不碍事（那两条表单走整页渲染）。 #}
-      <div class="term-live" id="live-card" hidden>
+      <div class="term-live" id="live-card" hidden role="status" aria-live="polite">
         <div class="who">面试官</div>
         <p id="live-text"></p>
         <p class="muted" id="live-status"></p>
@@ -85,7 +87,7 @@
     <p class="muted answer-modes">
       <label><input type="radio" name="answer-mode" value="voice" checked> 语音作答（默认）</label>
       <label><input type="radio" name="answer-mode" value="text"> 打字作答</label>
-      <span class="muted" id="record-status">点一下开始，说完再点一下结束。</span>
+      <span class="muted" id="record-status" role="status" aria-live="polite">点一下开始，说完再点一下结束。</span>
     </p>
 
     <div id="voice-pane">
