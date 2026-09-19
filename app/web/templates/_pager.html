@@ -1,0 +1,31 @@
+{# 分页条：上一页/下一页 + 当前/共 N 页 + 跳页 + 每页条数。
+   状态全在 URL（ADR-0004），纯表单无 JS。
+   调用方需提供：base（路径字符串）、extra（要保留的查询参数 dict）、
+   page / total_pages / size（当前页、总页数、每页条数）。 #}
+{% set q = extra|urlencode %}
+<div class="pager">
+  {% if page > 1 %}
+  <a class="button" href="{{ base }}?{{ q ~ '&' if q }}page={{ page - 1 }}&size={{ size }}">上一页</a>
+  {% endif %}
+  <span class="muted">第 {{ page }} / {{ total_pages }} 页</span>
+  {% if page < total_pages %}
+  <a class="button" href="{{ base }}?{{ q ~ '&' if q }}page={{ page + 1 }}&size={{ size }}">下一页</a>
+  {% endif %}
+  <form class="inline pager-ctl" method="get" action="{{ base }}">
+    {% for k, v in extra.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+    <input type="hidden" name="size" value="{{ size }}">
+    跳至 <input class="rnd" type="text" name="page" size="4" value="{{ page }}"> 页
+    <button class="button" type="submit">跳转</button>
+  </form>
+  {# 改每页条数时不带 page —— 回第 1 页，否则页码容易越过新总页数 #}
+  <form class="inline pager-ctl" method="get" action="{{ base }}">
+    {% for k, v in extra.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+    每页
+    <select class="rnd" name="size">
+      {% for opt in (10, 20, 50, 100) %}
+      <option value="{{ opt }}" {{ "selected" if opt == size }}>{{ opt }}</option>
+      {% endfor %}
+    </select>
+    条 <button class="button" type="submit">应用</button>
+  </form>
+</div>

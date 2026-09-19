@@ -70,6 +70,28 @@ def test_bank_list_hides_hidden_question(client: TestClient) -> None:
     assert "这道题被隐藏了" not in client.get("/bank").text
 
 
+def test_bank_filter_form_is_rendered(client: TestClient) -> None:
+    body = client.get("/bank").text
+    assert 'name="kind"' in body and 'name="diff"' in body
+    assert 'name="domain"' in body and 'name="point"' in body and 'name="q"' in body
+    assert "data-points" in body, "级联 JS 要的全量知识点 JSON 应藏在下拉里"
+
+
+def test_bank_filters_apply(client: TestClient) -> None:
+    """四个筛选条件各验一条：题型 / 难度档 / 领域+知识点 / 关键词。"""
+    assert "共 0 道" in client.get("/bank?kind=design").text
+    assert "共 1 道" in client.get("/bank?kind=knowledge").text
+    assert "共 1 道" in client.get("/bank?diff=easy").text       # 难度 2 ∈ 1-2
+    assert "共 0 道" in client.get("/bank?diff=hard").text
+    assert "共 1 道" in client.get("/bank?domain=1").text
+    assert "共 1 道" in client.get("/bank?point=1").text
+    assert "共 0 道" in client.get("/bank?q=不存在的词").text
+    assert "共 1 道" in client.get("/bank?q=volatile").text
+    # 筛选要跟着翻页走：跳页表单把全部条件带在隐藏域里
+    body = client.get("/bank?kind=knowledge&q=volatile&size=10").text
+    assert 'name="kind" value="knowledge"' in body and 'name="q" value="volatile"' in body
+
+
 def test_bank_detail_shows_criteria(client: TestClient) -> None:
     r = client.get("/bank/1")
     assert r.status_code == 200

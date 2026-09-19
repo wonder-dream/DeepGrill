@@ -88,6 +88,11 @@ def browse(
     point_id: int | None = None,
     owner_only: bool = False,
     page: int = 1,
+    page_size: int = PAGE_SIZE,
+    difficulty_min: int | None = None,
+    difficulty_max: int | None = None,
+    domain_id: int | None = None,
+    keyword: str | None = None,
 ) -> tuple[list[QuestionCard], int]:
     """题库浏览（**不消耗额度点** —— 决策 13）。返回 `(卡片, 总条数)`。
 
@@ -102,8 +107,12 @@ def browse(
         kind=kind,
         point_id=point_id,
         owner_only=owner_only,
-        offset=offset_for(page),
-        limit=PAGE_SIZE,
+        offset=offset_for(page, page_size=page_size),
+        limit=page_size,
+        difficulty_min=difficulty_min,
+        difficulty_max=difficulty_max,
+        domain_id=domain_id,
+        keyword=keyword,
     )
     names = repository.point_names(
         session, {q.primary_point_id for q in rows if q.primary_point_id is not None}

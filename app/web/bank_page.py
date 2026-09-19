@@ -54,14 +54,29 @@ def bank_list(
     kind: Annotated[str | None, Query()] = None,
     mine: Annotated[int, Query(ge=0, le=1)] = 0,
     page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = service.PAGE_SIZE,
+    diff: Annotated[str, Query()] = "",
+    domain: Annotated[int | None, Query(ge=1)] = None,
+    point: Annotated[int | None, Query(ge=1)] = None,
+    q: Annotated[str, Query(max_length=100)] = "",
 ) -> object:
     """题库列表。`?mine=1` 就是首页那个「我的私有题集」入口（决策 3）。
 
     它**复用同一个函数**、只多一个筛选条件：另写一条"只查我的题"的路径，等于多
-    一处能漏掉可见性过滤的地方（AGENTS.md §3.5）。
+    一处能漏掉可见性过滤的地方（AGENTS.md §3.5）。筛选条件（题型/难度档/领域/
+    知识点/关键词）全在 URL 上 —— ADR-0004，状态住 URL 与服务端。
     """
     data = pages.bank_list(
-        session, _viewer(user), kind=kind, page=page, owner_only=bool(mine)
+        session,
+        _viewer(user),
+        kind=kind,
+        page=page,
+        page_size=size,
+        diff=diff,
+        domain_id=domain,
+        point_id=point,
+        keyword=q.strip(),
+        owner_only=bool(mine),
     )
     return render(
         request,

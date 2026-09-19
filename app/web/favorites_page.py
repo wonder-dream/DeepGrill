@@ -68,10 +68,11 @@ def my_favorites(
     session: SessionDep,
     user: CurrentUserDep,
     page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = favorites.PAGE_SIZE,
 ) -> object:
     if user is None:
         return RedirectResponse("/login", status_code=302)
-    cards, total = favorites.browse(session, user_id=user.id, page=page)
+    cards, total = favorites.browse(session, user_id=user.id, page=page, page_size=size)
     return render(
         request,
         "my_favorites.html",
@@ -80,7 +81,9 @@ def my_favorites(
             "cards": cards,
             "total": total,
             "page": page,
+            "page_size": size,
+            "total_pages": max(1, -(-total // size)),
             "has_prev": page > 1,
-            "has_next": page * favorites.PAGE_SIZE < total,
+            "has_next": page * size < total,
         },
     )

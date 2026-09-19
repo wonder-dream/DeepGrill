@@ -38,7 +38,7 @@ from sqlalchemy import Select, delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from app.db.models import Criterion, KnowledgePoint, Question, QuestionPoint, UserFavorite
+from app.db.models import Criterion, Domain, KnowledgePoint, Question, QuestionPoint, UserFavorite
 
 #: 公共列表只认这一种可见性。`pending`（晋升待门禁）与 `hidden` 都不算公共。
 PUBLIC_VISIBILITY = "public"
@@ -74,6 +74,10 @@ def list_questions(
     point_ids: list[int] | None = None,
     owner_only: bool = False,
     exclude_ids: list[int] | None = None,
+    difficulty_min: int | None = None,
+    difficulty_max: int | None = None,
+    domain_id: int | None = None,
+    keyword: str | None = None,
     offset: int = 0,
     limit: int = 20,
 ) -> tuple[list[Question], int]:
@@ -83,7 +87,8 @@ def list_questions(
 
     `point_ids` / `exclude_ids` / `owner_only` 是给**首页推荐**与**我的私有题集**
     用的三个筛选项 —— 它们都只是往 `visible_to()` 后面接 `.where()`，所以推荐
-    永远捞不出看不见的题（这里没有第二条查询路径）。
+    永远捞不出看不见的题（这里没有第二条查询路径）。难度区间 / 领域 / 关键词
+    是题库筛选表单的那组，同样只接 `.where()`。
     """
     stmt = visible_to(viewer_id)
     if kind:
@@ -101,6 +106,20 @@ def list_questions(
         stmt = stmt.where(Question.owner_user_id == viewer_id)
     if exclude_ids:
         stmt = stmt.where(Question.id.not_in(exclude_ids))
+    if difficulty_min is not None:
+        stmt = stmt.where(Question.difficulty >= difficulty_min)
+    if difficulty_max is not None:
+        stmt = stmt.where(Question.difficulty <= difficulty_max)
+    if domain_id is not None:
+        # 题挂知识点、知识点挂领域；只筛领域时经子查询，不 join 出重复行
+        stmt = stmt.where(
+            Question.primary_point_id.in_(
+                select(KnowledgePoint.id).where(KnowledgePoint.domain_id == domain_id)
+            )
+        )
+    if keyword:
+        # contains 自带 LIKE 通配符转义（`%` `_` 当字面量），用户输什么就搜什么
+        stmt = stmt.where(Question.stem.contains(keyword))
 
     total = session.execute(
         select(func.count()).select_from(stmt.subquery())
@@ -109,6 +128,20 @@ def list_questions(
         stmt.order_by(Question.id.desc()).offset(offset).limit(limit)
     ).scalars().all()
     return list(rows), int(total)
+
+
+def filter_options(
+    session: Session, *, domain_id: int | None = None
+) -> tuple[list[Domain], list[KnowledgePoint]]:
+    """题库筛选下拉的选项：全部领域 + 知识点（给了 domain 就只列该领域的）。
+
+    级联的**无 JS 降级**靠它：选了领域提交一次，服务端把知识点选项收窄重渲染。
+    """
+    domains = list(session.execute(select(Domain).order_by(Domain.id)).scalars())
+    stmt = select(KnowledgePoint).order_by(KnowledgePoint.id)
+    if domain_id is not None:
+        stmt = stmt.where(KnowledgePoint.domain_id == domain_id)
+    return domains, list(session.execute(stmt).scalars())
 
 
 def criteria_of_question(session: Session, question: Question) -> list[Criterion]:

@@ -145,6 +145,32 @@
     }
   }
 
+  /* 题库筛选：领域 → 知识点 级联。全部知识点以 JSON 藏在下拉的 data-points 里，
+   * 换领域就地把选项过滤掉，不必等提交刷新（无 JS 的降级是提交后由服务端收窄）。 */
+  var domainSel = document.getElementById("f-domain");
+  var pointSel = document.getElementById("f-point");
+  if (domainSel && pointSel) {
+    var allPoints = JSON.parse(pointSel.dataset.points || "[]");
+    var syncPoints = function () {
+      var did = domainSel.value;
+      var current = pointSel.value;
+      var matched = allPoints.filter(function (p) {
+        return !did || String(p.domain_id) === did;
+      });
+      pointSel.options.length = 0;
+      pointSel.add(new Option("全部知识点", ""));
+      matched.forEach(function (p) {
+        pointSel.add(new Option(p.name, String(p.id)));
+      });
+      // 原选中项还在新列表里就保留，否则回「全部」（旧值属于别的领域）
+      if (did && matched.some(function (p) { return String(p.id) === current; })) {
+        pointSel.value = current;
+      }
+    };
+    domainSel.addEventListener("change", syncPoints);
+    syncPoints();   // 初始：未选领域时只留「全部知识点」，选了就地展开该领域的
+  }
+
   /* 页面（主框）滚动条：指针进入右缘 HOT_ZONE 像素内才点亮琥珀 thumb。
    * 纯 CSS 表达不了"指针在滚动条附近"（:hover 只认元素盒，而视口滚动条属于
    * html），这里用 deepseek-harness 同思路的指针跟踪，粒度从列简化成视口。

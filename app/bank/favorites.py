@@ -74,7 +74,7 @@ def count(session: Session, *, user_id: int) -> int:
 
 
 def browse(
-    session: Session, *, user_id: int, page: int = 1
+    session: Session, *, user_id: int, page: int = 1, page_size: int = PAGE_SIZE
 ) -> tuple[list[QuestionCard], int]:
     """我的收藏（分页）。返回 `(卡片, 总条数)`。
 
@@ -83,6 +83,6 @@ def browse(
     """
     page = max(1, page)
     rows, total = repository.list_favorites(
-        session, user_id, offset=service.offset_for(page, page_size=PAGE_SIZE), limit=PAGE_SIZE
+        session, user_id, offset=service.offset_for(page, page_size=page_size), limit=page_size
     )
     return _card(session, rows), total
