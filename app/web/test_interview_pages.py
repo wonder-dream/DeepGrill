@@ -189,6 +189,10 @@ def test_full_drill_flow_through_http(app, client: TestClient) -> None:
     assert "volatile" in report
     assert "volatile 的可见性你答到了" in report
     assert "1 / 2" in report or "被考" in report
+    # 判定依据印的是**考察点正文**，不是内部主键（第一版印的是"考察点 1 = 命中"）
+    assert "底层内存屏障 = " in report
+    assert "可见性与有序性 = " in report
+    assert "考察点 1" not in report, "criterion_id 是内部主键，不该上页面"
 
     # 个人状态页：矩阵里 volatile 已经有读数了
     me = client.get("/me").text
