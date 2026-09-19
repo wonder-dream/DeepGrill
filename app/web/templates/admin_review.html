@@ -9,6 +9,9 @@
   .review-table { table-layout: fixed; }
   .review-table th, .review-table td { vertical-align: top; overflow-wrap: anywhere; }
   .review-table input[type="text"] { width: 100%; box-sizing: border-box; }
+  /* 考察点那一列是一个长列表，`ol` 的默认行距会把行撑得很高（模板里一直挂着
+     `class="tight"`，但这条规则原先没人定义） */
+  .tight { margin: .15rem 0; padding-left: 1.1rem; }
 </style>
 <section class="card">
   <h1>知识层人审</h1>

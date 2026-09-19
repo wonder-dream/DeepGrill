@@ -15,7 +15,7 @@
   {# shell = 整页外壳（边栏 + 主框 + 状态条）。普通页面只填 content；
      面试页这种要**全屏接管**的整页覆盖 shell（考场模式，见 interview.html）。 #}
   {% block shell %}
-  <input type="checkbox" id="nav-toggle" class="nav-toggle">
+  <input type="checkbox" id="nav-toggle" class="nav-toggle" aria-label="收起 / 展开边栏">
   <aside class="sidebar">
     <div class="rail-handle" id="rail-handle" title="拖动调整边栏宽度"></div>
     <a class="logo" href="/"><span class="dot"></span><span class="logo-text">deepgrill<span class="caret">_</span></span></a>
