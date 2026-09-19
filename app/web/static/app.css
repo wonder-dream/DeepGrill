@@ -16,17 +16,24 @@
   --bg: #151412;            /* 页面底：中性暖石墨 */
   --fg: #e6e2d8;
   --muted: #8f8a7d;
-  --line: #2b2823;          /* 常规描边 */
-  --line-bright: #46413a;   /* 提亮描边（悬停/分区） */
+  --line: #2b2823;          /* 常规描边 / 分隔线（纯装饰，对底色约 1.25:1） */
+  --line-bright: #46413a;   /* 提亮描边（悬停 / 分区，约 1.8:1） */
+  --line-input: #6f6a60;    /* ⚠️ 表单控件与单选组的边框专用：对 --bg 约 3.2:1
+                               （WCAG 1.4.11 对"可交互控件的边界"要求 3:1）。
+                               深色主题里最暗的那档描边当输入框边界时等于看不见框，
+                               所以这一档不能省：`--line` 留给装饰性分隔线。 */
   --accent: #d9a441;        /* 克制的琥珀 */
-  --accent-hover: #e7b95a;
   --accent-soft: rgba(217, 164, 65, 0.12);
   --fg-soft: rgba(230, 226, 216, 0.06);
   --danger: #d96a5f;
-  --success: #74b56a;
   --info: #6fa8b8;
   --panel: #1c1a17;
+  /* 圆角刻度：面板 10 / 控件 8 / 小按钮 7 / 大浮窗 14（胶囊一律 999px）。
+     原先这五个数字散在各处，改一处必漏另一处 —— 现在只在这里定义。 */
   --radius: 10px;
+  --radius-sm: 8px;
+  --radius-xs: 7px;
+  --radius-lg: 14px;
   --dur: .15s;
   /* 展开宽度可被拖拽覆盖（--rail-drag 由 layout.js 以像素写入；收起态与窄屏直接覆盖 --rail） */
   --rail: var(--rail-drag, 14rem);
@@ -86,15 +93,23 @@ body {
 }
 .logo .dot { width: 10px; height: 10px; background: var(--accent); border-radius: 3px; flex: none; }
 .logo .caret { color: var(--accent); animation: blink 1.06s step-end infinite; }
+/* 开屏（interview.html 的 .boot-text）里也有一个 `caret` —— 它不在 `.logo` 里，
+   原先那条 `.logo .caret` 管不到它，于是那个光标既不琥珀色也不闪。 */
+.caret { color: var(--accent); }
+.boot-text .caret { animation: blink 1.06s step-end infinite; }
 
-.sidebar nav { display: flex; flex-direction: column; gap: 3px; margin-top: 1.8rem; flex: 1; }
+/* `min-height: 0` 是这条滚动的关键（flex 项默认 min-height:auto，不收缩就不出滚动条），
+   而 overflow 只加在 nav 上、**不加在 .sidebar 上** —— 后者会裁掉 right:-5px 的
+   .rail-handle（它跨在边栏边界两侧）。矮视口（横屏手机 / 小窗口）下底部那几个入口
+   否则会被裁在固定层里且滚不出来。 */
+.sidebar nav { display: flex; flex-direction: column; gap: 3px; margin-top: 1.8rem; flex: 1; min-height: 0; overflow-y: auto; }
 /* 行式导航：默认安静，当前项才用 accent 说话 */
 .pill {
   display: flex;
   align-items: center;
   gap: 11px;
-  padding: 8px 12px;
-  border-radius: 8px;
+  padding: 10.4px 12px;   /* 高度为原先的 1.3 倍（原 8px） */
+  border-radius: var(--radius-sm);
   font-size: 14.5px;
   font-weight: 500;
   line-height: 1.35;
@@ -102,7 +117,7 @@ body {
   text-decoration: none;
   border: none;
   white-space: nowrap;
-  transition: background var(--dur) ease, color var(--dur) ease;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 /* 单字图标默认隐形但**占位**（展开态文字缩进一致）；收起态才显形 */
 .pill .g { visibility: hidden; width: 1.3em; text-align: center; color: var(--muted); flex: none; }
@@ -123,8 +138,9 @@ button.pill { font: inherit; cursor: pointer; }
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
+  /* 边栏拖到最窄（200px）时这一段会被硬裁：给个省略号，让人知道是被截了 */
+  text-overflow: ellipsis;
 }
-.rail-meta i { font-style: normal; color: var(--accent); }
 /* 底部按钮拉通栏宽、文字居中（form.inline 是行内元素，会把 pill 压成短粗一块；
    glyph 在底栏直接不渲染，省出的位置让文字真正居中） */
 .rail-meta form { display: block; }
@@ -142,6 +158,7 @@ button.pill { font: inherit; cursor: pointer; }
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 .rail-user::before,
 .rail-user::after {
@@ -162,11 +179,12 @@ button.pill { font: inherit; cursor: pointer; }
   align-items: center;
   justify-content: center;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: var(--radius-xs);
   color: var(--muted);
   cursor: pointer;
   opacity: 0;
-  transition: opacity var(--dur) ease, color var(--dur) ease, border-color var(--dur) ease;
+  transition: opacity var(--dur) var(--ease), color var(--dur) var(--ease),
+              border-color var(--dur) var(--ease);
 }
 .rail-btn::before { content: "❮"; font-size: 12px; }
 .sidebar:hover .rail-btn { opacity: 1; }
@@ -191,7 +209,7 @@ button.pill { font: inherit; cursor: pointer; }
   width: 2px;
   margin-left: -1px;
   background: transparent;
-  transition: background var(--dur) ease;
+  transition: background var(--dur) var(--ease);
 }
 .rail-handle:hover::after,
 body.rail-dragging .rail-handle::after { background: var(--accent); }
@@ -210,7 +228,9 @@ body.rail-dragging .statusbar { transition: none; }
   display: none;              /* 位置由 layout.js 算好才放出来 */
   cursor: col-resize;
   touch-action: none;
-  z-index: 90;
+  /* ⚠️ 必须高于 .sidebar(100)：主框左边界在窄视口上等于 --rail，命中条会整段落在
+     边栏里 —— 低于边栏就等于"左句柄永远点不到"（实测：默认宽度下 1624px 以下全中）。 */
+  z-index: 110;
 }
 .main-handle::after {
   content: "";
@@ -222,7 +242,7 @@ body.rail-dragging .statusbar { transition: none; }
   margin-left: -1px;
   background: linear-gradient(to bottom, transparent, var(--accent) 30%, var(--accent) 70%, transparent);
   opacity: 0;
-  transition: opacity var(--dur) ease;
+  transition: opacity var(--dur) var(--ease);
   pointer-events: none;
 }
 .main-handle.hot::after,
@@ -238,7 +258,7 @@ body:has(#nav-toggle:checked) .lbl,
 body:has(#nav-toggle:checked) .logo-text,
 body:has(#nav-toggle:checked) .rail-meta { display: none; }
 body:has(#nav-toggle:checked) .logo { justify-content: center; }
-body:has(#nav-toggle:checked) .pill { justify-content: center; gap: 0; padding: 8px 0; }
+body:has(#nav-toggle:checked) .pill { justify-content: center; gap: 0; padding: 10.4px 0; }
 body:has(#nav-toggle:checked) .pill .g { visibility: visible; }   /* 收起态只留单字图标 */
 
 /* ------------------------------------------------ 主体 */
@@ -257,7 +277,7 @@ main {
   border-radius: var(--radius);
   padding: 1.15rem 1.3rem 1.25rem;
   margin-bottom: 14px;
-  transition: border-color var(--dur) ease;
+  transition: border-color var(--dur) var(--ease);
 }
 .card:hover { border-color: var(--line-bright); }
 
@@ -291,7 +311,6 @@ article { border-left: 2px solid var(--accent); padding-left: .9rem; margin: .9r
   max-width: 16em;
   letter-spacing: -.5px;
 }
-.hero .rot { color: var(--accent); }
 .hero-sub { margin-top: 12px; color: var(--muted); max-width: 42em; font-size: .95rem; }
 .hero-cta { margin-top: 20px; }
 .hero .stats { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 16px; }
@@ -302,7 +321,7 @@ article { border-left: 2px solid var(--accent); padding-left: .9rem; margin: .9r
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 1rem 1.1rem 1.1rem;
-  transition: border-color var(--dur) ease;
+  transition: border-color var(--dur) var(--ease);
 }
 .bento .cell:hover { border-color: var(--line-bright); }
 .cell .no { color: var(--accent); font-size: 12px; letter-spacing: 1px; }
@@ -372,7 +391,7 @@ th {
   text-transform: uppercase;
   border-bottom: 1px solid var(--line-bright);
 }
-tbody tr { transition: background var(--dur) ease; }
+tbody tr { transition: background var(--dur) var(--ease); }
 tbody tr:hover { background: var(--fg-soft); }
 
 /* ------------------------------------------------ 语义色 */
@@ -384,7 +403,7 @@ tbody tr:hover { background: var(--fg-soft); }
 a, button.link {
   color: inherit;
   text-decoration: none;
-  transition: color var(--dur) ease;
+  transition: color var(--dur) var(--ease);
 }
 a:not(.button):hover, button.link:hover { color: var(--accent); }
 
@@ -398,15 +417,14 @@ code {
 
 .tag {
   display: inline-block;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-input);
   padding: 0 9px 1px;
   font-size: 12px;
   line-height: 1.5;
   border-radius: 999px;
   color: var(--muted);
-  transition: border-color var(--dur) ease, color var(--dur) ease;
+  transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.tag:hover { border-color: var(--accent); color: var(--accent); }
 
 span[title="已收藏"] { color: var(--accent); }
 
@@ -419,7 +437,7 @@ li::marker { color: var(--accent); }
   background: var(--fg);
   color: var(--bg);
   border: 1px solid var(--fg);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: .5rem 1.2rem;
   font: inherit;
   font-size: .9rem;
@@ -427,7 +445,7 @@ li::marker { color: var(--accent); }
   letter-spacing: .02em;
   text-decoration: none;
   cursor: pointer;
-  transition: background var(--dur) ease, border-color var(--dur) ease;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .button:hover { background: var(--accent); border-color: var(--accent); color: #1a1505; }
 .button:active { filter: brightness(.92); }
@@ -445,13 +463,15 @@ button.link {
 /* ------------------------------------------------ 表单控件 */
 input, textarea, select {
   padding: .5rem .7rem;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  /* ⚠️ 控件边界用 --line-input（约 3.2:1），不是装饰用的 --line（1.25:1）——
+     深色底上最暗那档描边当输入框边界时等于看不出框在哪 */
+  border: 1px solid var(--line-input);
+  border-radius: var(--radius-sm);
   background: var(--bg);
   color: var(--fg);
   font: inherit;
   caret-color: var(--accent);
-  transition: border-color var(--dur) ease;
+  transition: border-color var(--dur) var(--ease);
 }
 input:focus, textarea:focus, select:focus {
   outline: none;
@@ -473,12 +493,12 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
 .opt span {
   display: inline-block;
   padding: 5px 14px 6px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-input);
   border-radius: 999px;
   font-size: 13.5px;
   line-height: 1.3;
   color: var(--muted);
-  transition: border-color var(--dur) ease, color var(--dur) ease;
+  transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .opt:hover span { border-color: var(--line-bright); color: var(--fg); }
 .opt input:checked + span {
@@ -487,20 +507,32 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
   font-weight: 600;
 }
 .opt input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* 裸 radio（面试页的「语音 / 打字作答」没走 .opt 结构）：`input:focus` 那条把
+   outline 抹成 border-color，而 border-color 对原生 radio 没有可视效果 ——
+   于是键盘切作答方式时焦点完全不可见。这里把它补回来。 */
+.answer-modes input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* 反馈表单：圆角输入框；「重复」专属字段默认隐藏（无 :has 的浏览器回退为常显） */
-input.rnd, select.rnd { border-radius: 8px; }
+/* 反馈表单：「重复」专属字段默认隐藏（无 :has 的浏览器回退为常显） */
 @supports selector(:has(*)) {
   .feedback-form:not(:has(input[name="kind"][value="duplicate"]:checked)) .dup-only { display: none; }
 }
 
 /* 分页条：翻页 + 页码 + 跳页 + 每页条数，控件排一行可换行 */
 .pager { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
-.pager-ctl { display: inline-flex; align-items: center; gap: 6px; }
-.pager-ctl input[type="text"] { text-align: center; }
+/* ⚠️ 两条合在一个选择器里：模板上是 `class="inline pager-ctl"`，而 `form.inline`
+   （0,1,1）会赢过 `.pager-ctl`（0,1,0）—— 分开写时 display 恒为 inline，
+   `gap`/`align-items` 全部失效（实测：输入框与按钮挤在一起、基线错位）。 */
+form.inline.pager-ctl { display: inline-flex; align-items: center; gap: 6px; }
+/* 分页条的裸控件给个宽度：`size="4"` 管的是字符数，而文本框自带默认宽度约 177px ——
+   一个"跳至 2 页"的输入框会横占半行，手机上直接挤成两行。 */
+.pager input[type="text"] { width: 4.5rem; text-align: center; }
+.pager select { padding: .35rem .5rem; }
 
 /* 题库筛选条：与分页条同族的一行可换行控件 */
 .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: .7rem; }
+/* 筛选条是一排控件，全用 input 那套 `.5rem .7rem` 内边距会显得很笨重 */
+.filter-bar select, .filter-bar input[type="text"] { padding: .35rem .6rem; }
+.filter-bar input[type="text"] { width: 12rem; }
 
 /* 下拉框：option 系统配色在暗色页面上会看不见字 —— 显式配色 */
 select { background: var(--panel); }
@@ -516,13 +548,18 @@ option { background: var(--panel); color: var(--fg); }
   justify-content: center;
   padding: 1rem;
   background: rgba(0, 0, 0, 0.55);
+  /* ⚠️ 卡片高于视口时要能滚：它里面是"确认执行 / 取消"，落在视口外而没有滚动
+     容器的话，危险操作**根本没法确认**（矮屏 / 横屏手机上实测）。 */
+  overflow-y: auto;
 }
 .modal-card {
   width: 100%;
   max-width: 30rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--line-bright);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   padding: 1.3rem 1.5rem 1.4rem;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
@@ -543,13 +580,22 @@ option { background: var(--panel); color: var(--fg); }
   transition: background-color .2s ease;
 }
 /* 主框（视口）滚动条：指针移到右缘 24px 内点亮（layout.js 挂 scrollbar-hot）；
-   sidebar / 悬浮窗等内嵌滚动区悬停即亮，纯 CSS 可达 */
+   sidebar / 悬浮窗 / 考场中段等内嵌滚动区悬停即亮，纯 CSS 可达。
+   ⚠️ `.stage` 必须在内：面试页整页覆盖 shell、**不加载 layout.js**，所以
+   `html.scrollbar-hot` 在那一页永远不会挂上 —— 少了它，考场中段能滚却没有
+   任何视觉线索（thumb 恒为 --line，1.25:1）。 */
 html.scrollbar-hot::-webkit-scrollbar-thumb,
 .sidebar:hover::-webkit-scrollbar-thumb,
-.modal-card:hover::-webkit-scrollbar-thumb { background-color: var(--accent); }
-/* Firefox 没有伪元素滚动条：细条 + 纯色（不支持悬停变色，平台固有限制） */
+.modal-card:hover::-webkit-scrollbar-thumb,
+.stage:hover::-webkit-scrollbar-thumb { background-color: var(--accent); }
+/* Firefox 没有伪元素滚动条：细条 + 纯色（不支持悬停变色，平台固有限制）。
+   作用域要跟着滚动容器走 —— 只写 html 的话，考场中段与浮窗用的是平台默认配色，
+   跟暗色主题脱节。 */
 @supports not selector(::-webkit-scrollbar) {
-  html { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  html, .stage, .modal-card, .sidebar nav {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+  }
 }
 
 /* ------------------------------------------------ 折叠块 */
@@ -561,7 +607,10 @@ details.card summary {
 details.card summary::marker { color: var(--accent); }
 details.card[open] summary { margin-bottom: .6rem; }
 
-/* ------------------------------------------------ 面试页：考场条 */
+/* ------------------------------------------------ 面试页：考场条
+ * ⚠️ `.exambar` 全仓库只出现在考场页（interview.html）的 `.exam-full` 里，所以
+ * 下面 `.exam-full > .exambar` 那条**不再重复**它这五条声明 —— 两处各写一遍时，
+ * 改一处必漏另一处（它们曾经完全重复）。 */
 .exambar {
   display: flex;
   align-items: center;
@@ -571,7 +620,11 @@ details.card[open] summary { margin-bottom: .6rem; }
 }
 .exambar .prog-wrap { flex: 1; display: flex; align-items: center; gap: 12px; justify-content: center; min-width: 12rem; }
 .exambar .prog { width: 180px; max-width: 38vw; height: 3px; border-radius: 999px; background: var(--line); position: relative; overflow: hidden; }
-.exambar .prog i { position: absolute; inset: 0; right: auto; background: var(--accent); transition: width .6s var(--ease); }
+/* ⚠️ `right: auto` 是给模板里那条内联 `style="width: X%"` 让路：绝对定位元素若
+   left/right/width 全非 auto 会被"过约束"（LTR 下 right 赢、width 被忽略 →
+   进度条恒满格）。`transition` 不在这里：每次答完是整页重渲染，`i` 一出生就带着
+   最终宽度，宽度不会再变（原先那条 transition 是永不触发的死动效）。 */
+.exambar .prog i { position: absolute; inset: 0; right: auto; background: var(--accent); }
 .exambar .mono { font-variant-numeric: tabular-nums; }
 
 /* 对话区：聊天气泡 */
@@ -588,8 +641,14 @@ details.card[open] summary { margin-bottom: .6rem; }
 }
 .msg .who::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--muted); display: inline-block; }
 .msg.ai .who::before { background: var(--accent); }
-.msg .body { font-size: 15px; line-height: 1.7; white-space: pre-wrap; }
-.msg .fu-tag { color: var(--danger); border: 1px solid var(--danger); padding: 0 7px 1px; font-size: 11px; border-radius: 4px; }
+.msg .body {
+  font-size: 15px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  /* 超长 token（URL / 哈希 / 一长串代码）在 pre-wrap 下不会断行，会把考场中段
+     撑出横向滚动条 —— anywhere 允许在任何位置断（只在放不下时才生效）。 */
+  overflow-wrap: anywhere;
+}
 /* 对话区里的「语音」标记沿用 .tag（测试钉住了这个 markup），考场里给它红色 */
 .msg .tag { color: var(--danger); border-color: var(--danger); font-size: 11px; }
 .msg.me { align-self: flex-end; text-align: right; }
@@ -599,7 +658,7 @@ details.card[open] summary { margin-bottom: .6rem; }
   display: inline-block;
   text-align: left;
   border: 1px solid var(--line-bright);
-  border-radius: 10px;
+  border-radius: var(--radius);
   padding: .55rem .95rem;
   font-size: 14px;
 }
@@ -627,17 +686,13 @@ details.card[open] summary { margin-bottom: .6rem; }
 .boot-text { font-size: 15px; letter-spacing: .35em; color: var(--muted); }
 @keyframes boot-out { to { opacity: 0; visibility: hidden; } }
 
+/* 考场里的考场条：只写**真正不同**的那几条（display/align-items/gap/flex-wrap/
+   font-size 与 .exambar 完全一样，重复写等于两处要同步维护）。 */
 .exam-full > .exambar {
   flex: none;
-  display: flex;
-  align-items: center;
-  gap: 14px;
   padding: 12px 20px;
   border-bottom: 1px solid var(--line);
-  font-size: 13px;
-  flex-wrap: wrap;
 }
-.exam-full > .exambar .prog-wrap { flex: 1; }
 /* 两个出口并排靠右：「退出」（纯链接，只是离开）与「放弃本场」（表单，结束这一场）。
    `margin-left: auto` 挪到容器上 —— 留在 form 上的话只推得动第一个子元素。 */
 .exam-full > .exambar .exambar-actions {
@@ -750,9 +805,13 @@ details.card[open] summary { margin-bottom: .6rem; }
 @keyframes blink { 50% { opacity: 0; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .logo .caret, #live-text::after, .bar i { animation: none; }
+  /* 选择器特异性必须 ≥ 主规则：#live-text 那条主规则是 (1,2,1)，简写赢不了 */
+  .logo .caret, .boot-text .caret, .bar i,
+  #term-stem.typing::after,
+  .term-live:not([hidden]) #live-text::after { animation: none; }
   .boot { animation: none; opacity: 0; visibility: hidden; }
   a, button.link, .pill, tbody tr, .sidebar, main, .statusbar, .rail-btn, .rail-handle::after,
+  .main-handle::after,
   .card, .bento .cell, .button, .opt span, .tag { transition: none; }
 }
 
@@ -762,9 +821,12 @@ details.card[open] summary { margin-bottom: .6rem; }
   .rail-btn { opacity: 1; }
   .rail-handle, .main-handle { display: none !important; }
   .logo { justify-content: center; }
-  .pill { justify-content: center; gap: 0; padding: 8px 0; }
+  .pill { justify-content: center; gap: 0; padding: 10.4px 0; }
   .pill .g { visibility: visible; }
-  main { padding: 2rem 14px 5rem; }
+  /* 窄屏把边栏收成图标列：`main` 的左边界只退到侧栏的**外沿**，而侧栏自己的内容还要
+     让出左右 padding（各 14px）—— 不补这一段，正文会压在图标列上（实测几何：
+     --rail-fold 3.4rem = 54.4px，图标中心约在 68px）。 */
+  main { padding: 2rem 14px 5rem; padding-left: calc(var(--rail) + 14px); }
   th, td { padding: .4rem .35rem; }
   .exambar .prog { width: 100px; }
 }

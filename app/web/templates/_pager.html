@@ -14,14 +14,14 @@
   <form class="inline pager-ctl" method="get" action="{{ base }}">
     {% for k, v in extra.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
     <input type="hidden" name="size" value="{{ size }}">
-    跳至 <input class="rnd" type="text" name="page" size="4" value="{{ page }}"> 页
+    跳至 <input type="text" name="page" size="4" value="{{ page }}"> 页
     <button class="button" type="submit">跳转</button>
   </form>
   {# 改每页条数时不带 page —— 回第 1 页，否则页码容易越过新总页数 #}
   <form class="inline pager-ctl" method="get" action="{{ base }}">
     {% for k, v in extra.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
     每页
-    <select class="rnd" name="size">
+    <select name="size">
       {% for opt in (10, 20, 50, 100) %}
       <option value="{{ opt }}" {{ "selected" if opt == size }}>{{ opt }}</option>
       {% endfor %}

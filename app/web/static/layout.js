@@ -20,17 +20,31 @@
   /* 主框句柄要跟住 main 的左右边界；main 左边距随边栏宽度/收起态变、
    * 右边距随主框宽度变，所以凡改变这两者的时刻都要重新 sync（见各调用点）。
    * 声明提前：边栏拖拽的 apply 里也会调它。 */
+  /* 命中条宽 20px（app.css 的 .main-handle 是唯一的定义处 —— 这里只放常量，
+   * 改 CSS 宽度时必须同步它）。位置**必须夹进视口**：主框左边界在窄视口上等于
+   * --rail，`left - 28` 会整条落进边栏里；右边界 +8 在更窄的视口上直接跑出屏幕，
+   * 而两个句柄一旦离屏就再也没有 pointerdown —— 静默失效，只能刷新（宽度只活在
+   * 内存里，见文件头）。所以越界时**隐藏**，而不是留一个点不到的命中条。 */
+  var HANDLE_W = 20;
   var mainEl = document.querySelector("main");
   var leftH = document.getElementById("main-handle-left");
   var rightH = document.getElementById("main-handle-right");
 
+  function placeHandle(handle, left) {
+    var maxLeft = window.innerWidth - HANDLE_W;
+    if (left < 0 || left > maxLeft) {
+      handle.style.display = "none";
+      return;
+    }
+    handle.style.left = left + "px";
+    handle.style.display = "block";
+  }
+
   function syncMainHandles() {
     if (!mainEl || !leftH || !rightH) return;
     var r = mainEl.getBoundingClientRect();
-    leftH.style.left = (r.left - 28) + "px";   // 命中条 20px 宽，离线框边界 8px
-    rightH.style.left = (r.right + 8) + "px";
-    leftH.style.display = "block";
-    rightH.style.display = "block";
+    placeHandle(leftH, r.left - 28);    // 离左边界 8px（28 - 20）
+    placeHandle(rightH, r.right + 8);
   }
 
   if (railHandle) {
@@ -150,7 +164,14 @@
   var domainSel = document.getElementById("f-domain");
   var pointSel = document.getElementById("f-point");
   if (domainSel && pointSel) {
-    var allPoints = JSON.parse(pointSel.dataset.points || "[]");
+    /* 解析坏 JSON 不许炸掉整个 IIFE：后面还挂着页面滚动条的指针揭示，
+       一条异常会把那个监听一并吞掉、而且页面上没有任何提示（静默失效）。 */
+    var allPoints = [];
+    try {
+      allPoints = JSON.parse(pointSel.dataset.points || "[]");
+    } catch (e) {
+      allPoints = [];
+    }
     var syncPoints = function () {
       var did = domainSel.value;
       var current = pointSel.value;
@@ -162,8 +183,12 @@
       matched.forEach(function (p) {
         pointSel.add(new Option(p.name, String(p.id)));
       });
-      // 原选中项还在新列表里就保留，否则回「全部」（旧值属于别的领域）
-      if (did && matched.some(function (p) { return String(p.id) === current; })) {
+      // 原选中项还在新列表里就保留，否则回「全部」（旧值属于别的领域）。
+      // ⚠️ 这里**不能**再加 `did &&`：未选领域时上面照样重建了全部选项，而服务端
+      // 渲染的 `/bank?point=7`（无 domain）正是这一支 —— 少了这次回填，下拉会显示
+      // "全部知识点"而 URL 仍在按 7 过滤，用户下一次提交就静默丢条件（实测口径见
+      // `bank.pages.bank_list` 的 points_json：那里面本来就是全部知识点）。
+      if (matched.some(function (p) { return String(p.id) === current; })) {
         pointSel.value = current;
       }
     };
