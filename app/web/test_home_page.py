@@ -298,9 +298,12 @@ def test_anonymous_home_has_no_member_sections(app) -> None:
 
 
 def test_home_survives_a_database_without_migrations(tmp_dir: Path) -> None:
-    """没跑迁移的库也要能打开首页（它是用户看到的第一个页面）—— 页面上给那条命令。"""
+    """没跑迁移的库也要能打开首页（它是用户看到的第一个页面）—— 页面上只说没就绪。
+
+    ⚠️ 库路径与迁移命令**只进日志**：首页是匿名页面，那是运维信息（见 `home_page._count`）。
+    """
     app = create_app(Settings(database_path=tmp_dir / "empty.db"))
     with TestClient(app) as c:
         body = c.get("/").text
         assert "未初始化" in body
-        assert "python -m migrations.run" in body
+        assert "migrations.run" not in body

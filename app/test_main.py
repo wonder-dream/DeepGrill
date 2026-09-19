@@ -66,16 +66,20 @@ def test_healthz_does_not_touch_the_database(client: TestClient) -> None:
     assert r.headers["cache-control"] == "no-store"
 
 
-def test_home_says_how_to_initialize_an_empty_database(client: TestClient, settings: Settings) -> None:
-    """**空库不是 500**：首页必须能显示"该跑哪条命令"。
+def test_home_says_the_library_is_uninitialized(client: TestClient, settings: Settings) -> None:
+    """**空库不是 500**：首页必须能显示"库还没就绪"。
 
     MVP 阶段接手的人第一步就是这个状态（`app/` 此前只有 docstring）。
     若这里 500，故障现场是"页面打不开"，而真因是"没跑迁移" —— 排查方向被带偏。
+
+    ⚠️ 但页面上**不许出现库路径与迁移命令**：首页对匿名访客开放，那是部署拓扑与
+    文件系统布局。命令只进日志，运维从日志或 `/admin/observability` 拿。
     """
     r = client.get("/")
     assert r.status_code == 200
-    assert "python -m migrations.run" in r.text
     assert "未初始化" in r.text
+    assert "migrations.run" not in r.text, "迁移命令是给运维的，不该渲染进匿名首页"
+    assert str(settings.resolved_database_path()) not in r.text, "库路径也不该上页面"
 
 
 def test_home_counts_rows_once_migrated(client: TestClient, settings: Settings) -> None:

@@ -3,7 +3,7 @@
 {% block content %}
 <section class="card">
   <h1>{% if mine %}我的私有题集{% else %}题库{% endif %}</h1>
-  <p class="muted">共 {{ data.total }} 道{% if data.kind %}（kind={{ data.kind }}）{% endif %}。浏览不消耗额度点。</p>
+  <p class="muted">共 {{ data.total }} 道{% if data.kind_text %}（{{ data.kind_text }}）{% endif %}。浏览不消耗额度点。</p>
   {% if mine %}
   <p class="muted">只显示<strong>你自己的</strong>私有题 —— 别人看不到它们，也不出现在公共抽题里。
      它们来自<a href="/me/resume">简历生成的私有题集</a>。</p>
@@ -19,30 +19,30 @@
      禁 JS 时选了领域提交一次、服务端收窄知识点选项（两级都在表单里一起提交）。 #}
   <form class="filter-bar" method="get" action="/bank">
     {% if mine %}<input type="hidden" name="mine" value="1">{% endif %}
-    <select class="rnd" name="kind">
+    <select name="kind">
       <option value="" {{ "selected" if not data.kind }}>全部题型</option>
       <option value="knowledge" {{ "selected" if data.kind == "knowledge" }}>知识点题</option>
       <option value="design" {{ "selected" if data.kind == "design" }}>项目设计题</option>
     </select>
-    <select class="rnd" name="diff">
+    <select name="diff">
       <option value="" {{ "selected" if not data.diff }}>全部难度</option>
       <option value="easy" {{ "selected" if data.diff == "easy" }}>简单（1-2）</option>
       <option value="mid" {{ "selected" if data.diff == "mid" }}>中等（3）</option>
       <option value="hard" {{ "selected" if data.diff == "hard" }}>困难（4-5）</option>
     </select>
-    <select class="rnd" name="domain" id="f-domain">
+    <select name="domain" id="f-domain">
       <option value="" {{ "selected" if not data.domain_id }}>全部领域</option>
       {% for d in data.domains %}
       <option value="{{ d.id }}" {{ "selected" if d.id == data.domain_id }}>{{ d.name }}</option>
       {% endfor %}
     </select>
-    <select class="rnd" name="point" id="f-point" data-points="{{ data.points_json|e }}">
+    <select name="point" id="f-point" data-points="{{ data.points_json|e }}">
       <option value="" {{ "selected" if not data.point_id }}>全部知识点</option>
       {% for p in data.points %}
       <option value="{{ p.id }}" {{ "selected" if p.id == data.point_id }}>{{ p.name }}</option>
       {% endfor %}
     </select>
-    <input class="rnd" type="text" name="q" size="14" value="{{ data.keyword }}" placeholder="题干关键词">
+    <input type="text" name="q" size="14" value="{{ data.keyword }}" placeholder="题干关键词">
     <button class="button" type="submit">筛选</button>
     <a class="muted" href="/bank{% if mine %}?mine=1{% endif %}">清除</a>
   </form>
@@ -53,7 +53,7 @@
   {% if data.kind or data.diff or data.domain_id or data.point_id or data.keyword %}
   <p>没有符合条件的题。<a href="/bank{% if mine %}?mine=1{% endif %}">清除筛选</a>看看全部。</p>
   {% else %}
-  <p>题库是空的。跑 <code>python -m app.cli seed</code> 灌一份演示数据。</p>
+  <p>题库还是空的。稍后再来看看。</p>
   {% endif %}
 </section>
 {% else %}

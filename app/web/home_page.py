@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -40,6 +41,8 @@ from app.interview import service as interview
 from app.knowledge import service as knowledge
 from app.web.templating import render
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -51,8 +54,12 @@ def _count(session: Session, table: str) -> int | None:
     """数一张表的行数；表不存在时返回 None。
 
     库可能是空的、甚至没跑过迁移，而**首页不该因此 500** —— 它是用户看到的第一个
-    页面。所以这里把"没迁移"当成一种**能显示的状态**，而不是异常：页面上直接告诉
-    用户该跑哪条命令（ADR-0010：诊断信息要指向那一条命令）。
+    页面。所以这里把"没迁移"当成一种**能显示的状态**，而不是异常。
+
+    ⚠️ 但页面上**只给一句人话**：第一版把库路径与 `python -m migrations.run` 一起
+    渲染进了匿名首页（"诊断信息要指向那条命令"，ADR-0010），而那是**运维**要的东西，
+    给访客看等于泄漏部署拓扑与文件系统布局。路径与命令进日志（`home()` 里那行
+    warning），运维从日志或 `/admin/observability` 拿。
     """
     try:
         return int(session.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar_one())
@@ -69,8 +76,12 @@ def home(
     point_count = _count(session, "knowledge_points")
 
     if question_count is None:
-        path = settings.resolved_database_path()
-        status = f"未初始化（{path}）—— 先跑 python -m migrations.run"
+        # 路径与命令只在日志里（见 `_count` 的 docstring —— 匿名首页不该有它们）
+        logger.warning(
+            "首页：库还没初始化或没跑迁移（%s）—— 先跑 python -m migrations.run",
+            settings.resolved_database_path(),
+        )
+        status = "未初始化"
     else:
         status = "已连接"
 
