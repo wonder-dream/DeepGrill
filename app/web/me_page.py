@@ -37,6 +37,24 @@ router = APIRouter()
 SessionDep = Annotated[Session, Depends(get_session)]
 CurrentUserDep = Annotated[User | None, Depends(get_current_user)]
 
+#: `interviews.status` → 页面上显示的中文。闭集在迁移 0001 的 CHECK 里
+#: （`active` / `finished` / `abandoned`）。取不到就回退原值 —— 显示得不好看，
+#: 好过静默显示成空白。
+INTERVIEW_STATUS_LABELS: dict[str, str] = {
+    "active": "进行中",
+    "finished": "已完成",
+    "abandoned": "已放弃",
+}
+
+
+def _status_label(status: str) -> str:
+    return INTERVIEW_STATUS_LABELS.get(status, status)
+
+
+def _status_labels(rows: list) -> dict[int, str]:
+    """`{面试 id: 中文状态}` —— 模板只查表，不再自己印英文枚举。"""
+    return {row.id: _status_label(row.status) for row in rows}
+
 
 @router.get("/me")
 def me_page(request: Request, session: SessionDep, user: CurrentUserDep) -> object:
@@ -53,6 +71,7 @@ def me_page(request: Request, session: SessionDep, user: CurrentUserDep) -> obje
             "daily": account.DAILY_UNITS,
             "matrix": knowledge.mastery_matrix(session, user.id),
             "recent": recent,
+            "status_labels": _status_labels(recent),
             "counts": profile_service.count_remaining(session, user.id),
             "profile": profile_pipeline.latest_profile(session, user.id),
             "private_count": len(bank_repository.owned_ids(session, user.id)),
@@ -70,10 +89,15 @@ def interviews_page(request: Request, session: SessionDep, user: CurrentUserDep)
     """
     if user is None:
         return RedirectResponse("/login", status_code=302)
+    rows = interview.list_interviews(session, user.id)
     return render(
         request,
         "my_interviews.html",
-        {"user": user, "interviews": interview.list_interviews(session, user.id)},
+        {
+            "user": user,
+            "interviews": rows,
+            "status_labels": _status_labels(rows),
+        },
     )
 
 

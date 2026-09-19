@@ -43,6 +43,8 @@ class BankListPage:
     #: 全部知识点（id/name/domain_id）的 JSON —— 级联 JS 从 data-points 读它
     points_json: str = "[]"
     owner_only: bool = False
+    #: 筛选值的中文名（`design` → "项目设计题"）—— 模板不再自己印枚举原值
+    kind_text: str = ""
 
 
 def bank_list(
@@ -96,4 +98,5 @@ def bank_list(
             ensure_ascii=False,
         ),
         owner_only=owner_only,
+        kind_text=service.kind_label(kind),
     )

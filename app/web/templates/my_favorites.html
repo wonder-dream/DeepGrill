@@ -38,6 +38,7 @@
 <section class="card">
   {% set base = "/me/favorites" %}
   {% set extra = {} %}
+  {% set size = page_size %}   {# _pager 用 size 这个名字；上下文给的是 page_size #}
   {% include "_pager.html" %}
 </section>
 {% endif %}

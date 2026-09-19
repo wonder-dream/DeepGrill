@@ -235,10 +235,16 @@ def test_interviews_page_counts_abandoned_too(client: TestClient, db: Path) -> N
     """放弃掉的（`abandoned`）也要看得见 —— 否则用户会以为那场面试凭空消失了。
 
     判据是"我面过哪些"，不是"我面完哪些"：要"继续哪一场"是另一件事，走 `resume_target`。
+
+    ⚠️ 判据是**中文标签**而不是英文枚举：库里存 `abandoned`，页面上要写"已放弃"
+    （`me_page.INTERVIEW_STATUS_LABELS`）—— 第一版这里断言的是 `"abandoned" in …`，
+    等于把这个泄漏钉成了需求。
     """
     _add_interviews(db, user_id=2, ids=[50], status="abandoned", quota_charged=6)
-    assert "abandoned" in client.get("/me/interviews").text
-    assert "共 2 场" in client.get("/me/interviews").text
+    log = client.get("/me/interviews").text
+    assert "已放弃" in log
+    assert "abandoned" not in log, "英文枚举不该出现在用户页面上"
+    assert "共 2 场" in log
 
 
 def test_interviews_page_requires_login(db: Path) -> None:

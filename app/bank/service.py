@@ -27,6 +27,30 @@ PAGE_SIZE = 20
 #: 越界该被**明确拒绝**，而不是 500，也不是静默返回一页空列表 —— 后者看起来像分页坏了。
 MAX_OFFSET = 2**63 - 1
 
+#: 库里存的**枚举值 → 页面上显示的中文**。定义在领域这一层，是因为详情页与列表页
+#: 各写一份映射时它们会慢慢分叉（实测：列表页的下拉写"项目设计题"，详情页却印
+#: `design`）。取不到映射时**回退原值** —— 宁可显示得不好看，也不要静默显示成空白。
+#: 枚举的闭集在迁移里：`questions.kind` / `questions.origin` 的 CHECK（0001_initial.sql）。
+QUESTION_KIND_LABELS: dict[str, str] = {
+    "knowledge": "知识点题",
+    "design": "项目设计题",
+}
+QUESTION_ORIGIN_LABELS: dict[str, str] = {
+    "seed": "题库预置",
+    "generated": "由简历生成",
+    "promoted": "作者晋升",
+}
+
+
+def kind_label(kind: str | None) -> str:
+    """题型的中文名。空值给空串（模板据此决定要不要显示这段）。"""
+    return QUESTION_KIND_LABELS.get(kind or "", kind or "")
+
+
+def origin_label(origin: str | None) -> str:
+    """来源的中文名（`seed` / `generated` / `promoted`）。"""
+    return QUESTION_ORIGIN_LABELS.get(origin or "", origin or "")
+
 
 def offset_for(page: int, *, page_size: int = PAGE_SIZE) -> int:
     """页码 → `OFFSET`。越界抛 `InvalidInput`（400），不抛 `OverflowError`（500）。

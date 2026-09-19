@@ -81,6 +81,9 @@ def test_bank_filters_apply(client: TestClient) -> None:
     """四个筛选条件各验一条：题型 / 难度档 / 领域+知识点 / 关键词。"""
     assert "共 0 道" in client.get("/bank?kind=design").text
     assert "共 1 道" in client.get("/bank?kind=knowledge").text
+    # 筛选值以**中文**显示在标题上（枚举原值是内部实现，页面印的是 kind_label）
+    assert "（知识点题）" in client.get("/bank?kind=knowledge").text
+    assert "（项目设计题）" in client.get("/bank?kind=design").text
     assert "共 1 道" in client.get("/bank?diff=easy").text       # 难度 2 ∈ 1-2
     assert "共 0 道" in client.get("/bank?diff=hard").text
     assert "共 1 道" in client.get("/bank?domain=1").text
@@ -99,6 +102,10 @@ def test_bank_detail_shows_criteria(client: TestClient) -> None:
     assert "volatile" in r.text
     # 考察点必须是**列表项**，不是掉进别的分支（模板里有个"还没有考察点"的兜底段落）
     assert "还没有考察点" not in r.text
+    # 题型与来源印中文（`kind` / `origin` 是内部枚举，不该原样上页面）
+    assert "<dd>知识点题</dd>" in r.text
+    assert "公共 · 题库预置" in r.text
+    assert "seed" not in r.text
 
 
 def test_hidden_question_detail_is_404_not_leaked(client: TestClient) -> None:

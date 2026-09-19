@@ -83,6 +83,25 @@ class ItemReport:
         """这道题里**没答到**的考察点 id（掌握度与问题清单的原料）。"""
         return [cid for cid, status in self.hits.items() if status == rules.MISS]
 
+    @property
+    def hit_lines(self) -> dict[str, str]:
+        """`{考察点正文: 命中状态}` —— 报告页要印的"判定依据"。
+
+        `hits` 的键是 `criterion_id`，而编号对用户没有意义（它是内部主键）——
+        正文在 `criteria_texts` 里，按 `id - 1` 取（判分 prompt 就是用 `c.id` 编号的，
+        见 `interview.service._criteria_block`）。取不到的那条**跳过**：宁可不印，
+        也不要印一个 `考察点 7` 或者一个空行。
+        """
+        out: dict[str, str] = {}
+        for cid, status in self.hits.items():
+            try:
+                index = int(cid) - 1
+            except (TypeError, ValueError):
+                continue
+            if 0 <= index < len(self.criteria_texts):
+                out[self.criteria_texts[index]] = status
+        return out
+
 
 @dataclass
 class MatrixChange:

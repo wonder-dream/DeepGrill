@@ -6,9 +6,9 @@
   <dl>
     <dt>ID</dt><dd>#{{ data.question.id }}</dd>
     <dt>知识点</dt><dd>{{ data.point_name or "—" }}</dd>
-    <dt>题型</dt><dd>{{ data.question.kind }}</dd>
+    <dt>题型</dt><dd>{{ kind_text }}</dd>
     <dt>难度</dt><dd>{{ data.question.difficulty }}</dd>
-    <dt>来源</dt><dd>{% if data.question.owner_user_id %}私有{% else %}公共{% endif %}</dd>
+    <dt>来源</dt><dd>{% if data.question.owner_user_id %}私有{% else %}公共{% endif %} · {{ origin_text }}</dd>
   </dl>
 </section>
 
@@ -40,7 +40,7 @@
   <p class="muted">这是按需生成的讲解（同一道题只生成一次，之后读缓存）。</p>
   {% elif can_start %}
   <p class="muted">还没有为这道题生成过讲解。它会讲"为什么"而不是复述参考答案；
-     生成一次之后所有人打开这道题都直接读缓存，所以它**不消耗额度点**。</p>
+     生成一次之后所有人打开这道题都能直接看到，所以它<strong>不消耗额度点</strong>。</p>
   <form method="post" action="/bank/{{ data.question.id }}/explain">
     <button class="button" type="submit">生成讲解</button>
   </form>
@@ -75,7 +75,7 @@
      就能被所有人用来练习与面试。挂载完成前它没有考察点，判分只能按题干自己判断。</p>
   {% endif %}
   {% if not data.question.owner_user_id %}
-  <p class="muted">它已经在公共题库里了（来源：{{ data.question.origin }}）。</p>
+  <p class="muted">它已经在公共题库里了（来源：{{ origin_text }}）。</p>
   {% elif is_mine %}
   <p class="muted">这是你的私有题。晋升 = 交给公共题库（必经 <strong>自动门禁</strong>：
      题干长度 / 题型 / 有没有考察点 / 是否与已有公共题重复）。</p>
@@ -129,8 +129,8 @@
       </label>
       {% endfor %}
     </div>
-    <p><input class="rnd" type="text" name="detail" size="60" placeholder="补充说明（可选）"></p>
-    <p class="dup-only"><input class="rnd" type="text" name="duplicate_point_ids" size="20"
+    <p><input type="text" name="detail" size="60" placeholder="补充说明（可选）"></p>
+    <p class="dup-only"><input type="text" name="duplicate_point_ids" size="20"
         placeholder="填知识点 id（逗号分隔）"></p>
     <p><button class="button" type="submit">提交</button></p>
   </form>

@@ -10,18 +10,15 @@
   {% if report.summary %}
   <p>{{ report.summary }}</p>
   {% if report.summary_source == "fallback" %}
-  <p class="muted">（这段总结由已落库的数据拼出 —— 模型那次没生成成功。）</p>
+  <p class="muted">（这段总结由本次的数据自动拼出 —— 模型那次没生成成功。）</p>
   {% endif %}
   {% if report.signals.any %}
   {# 标注它、而不是把它删掉：这套检查对自由文本做启发式判断，实测误报过四次，
-     所以它是提示，不是结论。#}
-  <p class="warn">
-    （这段总结有需要核对的地方：
-    {%- for c in report.signals.contradictions %}与数据不一致 —— {{ c }}；{% endfor %}
-    {%- if report.signals.unknown_numbers %}出现了数据里没有的数字 {{ report.signals.unknown_numbers | join("、") }}；{% endif %}
-    {%- if report.signals.ungrounded_terms %}出现了数据外的名词 {{ report.signals.ungrounded_terms | join("、") }}；{% endif %}
-    请以逐题回顾为准。）
-  </p>
+     所以它是提示，不是结论。
+     ⚠️ 用户侧**只给一句提醒**：第一版把检查器的中间结果（"与数据不一致：…"、
+     "出现了数据里没有的数字 3、7"）逐条印在报告上 —— 那是调试视角的输出，
+     对用户等于"AI 承认自己可能编了"。细则留在日志与 /admin/observability。 #}
+  <p class="warn">（这段总结由模型生成，个别表述可能与逐题记录不符 —— 请以逐题回顾为准。）</p>
   {% endif %}
   {% endif %}
 </section>
@@ -37,7 +34,7 @@
     </dl>
     <p>{{ item.review }}</p>
     {% if item.status == "failed" %}<p class="warn">这一题判分失败，没有得分记录。</p>{% endif %}
-    <p class="muted">判定：{% for cid, st in item.hits.items() %}考察点 {{ cid }} = {{ st }}；{% endfor %}</p>
+    {% if item.hit_lines %}<p class="muted">判定：{% for text, st in item.hit_lines.items() %}{{ text }} = {{ st }}；{% endfor %}</p>{% endif %}
   </article>
   {% else %}
   <p class="muted">这场面试还没有逐题记录。</p>
