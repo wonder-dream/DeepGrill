@@ -10,7 +10,7 @@
   </dl>
   {% if skipped %}
   <h2>被机器规则挡下的</h2>
-  <p class="muted">这些**没有**落库 —— 它们没通过判据①（写不出考察点），
+  <p class="muted">这些<strong>没有</strong>落库 —— 它们没通过判据①（写不出考察点），
   或者决定本身不合法。列出来而不是丢掉。</p>
   <ul>{% for s in skipped %}<li>{{ s }}</li>{% endfor %}</ul>
   {% endif %}
@@ -20,7 +20,7 @@
   <h2>下一步</h2>
   <p>把题目挂到这些知识点上：</p>
   <pre>python -m app.cli mount</pre>
-  <p class="muted">挂不上的题会进「待定池」，**不会**自动新建知识点。</p>
+  <p class="muted">挂不上的题会进「待定池」，<strong>不会</strong>自动新建知识点。</p>
   <p><a class="button" href="/bank">看题库</a></p>
 </section>
 {% endblock %}
